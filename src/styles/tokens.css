@@ -1,0 +1,75 @@
+:root {
+  color-scheme: light;
+
+  /* Color — light theme: "light luxury" ivory canvas + ink/border ladder,
+     paired with a blue/green/pink "neon" accent triad toned down to
+     mid-lightness so it stays legible as text-bearing fills on a light
+     canvas. Dark themes redefine --color-neon-* (and the canvas/ink/border
+     ladder) at full vibrancy in themes.css; --color-accent and the
+     priority/status tokens below resolve through that indirection. */
+  --color-canvas: oklch(96.5% 0.012 78);
+  --color-surface: oklch(99% 0.004 80);
+  --color-surface-raised: oklch(100% 0 0);
+
+  --color-ink: oklch(21% 0.014 50);
+  --color-ink-muted: oklch(48% 0.012 50);
+  --color-ink-faint: oklch(68% 0.008 60);
+
+  --color-border: oklch(89% 0.012 75);
+  --color-border-strong: oklch(80% 0.014 75);
+
+  /* Neon accent triad */
+  --color-neon-blue: oklch(52% 0.16 235);
+  --color-neon-green: oklch(58% 0.14 155);
+  --color-neon-pink: oklch(54% 0.2 350);
+
+  --color-accent: var(--color-neon-blue);
+  --color-accent-hover: oklch(46% 0.17 235);
+  --color-accent-soft: oklch(94% 0.03 235);
+  --color-accent-ink: oklch(98% 0.01 235);
+
+  --color-danger-soft: oklch(95% 0.045 350);
+
+  /* Priority indicators */
+  --color-priority-high: var(--color-neon-pink);
+  --color-priority-high-hover: oklch(48% 0.21 350);
+  --color-priority-medium: oklch(58% 0.13 70);
+  --color-priority-low: var(--color-neon-green);
+
+  /* Per-column status accents */
+  --color-status-backlog: oklch(58% 0.012 60);
+  --color-status-do: var(--color-neon-blue);
+  --color-status-in-progress: oklch(64% 0.14 75);
+  --color-status-blocked: var(--color-neon-pink);
+  --color-status-done: var(--color-neon-green);
+
+  /* Spacing */
+  --space-3xs: 0.25rem;
+  --space-2xs: 0.375rem;
+  --space-xs: 0.5rem;
+  --space-sm: 0.75rem;
+  --space-md: 1rem;
+  --space-lg: 1.5rem;
+  --space-xl: 2rem;
+  --space-2xl: 3rem;
+
+  /* Radius */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --radius-pill: 999px;
+
+  /* Shadow */
+  --shadow-sm: 0 1px 2px oklch(20% 0.02 50 / 0.06);
+  --shadow-md:
+    0 6px 16px oklch(20% 0.02 50 / 0.08),
+    0 1px 2px oklch(20% 0.02 50 / 0.06);
+  --shadow-lg:
+    0 16px 40px oklch(20% 0.02 50 / 0.14),
+    0 2px 6px oklch(20% 0.02 50 / 0.08);
+
+  /* Motion */
+  --duration-fast: 120ms;
+  --duration-normal: 200ms;
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+}
