@@ -3,9 +3,9 @@
    (the active app theme) or to a small wrapper element (e.g. a settings-page
    preview swatch), with custom properties inheriting to its descendants.
 
-   --color-accent and the priority/status tokens are NOT redefined here: in
-   tokens.css they resolve through --color-neon-* via var() indirection,
-   which picks up the theme-specific neon values below automatically. */
+   --color-accent and --color-danger are NOT redefined here: in tokens.css
+   they resolve through --color-neon-* via var() indirection, which picks up
+   the theme-specific neon values below automatically. */
 
 /* Dark — near-black graphite canvas with full-vibrancy neon accents. */
 [data-theme="dark"] {
@@ -31,12 +31,7 @@
   --color-accent-ink: oklch(14% 0.02 235);
 
   --color-danger-soft: oklch(28% 0.07 350);
-
-  --color-priority-high-hover: oklch(82% 0.22 350);
-  --color-priority-medium: oklch(78% 0.16 80);
-
-  --color-status-backlog: oklch(55% 0.02 260);
-  --color-status-in-progress: oklch(78% 0.16 80);
+  --color-danger-hover: oklch(82% 0.22 350);
 
   --shadow-sm: 0 1px 2px oklch(0% 0 0 / 0.4);
   --shadow-md:
@@ -71,12 +66,7 @@
   --color-accent-ink: oklch(15% 0.03 245);
 
   --color-danger-soft: oklch(30% 0.08 335);
-
-  --color-priority-high-hover: oklch(83% 0.21 335);
-  --color-priority-medium: oklch(79% 0.15 90);
-
-  --color-status-backlog: oklch(58% 0.03 270);
-  --color-status-in-progress: oklch(79% 0.15 90);
+  --color-danger-hover: oklch(83% 0.21 335);
 
   --shadow-sm: 0 1px 2px oklch(5% 0.03 270 / 0.45);
   --shadow-md:

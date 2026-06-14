@@ -7,6 +7,8 @@ const sampleProject: Project = {
   color: "#3b82f6",
   order: 1,
   created: "2026-06-11T00:00:00+00:00",
+  board: { statuses: [] },
+  defaults: { tags: [] },
 };
 
 vi.mock("./api", () => ({

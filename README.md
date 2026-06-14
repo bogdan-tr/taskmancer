@@ -23,16 +23,24 @@ task entry, and (eventually) time tracking and analytics — built with
 
 ## Features
 
-- **Kanban board** with drag-and-drop across Backlog / Do / In Progress /
-  Blocked / Done.
+- **Kanban board** with drag-and-drop across status columns (Backlog / Do /
+  In Progress / Blocked / Done by default — fully customizable, including
+  per-project column subsets, from Settings). Columns scroll horizontally
+  instead of wrapping, and within each column tasks are grouped by priority
+  (toggleable — see [Display settings](#display-settings)).
+- **Compact task cards** — the title sits on one line, with a wrapping row
+  of chips below it (priority badge, project, tags, due date) that only
+  grows onto extra lines when needed.
 - **Projects** as first-class entities: a collapsible sidebar lists every
   project (with its own color), and each project has its own filtered board.
 - **Natural-language quick add** (`Ctrl+T` or the `+` button) — recognizes
   `#tag`, `+Project`, bare `high`/`medium`/`low` priority words, and
   `due <phrase>` / `sch <phrase>` (e.g. `due next friday`, `sch tomorrow`).
 - **Tag & project autocomplete** in the Add Task modal and on task cards.
-- **Themes** — Light, Dark, and Dark Blue, all built from a shared OKLCH
-  design-token system, switchable and persisted from the Settings page.
+- **Themes & display settings** — Light, Dark, and Dark Blue themes (shared
+  OKLCH design-token system), plus app-wide font size and Kanban column width
+  sliders and a priority-grouping toggle — all switchable and persisted from
+  the Settings page.
 - **Subtasks, dependencies, notes** — every task supports a markdown notes
   body and a `depends_on` list of other task IDs.
 
@@ -155,6 +163,21 @@ the field list:
 
 Anything left over becomes the task title.
 
+#### Date phrases
+
+`<phrase>` (after a bare `due`/`sch` keyword) accepts:
+
+| Form | Meaning | Example |
+|------|---------|---------|
+| `today` / `tomorrow` | Relative day | `due today` |
+| `YYYY-MM-DD` | Exact ISO date | `due 2026-12-25` |
+| `<weekday>` | The next occurrence of that weekday, **including today** | `due friday` |
+| `next <weekday>` | *Skips* the upcoming occurrence — one week later than the plain weekday form | `due next monday` |
+| `<month> <day>` / `<day> <month>` | An absolute date. Month names may be full or abbreviated (`june`/`jun`); the day may have an ordinal suffix (`11th`). Defaults to this year, rolling over to next year if that date has already passed | `due june 11`, `sch 31st may` |
+| `<month> <day> <year>` | Same as above with an explicit 4-digit year (used as-is, even if in the past) | `due june 11 2027` |
+
+`due:<token>` / `sch:<token>` (the colon form) only support `today`, `tomorrow`, `YYYY-MM-DD`, and plain weekday names — not `next <weekday>` or absolute month/day dates.
+
 ### Keyboard shortcuts
 
 | Shortcut | Action |
@@ -165,6 +188,19 @@ Anything left over becomes the task title.
 
 Visit **Settings** (gear icon in the sidebar) to switch between Light, Dark,
 and Dark Blue. Your choice is saved locally and restored on next launch.
+
+### Display settings
+
+Also on the **Settings** page, under "Display":
+
+| Control | Range | Effect |
+|---------|-------|--------|
+| Font size | 80%–140% (5% steps) | Scales the whole app's text via the root `font-size`. |
+| Status column width | 200px–400px (10px steps) | Width of each Kanban status column. Columns scroll horizontally as a single row instead of wrapping. |
+| Group tasks by priority | on/off | When on, each status column is divided into labeled priority sections. When off, tasks stay sorted by priority but the column isn't visually divided — a small priority badge on each card still shows its level. |
+
+All three settings apply instantly and are saved in `localStorage`, so they
+persist across restarts.
 
 ## Testing
 

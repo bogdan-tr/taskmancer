@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { parseTaskInput } from "./naturalLanguage";
+import { parseTaskInput, type KnownPriority } from "./naturalLanguage";
 
 /** A fixed reference "now" so date-relative parsing is deterministic. Wednesday. */
 const NOW = new Date(2026, 5, 10); // 2026-06-10 (June 10, 2026 is a Wednesday)
@@ -179,7 +179,9 @@ describe("parseTaskInput", () => {
     ["due today", "2026-06-10"],
     ["due tomorrow", "2026-06-11"],
     ["due friday", "2026-06-12"],
-    ["due next friday", "2026-06-12"],
+    // "next friday" skips the upcoming Friday (06-12) and resolves to the
+    // following one, one week later than bare "friday".
+    ["due next friday", "2026-06-19"],
     ["due 2026-12-25", "2026-12-25"],
     ["Due tomorrow", "2026-06-11"],
   ])("extracts a due-date phrase from '%s'", (phrase, expected) => {
@@ -207,7 +209,9 @@ describe("parseTaskInput", () => {
     ["sch today", "2026-06-10"],
     ["sch tomorrow", "2026-06-11"],
     ["sch wednesday", "2026-06-10"],
-    ["sch next wednesday", "2026-06-10"],
+    // "next wednesday" skips today (a Wednesday) and resolves to one week
+    // later than bare "wednesday" would.
+    ["sch next wednesday", "2026-06-17"],
     ["sch:friday", "2026-06-12"],
   ])("extracts a scheduled-date phrase from '%s'", (phrase, expected) => {
     const result = parseTaskInput(`Plan trip ${phrase}`, NOW);
@@ -232,8 +236,9 @@ describe("parseTaskInput", () => {
   });
 
   test("parses the full natural-language example from the project constitution", () => {
-    // NOW is Wednesday 2026-06-10: "wednesday" resolves to today (the next
-    // occurrence including today), and "friday" resolves to 2026-06-12.
+    // NOW is Wednesday 2026-06-10. "next wednesday" skips today and resolves
+    // to 2026-06-17; "next friday" skips 2026-06-12 and resolves to
+    // 2026-06-19.
     const result = parseTaskInput(
       "Assignment 4 #class sch next wednesday due next friday high",
       NOW,
@@ -242,7 +247,119 @@ describe("parseTaskInput", () => {
     expect(result.title).toBe("Assignment 4");
     expect(result.tags).toEqual(["class"]);
     expect(result.priority).toBe("high");
-    expect(result.scheduled).toBe("2026-06-10");
-    expect(result.due).toBe("2026-06-12");
+    expect(result.scheduled).toBe("2026-06-17");
+    expect(result.due).toBe("2026-06-19");
+  });
+
+  test.each([
+    ["monday", "2026-06-15"],
+    ["next monday", "2026-06-22"],
+  ])("'due %s' resolves to %s (next skips the upcoming occurrence)", (phrase, expected) => {
+    const result = parseTaskInput(`Pay rent due ${phrase}`, NOW);
+
+    expect(result.title).toBe("Pay rent");
+    expect(result.due).toBe(expected);
+  });
+
+  test("'next' immediately before a non-weekday is not recognized as a phrase", () => {
+    const result = parseTaskInput("Pay rent due next tomorrow", NOW);
+
+    expect(result.title).toBe("Pay rent due next tomorrow");
+    expect(result.due).toBeUndefined();
+  });
+
+  test.each([
+    // NOW is 2026-06-10.
+    ["due june 11", "2026-06-11"], // future this year: used as-is
+    ["due 11 june", "2026-06-11"], // day-before-month order
+    ["due june 11th", "2026-06-11"], // ordinal suffix
+    ["due jun 11", "2026-06-11"], // abbreviated month name
+    ["due may 31", "2027-05-31"], // already passed this year: rolls to next year
+    ["due june 9", "2027-06-09"], // already passed this year: rolls to next year
+    ["due june 10", "2026-06-10"], // same as today: not rolled over
+    ["due june 11 2027", "2027-06-11"], // explicit future year
+    ["due june 11 2020", "2020-06-11"], // explicit past year: used as-is, no rollover
+  ])("extracts an absolute date phrase from '%s'", (phrase, expected) => {
+    const result = parseTaskInput(`Pay rent ${phrase}`, NOW);
+
+    expect(result.title).toBe("Pay rent");
+    expect(result.due).toBe(expected);
+  });
+
+  test("leaves an invalid absolute calendar date in the title", () => {
+    const result = parseTaskInput("Pay rent due february 30", NOW);
+
+    expect(result.title).toBe("Pay rent due february 30");
+    expect(result.due).toBeUndefined();
+  });
+});
+
+describe("parseTaskInput with knownPriorities", () => {
+  const KNOWN_PRIORITIES: KnownPriority[] = [
+    { id: "urgent", label: "Urgent" },
+    { id: "someday", label: "Someday" },
+  ];
+
+  test("matches a bare word against a custom priority level's label, case-insensitively", () => {
+    const result = parseTaskInput("Fix bug URGENT", NOW, KNOWN_PRIORITIES);
+
+    expect(result.title).toBe("Fix bug");
+    expect(result.priority).toBe("urgent");
+  });
+
+  test("matches a bare word against a custom priority level's id", () => {
+    const result = parseTaskInput("Plan trip someday", NOW, KNOWN_PRIORITIES);
+
+    expect(result.title).toBe("Plan trip");
+    expect(result.priority).toBe("someday");
+  });
+
+  test("matches !<label> against a custom priority level", () => {
+    const result = parseTaskInput("Fix bug !Urgent", NOW, KNOWN_PRIORITIES);
+
+    expect(result.title).toBe("Fix bug");
+    expect(result.priority).toBe("urgent");
+  });
+
+  test("matches !<id> against a custom priority level, case-insensitively", () => {
+    const result = parseTaskInput("Fix bug !URGENT", NOW, KNOWN_PRIORITIES);
+
+    expect(result.title).toBe("Fix bug");
+    expect(result.priority).toBe("urgent");
+  });
+
+  test("falls back to the built-in !-prefixed tokens when knownPriorities has no match", () => {
+    const result = parseTaskInput("Do thing !high", NOW, KNOWN_PRIORITIES);
+
+    expect(result.title).toBe("Do thing");
+    expect(result.priority).toBe("high");
+  });
+
+  test("falls back to the built-in bare words when knownPriorities has no match", () => {
+    const result = parseTaskInput("Do thing medium", NOW, KNOWN_PRIORITIES);
+
+    expect(result.title).toBe("Do thing");
+    expect(result.priority).toBe("medium");
+  });
+
+  test("a knownPriorities match takes precedence over a built-in token sharing the same word", () => {
+    // A custom level whose label is "High" but whose id differs from the
+    // built-in "high" token - the custom id wins.
+    const result = parseTaskInput("Do thing !high", NOW, [{ id: "p1", label: "High" }]);
+
+    expect(result.priority).toBe("p1");
+  });
+
+  test("an empty knownPriorities array behaves the same as omitting the parameter", () => {
+    const result = parseTaskInput("Do thing !high", NOW, []);
+
+    expect(result.priority).toBe("high");
+  });
+
+  test("leaves an unrecognized bare word in the title when it matches neither knownPriorities nor built-ins", () => {
+    const result = parseTaskInput("Buy whenever filament", NOW, KNOWN_PRIORITIES);
+
+    expect(result.title).toBe("Buy whenever filament");
+    expect(result.priority).toBeUndefined();
   });
 });

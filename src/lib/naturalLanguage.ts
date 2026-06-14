@@ -1,15 +1,20 @@
-import type { Priority } from "./types";
-
 export interface ParsedTaskInput {
   title: string;
   tags: string[];
   project?: string;
-  priority?: Priority;
+  /** The id of a `PriorityLevel` (see `Settings.priorities`). */
+  priority?: string;
   due?: string;
   scheduled?: string;
 }
 
-const PRIORITY_TOKENS: Record<string, Priority> = {
+/** The subset of `PriorityLevel` needed to match quick-add priority tokens. */
+export interface KnownPriority {
+  id: string;
+  label: string;
+}
+
+const PRIORITY_TOKENS: Record<string, string> = {
   high: "high",
   h: "high",
   medium: "medium",
@@ -18,11 +23,22 @@ const PRIORITY_TOKENS: Record<string, Priority> = {
   l: "low",
 };
 
-const BARE_PRIORITY_WORDS: Record<string, Priority> = {
+const BARE_PRIORITY_WORDS: Record<string, string> = {
   high: "high",
   medium: "medium",
   low: "low",
 };
+
+/**
+ * Looks up `word` (already lowercased) against `knownPriorities` by `id` or
+ * `label`, case-insensitively. Returns the matching level's `id`, or
+ * `undefined` if `knownPriorities` is omitted or no level matches.
+ */
+function matchKnownPriority(word: string, knownPriorities?: KnownPriority[]): string | undefined {
+  return knownPriorities?.find(
+    (level) => level.id.toLowerCase() === word || level.label.toLowerCase() === word,
+  )?.id;
+}
 
 const WEEKDAY_TOKENS: Record<string, number> = {
   sunday: 0,
@@ -41,7 +57,42 @@ const WEEKDAY_TOKENS: Record<string, number> = {
   sat: 6,
 };
 
+const MONTH_TOKENS: Record<string, number> = {
+  january: 1,
+  jan: 1,
+  february: 2,
+  feb: 2,
+  march: 3,
+  mar: 3,
+  april: 4,
+  apr: 4,
+  may: 5,
+  june: 6,
+  jun: 6,
+  july: 7,
+  jul: 7,
+  august: 8,
+  aug: 8,
+  september: 9,
+  sep: 9,
+  sept: 9,
+  october: 10,
+  oct: 10,
+  november: 11,
+  nov: 11,
+  december: 12,
+  dec: 12,
+};
+
 const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+const DAY_TOKEN_PATTERN = /^([1-9]|[12]\d|3[01])(?:st|nd|rd|th)?$/i;
+
+/** Parses a day-of-month token like `11`, `11th`, or `1st`, returning the numeric day. */
+function parseDayToken(token: string): number | undefined {
+  const match = DAY_TOKEN_PATTERN.exec(token);
+  return match ? Number(match[1]) : undefined;
+}
 
 /** Formats a date as `YYYY-MM-DD` using local date components. */
 function formatDate(date: Date): string {
@@ -59,6 +110,16 @@ function addDays(date: Date, days: number): Date {
 }
 
 /**
+ * Returns the next occurrence of `targetDay` (0=Sunday..6=Saturday) on or
+ * after `now`, where "next" includes today: a weekday matching `now`'s own
+ * day returns `now` itself.
+ */
+function nextWeekdayOccurrence(targetDay: number, now: Date): Date {
+  const daysUntil = (targetDay - now.getDay() + 7) % 7;
+  return addDays(now, daysUntil);
+}
+
+/**
  * Resolves a date expression to a `YYYY-MM-DD` date string relative to
  * `now`, or `undefined` if the expression isn't recognized.
  *
@@ -68,7 +129,8 @@ function addDays(date: Date, days: number): Date {
  *
  * A weekday name resolves to the next occurrence of that day, where "next"
  * includes today: `wednesday` said on a Wednesday resolves to today, not a
- * week from now.
+ * week from now. `tryResolveDatePhrase` handles the `next <weekday>` prefix
+ * (which skips this occurrence) separately.
  */
 function resolveDateExpression(expression: string, now: Date): string | undefined {
   const lower = expression.toLowerCase();
@@ -83,47 +145,118 @@ function resolveDateExpression(expression: string, now: Date): string | undefine
     return expression;
   }
   if (lower in WEEKDAY_TOKENS) {
-    const targetDay = WEEKDAY_TOKENS[lower];
-    const daysUntil = (targetDay - now.getDay() + 7) % 7;
-    return formatDate(addDays(now, daysUntil));
+    return formatDate(nextWeekdayOccurrence(WEEKDAY_TOKENS[lower], now));
   }
 
   return undefined;
 }
 
 /**
- * Attempts to resolve a natural-language date phrase starting at
- * `tokens[startIndex]`, for use after a `due`/`sch` keyword.
+ * Attempts to resolve an absolute calendar date of the form `<month> <day>`
+ * or `<day> <month>` (month names may be full or abbreviated, e.g.
+ * "june"/"jun"; day numbers may carry an ordinal suffix, e.g. "11th"),
+ * optionally followed by a 4-digit year.
  *
- * An optional leading "next" is treated as filler and skipped: "next friday"
- * resolves the same as "friday". If no date expression is recognized
- * (including when "next" is the last token), returns `undefined` and
- * consumes nothing, so the caller can leave the original tokens in the title.
+ * When no year is given, the current year is used, rolling over to next
+ * year if that date has already passed (compared at day resolution). An
+ * explicit year is used as-is, even if it's in the past. Returns
+ * `undefined` (consuming nothing) if the tokens don't form a real calendar
+ * date (e.g. "february 30").
+ */
+function tryResolveAbsoluteDate(
+  tokens: string[],
+  startIndex: number,
+  now: Date,
+): { resolved: string; consumed: number } | undefined {
+  const first = tokens[startIndex]?.toLowerCase();
+  const second = tokens[startIndex + 1]?.toLowerCase();
+  if (first === undefined || second === undefined) {
+    return undefined;
+  }
+
+  let month: number | undefined;
+  let day: number | undefined;
+  if (first in MONTH_TOKENS) {
+    month = MONTH_TOKENS[first];
+    day = parseDayToken(second);
+  } else if (second in MONTH_TOKENS) {
+    month = MONTH_TOKENS[second];
+    day = parseDayToken(first);
+  }
+
+  // If both tokens happen to be month names (e.g. "may june"), the first
+  // branch above wins and `day` stays undefined since "june" isn't a valid
+  // day token - falling through to undefined below, as intended.
+  if (month === undefined || day === undefined) {
+    return undefined;
+  }
+
+  let consumed = 2;
+  let year = now.getFullYear();
+  let yearSpecified = false;
+  const yearToken = tokens[startIndex + consumed];
+  if (yearToken !== undefined && /^\d{4}$/.test(yearToken)) {
+    year = Number(yearToken);
+    yearSpecified = true;
+    consumed += 1;
+  }
+
+  let candidate = new Date(year, month - 1, day);
+  if (candidate.getMonth() !== month - 1 || candidate.getDate() !== day) {
+    return undefined;
+  }
+
+  if (!yearSpecified) {
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    if (candidate < today) {
+      candidate = new Date(year + 1, month - 1, day);
+    }
+  }
+
+  return { resolved: formatDate(candidate), consumed };
+}
+
+/**
+ * Attempts to resolve a natural-language date phrase starting at
+ * `tokens[startIndex]`, for use after a `due`/`sch` keyword. Returns
+ * `undefined` (consuming nothing) if no date expression is recognized, so
+ * the caller can leave the original tokens in the title.
+ *
+ * Recognized forms:
+ * - `today`, `tomorrow`, `YYYY-MM-DD`, or a weekday name — see
+ *   `resolveDateExpression`.
+ * - `next <weekday>` — *skips* the upcoming occurrence of that weekday and
+ *   resolves to the one after, i.e. one week later than bare `<weekday>`
+ *   would resolve to. "next" has no special meaning before anything else
+ *   (e.g. `next today` / `next 2026-06-20` are not recognized as a phrase).
+ * - An absolute `<month> <day>` / `<day> <month>` date, optionally followed
+ *   by a 4-digit year — see `tryResolveAbsoluteDate`.
  */
 function tryResolveDatePhrase(
   tokens: string[],
   startIndex: number,
   now: Date,
 ): { resolved: string; consumed: number } | undefined {
-  let index = startIndex;
-  let consumed = 0;
-
-  if (tokens[index]?.toLowerCase() === "next") {
-    index += 1;
-    consumed += 1;
-  }
-
-  const candidate = tokens[index];
-  if (candidate === undefined) {
+  const first = tokens[startIndex];
+  if (first === undefined) {
     return undefined;
   }
 
-  const resolved = resolveDateExpression(candidate, now);
-  if (!resolved) {
+  if (first.toLowerCase() === "next") {
+    const weekday = tokens[startIndex + 1]?.toLowerCase();
+    if (weekday !== undefined && weekday in WEEKDAY_TOKENS) {
+      const skipped = addDays(nextWeekdayOccurrence(WEEKDAY_TOKENS[weekday], now), 7);
+      return { resolved: formatDate(skipped), consumed: 2 };
+    }
     return undefined;
   }
 
-  return { resolved, consumed: consumed + 1 };
+  const simple = resolveDateExpression(first, now);
+  if (simple) {
+    return { resolved: simple, consumed: 1 };
+  }
+
+  return tryResolveAbsoluteDate(tokens, startIndex, now);
 }
 
 /**
@@ -131,20 +264,30 @@ function tryResolveDatePhrase(
  * - `#tag` adds a tag
  * - `+Project` sets the project (last one wins)
  * - `!high` / `!medium` / `!low` (or `!h`/`!m`/`!l`), or a bare `high` /
- *   `medium` / `low` word, sets the priority
+ *   `medium` / `low` word, sets the priority. If `knownPriorities` is given,
+ *   `!<id-or-label>` and a bare `<id-or-label>` word also match (case-
+ *   insensitively) any currently-defined priority level, checked before the
+ *   built-in low/medium/high words and abbreviations.
  * - `due:<expr>` or `due <phrase>` sets the due date; `sch:<expr>` or
- *   `sch <phrase>` sets the scheduled date. `<expr>`/`<phrase>` is
- *   `today`, `tomorrow`, `YYYY-MM-DD`, or a weekday name, optionally
- *   preceded by "next" (treated as filler)
+ *   `sch <phrase>` sets the scheduled date. `<expr>` (after the colon) is
+ *   `today`, `tomorrow`, `YYYY-MM-DD`, or a weekday name. `<phrase>` (after
+ *   the bare keyword) additionally supports `next <weekday>` (skips the
+ *   upcoming occurrence, resolving one week later than bare `<weekday>`)
+ *   and absolute `<month> <day>` / `<day> <month>` dates, optionally
+ *   followed by a 4-digit year (e.g. `due june 11`, `due 11th june 2027`)
  *
  * Tokens that don't match a recognized pattern are left in the title
  * unchanged. The remaining words become the task title, with extra
  * whitespace collapsed.
  */
-export function parseTaskInput(input: string, now: Date = new Date()): ParsedTaskInput {
+export function parseTaskInput(
+  input: string,
+  now: Date = new Date(),
+  knownPriorities?: KnownPriority[],
+): ParsedTaskInput {
   const tags: string[] = [];
   let project: string | undefined;
-  let priority: Priority | undefined;
+  let priority: string | undefined;
   let due: string | undefined;
   let scheduled: string | undefined;
 
@@ -166,15 +309,18 @@ export function parseTaskInput(input: string, now: Date = new Date()): ParsedTas
     }
 
     if (token.startsWith("!") && token.length > 1) {
-      const candidate = PRIORITY_TOKENS[lowerToken.slice(1)];
+      const word = lowerToken.slice(1);
+      const candidate = matchKnownPriority(word, knownPriorities) ?? PRIORITY_TOKENS[word];
       if (candidate) {
         priority = candidate;
         continue;
       }
     }
 
-    if (lowerToken in BARE_PRIORITY_WORDS) {
-      priority = BARE_PRIORITY_WORDS[lowerToken];
+    const bareCandidate =
+      matchKnownPriority(lowerToken, knownPriorities) ?? BARE_PRIORITY_WORDS[lowerToken];
+    if (bareCandidate) {
+      priority = bareCandidate;
       continue;
     }
 

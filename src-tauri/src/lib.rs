@@ -1,6 +1,8 @@
 mod commands;
 mod project;
 mod project_storage;
+mod settings;
+mod settings_storage;
 mod storage;
 mod task;
 
@@ -14,9 +16,11 @@ pub fn run() {
             let app_data_dir = app.path().app_data_dir()?;
             let tasks_dir = app_data_dir.join("tasks");
             let projects_file = app_data_dir.join("projects.json");
+            let settings_file = app_data_dir.join("settings.json");
             app.manage(commands::AppState {
                 tasks_dir,
                 projects_file,
+                settings_file,
                 projects_lock: std::sync::Mutex::new(()),
             });
             Ok(())
@@ -24,12 +28,16 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::list_tasks,
             commands::create_task,
-            commands::update_task_status,
             commands::update_task,
             commands::delete_task,
             commands::reorder_task,
             commands::list_projects,
-            commands::create_project
+            commands::create_project,
+            commands::update_project,
+            commands::get_settings,
+            commands::save_settings,
+            commands::count_tasks_by_priority,
+            commands::count_tasks_by_status
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

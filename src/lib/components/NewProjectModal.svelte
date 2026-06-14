@@ -297,7 +297,7 @@
     padding: var(--space-sm) var(--space-md);
     border-radius: var(--radius-md);
     background: var(--color-danger-soft);
-    color: var(--color-priority-high);
+    color: var(--color-danger);
     font-weight: 600;
     font-size: var(--text-sm);
   }

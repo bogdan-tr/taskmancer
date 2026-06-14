@@ -1,9 +1,16 @@
 <script lang="ts">
   import { applyTagsSuggestion, filterSuggestions, splitTagsInput } from "$lib/autocomplete";
+  import {
+    FALLBACK_PRIORITIES,
+    priorityColor,
+    priorityLabel,
+    sortedPriorities,
+  } from "$lib/priorities.svelte";
   import { projectsState } from "$lib/projects.svelte";
+  import { settingsState } from "$lib/settings.svelte";
   import { emptyToUndefined, formatTags, isValidOptionalDate, parseTags } from "$lib/taskFields";
   import { tagsState } from "$lib/tags.svelte";
-  import { PRIORITIES, PRIORITY_LABELS, type Priority, type Task } from "$lib/types";
+  import type { Task } from "$lib/types";
   import Autocomplete from "./Autocomplete.svelte";
 
   interface Props {
@@ -14,11 +21,13 @@
 
   let { task, onUpdate, onDelete }: Props = $props();
 
+  const priorities = $derived(settingsState.current?.priorities ?? FALLBACK_PRIORITIES);
+
   let isEditing = $state(false);
   let draftTitle = $state("");
   let draftProject = $state("");
   let draftTags = $state("");
-  let draftPriority = $state<Priority>("medium");
+  let draftPriority = $state("medium");
   let draftDue = $state("");
   let draftScheduled = $state("");
   let draftNotes = $state("");
@@ -156,7 +165,7 @@
   }
 </script>
 
-<li class="task priority-{task.priority}">
+<li class="task" style="--task-priority-color: {priorityColor(priorities, task.priority)}">
   {#if isEditing}
     <form class="edit-form" onsubmit={saveEdit}>
       <label>
@@ -221,8 +230,8 @@
       <label>
         Priority
         <select bind:value={draftPriority}>
-          {#each PRIORITIES as priority (priority)}
-            <option value={priority}>{PRIORITY_LABELS[priority]}</option>
+          {#each sortedPriorities(priorities) as level (level.id)}
+            <option value={level.id}>{level.label}</option>
           {/each}
         </select>
       </label>
@@ -270,19 +279,21 @@
       {task.title}
     </div>
 
-    {#if task.project || task.tags.length > 0 || task.due}
-      <div class="task-meta">
-        {#if task.project}
-          <span class="chip project">{task.project}</span>
-        {/if}
-        {#each task.tags as tag (tag)}
-          <span class="chip tag">#{tag}</span>
-        {/each}
-        {#if task.due}
-          <span class="chip due">Due {task.due}</span>
-        {/if}
-      </div>
-    {/if}
+    <div class="task-meta">
+      <span class="chip priority">
+        <span class="priority-dot" aria-hidden="true"></span>
+        {priorityLabel(priorities, task.priority)}
+      </span>
+      {#if task.project}
+        <span class="chip project">{task.project}</span>
+      {/if}
+      {#each task.tags as tag (tag)}
+        <span class="chip tag">#{tag}</span>
+      {/each}
+      {#if task.due}
+        <span class="chip due">Due {task.due}</span>
+      {/if}
+    </div>
   {/if}
 </li>
 
@@ -290,12 +301,12 @@
   .task {
     display: flex;
     flex-direction: column;
-    gap: var(--space-2xs);
-    padding: var(--space-sm);
+    gap: var(--space-3xs);
+    padding: var(--space-2xs) var(--space-sm);
     border-radius: var(--radius-md);
     background: var(--color-surface-raised);
     border: 1px solid var(--color-border);
-    border-left: 3px solid transparent;
+    border-left: 3px solid var(--task-priority-color, transparent);
     box-shadow: var(--shadow-sm);
     transition:
       box-shadow var(--duration-fast) var(--ease-out-expo),
@@ -305,18 +316,6 @@
   .task:hover {
     box-shadow: var(--shadow-md);
     transform: translateY(-1px);
-  }
-
-  .task.priority-high {
-    border-left-color: var(--color-priority-high);
-  }
-
-  .task.priority-medium {
-    border-left-color: var(--color-priority-medium);
-  }
-
-  .task.priority-low {
-    border-left-color: var(--color-priority-low);
   }
 
   /* Drag placeholder clone (see svelte-dnd-action SHADOW_ELEMENT_ATTRIBUTE_NAME):
@@ -336,7 +335,7 @@
 
   .task-title {
     cursor: pointer;
-    font-size: var(--text-base);
+    font-size: var(--text-sm);
     line-height: var(--leading-tight);
     word-break: break-word;
   }
@@ -354,13 +353,16 @@
   .task-meta {
     display: flex;
     flex-wrap: wrap;
-    gap: var(--space-2xs);
+    gap: var(--space-4xs);
   }
 
   .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-3xs);
     font-size: var(--text-xs);
     line-height: var(--leading-tight);
-    padding: var(--space-3xs) var(--space-xs);
+    padding: var(--space-4xs) var(--space-2xs);
     border-radius: var(--radius-pill);
     background: var(--color-canvas);
     border: 1px solid var(--color-border);
@@ -376,6 +378,20 @@
 
   .chip.due {
     font-variant-numeric: tabular-nums;
+  }
+
+  .chip.priority {
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-wide);
+    font-weight: 600;
+  }
+
+  .priority-dot {
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: var(--radius-pill);
+    background: var(--task-priority-color, var(--color-border-strong));
+    flex-shrink: 0;
   }
 
   .edit-form {
@@ -435,7 +451,7 @@
     padding: var(--space-2xs) var(--space-xs);
     border-radius: var(--radius-sm);
     background: var(--color-danger-soft);
-    color: var(--color-priority-high);
+    color: var(--color-danger);
     font-size: var(--text-xs);
     font-weight: 600;
   }
@@ -474,10 +490,10 @@
   }
 
   .edit-actions button.danger {
-    background: var(--color-priority-high);
+    background: var(--color-danger);
   }
 
   .edit-actions button.danger:hover {
-    background: var(--color-priority-high-hover);
+    background: var(--color-danger-hover);
   }
 </style>

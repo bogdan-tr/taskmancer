@@ -2,9 +2,25 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::settings::TaskDefaults;
+
 /// Accent color assigned to newly created or backfilled projects that don't
 /// specify their own. Matches `--color-accent` in `tokens.css`.
 pub const DEFAULT_PROJECT_COLOR: &str = "#3b82f6";
+
+/// A project's Kanban board configuration: the subset and order of the
+/// global status list (see `settings::Settings::statuses`) shown on this
+/// project's board, and the status new tasks in this project get by
+/// default. An empty `statuses` list means the project hasn't customized
+/// its board and shows the global status list as-is; a `None`
+/// `default_status` falls back to the global `Settings::defaults.status`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct ProjectBoard {
+    #[serde(default)]
+    pub statuses: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_status: Option<String>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Project {
@@ -14,6 +30,15 @@ pub struct Project {
     #[serde(default)]
     pub order: i64,
     pub created: String,
+    /// This project's Kanban board configuration. Defaults to an empty
+    /// (uncustomized) board for projects created or persisted before this
+    /// field existed.
+    #[serde(default)]
+    pub board: ProjectBoard,
+    /// Per-project overrides of the global default task attributes. Any
+    /// field left unset falls back to `settings::Settings::defaults`.
+    #[serde(default)]
+    pub defaults: TaskDefaults,
 }
 
 impl Project {
@@ -26,6 +51,8 @@ impl Project {
             color,
             order,
             created: Utc::now().to_rfc3339(),
+            board: ProjectBoard::default(),
+            defaults: TaskDefaults::default(),
         }
     }
 }
@@ -62,5 +89,24 @@ mod tests {
         let project: Project = serde_json::from_str(json).expect("parsing should succeed");
 
         assert_eq!(project.order, 0);
+    }
+
+    #[test]
+    fn board_and_defaults_are_empty_when_absent_from_json() {
+        let json = r##"{"id":"abc","name":"Inbox","color":"#000000","created":"2026-06-11T10:00:00+00:00"}"##;
+
+        let project: Project = serde_json::from_str(json).expect("parsing should succeed");
+
+        assert_eq!(project.board, ProjectBoard::default());
+        assert_eq!(project.defaults, TaskDefaults::default());
+    }
+
+    #[test]
+    fn new_project_has_empty_board_and_defaults() {
+        let project = Project::new("Homework".to_string(), "#ff0000".to_string(), 1);
+
+        assert!(project.board.statuses.is_empty());
+        assert_eq!(project.board.default_status, None);
+        assert_eq!(project.defaults, TaskDefaults::default());
     }
 }

@@ -4,38 +4,40 @@ use gray_matter::Matter;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum TaskStatus {
-    #[default]
-    Backlog,
-    Do,
-    InProgress,
-    Blocked,
-    Done,
+/// The id of a `PriorityLevel` (see `crate::settings`) when no other value
+/// is specified. Matches the `id` of the "medium" entry in
+/// `Settings::default()`'s seeded priority list.
+fn default_priority() -> String {
+    "medium".to_string()
 }
 
-#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum Priority {
-    Low,
-    #[default]
-    Medium,
-    High,
+/// The id of a `StatusDefinition` (see `crate::settings`) when no other
+/// value is specified. Matches the `id` of the "backlog" entry in
+/// `Settings::default()`'s seeded status list.
+fn default_status() -> String {
+    "backlog".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Task {
     pub id: String,
     pub title: String,
-    #[serde(default)]
-    pub status: TaskStatus,
+    /// The id of a user-defined `StatusDefinition` (see `crate::settings`).
+    /// Validated against the current `Settings.statuses` by the command
+    /// layer on write; read paths accept any string so tasks referencing a
+    /// since-removed status remain visible.
+    #[serde(default = "default_status")]
+    pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
-    #[serde(default)]
-    pub priority: Priority,
+    /// The id of a user-defined `PriorityLevel` (see `crate::settings`).
+    /// Validated against the current `Settings.priorities` by the command
+    /// layer on write; read paths accept any string so tasks referencing a
+    /// since-removed priority level remain visible.
+    #[serde(default = "default_priority")]
+    pub priority: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub due: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -69,10 +71,10 @@ impl Task {
         Task {
             id: Uuid::new_v4().to_string(),
             title,
-            status: TaskStatus::default(),
+            status: default_status(),
             project: None,
             tags: Vec::new(),
-            priority: Priority::default(),
+            priority: default_priority(),
             due: None,
             scheduled: None,
             order: Utc::now().timestamp_millis(),
@@ -110,8 +112,8 @@ mod tests {
         let task = Task::new("Write report".to_string());
 
         assert_eq!(task.title, "Write report");
-        assert_eq!(task.status, TaskStatus::Backlog);
-        assert_eq!(task.priority, Priority::Medium);
+        assert_eq!(task.status, "backlog");
+        assert_eq!(task.priority, "medium");
         assert!(task.project.is_none());
         assert!(task.tags.is_empty());
         assert!(!task.id.is_empty());
@@ -122,10 +124,10 @@ mod tests {
     #[test]
     fn to_markdown_then_from_markdown_round_trips() {
         let mut task = Task::new("Assignment 4".to_string());
-        task.status = TaskStatus::InProgress;
+        task.status = "in-progress".to_string();
         task.project = Some("CS101/Homework".to_string());
         task.tags = vec!["reading".to_string(), "urgent".to_string()];
-        task.priority = Priority::High;
+        task.priority = "high".to_string();
         task.due = Some("2026-06-15".to_string());
         task.scheduled = Some("2026-06-10".to_string());
         task.order = 1234567890;
@@ -139,12 +141,12 @@ mod tests {
     }
 
     #[test]
-    fn from_markdown_parses_status_in_kebab_case() {
+    fn from_markdown_parses_status_as_a_plain_string() {
         let markdown = "---\nid: abc123\ntitle: Demo\nstatus: in-progress\ncreated: 2026-06-11T10:00:00+00:00\n---\n\nBody text.";
 
         let task = Task::from_markdown(markdown).expect("parsing should succeed");
 
-        assert_eq!(task.status, TaskStatus::InProgress);
+        assert_eq!(task.status, "in-progress");
         assert_eq!(task.notes, "Body text.");
     }
 
@@ -154,8 +156,8 @@ mod tests {
 
         let task = Task::from_markdown(markdown).expect("parsing should succeed");
 
-        assert_eq!(task.status, TaskStatus::Backlog);
-        assert_eq!(task.priority, Priority::Medium);
+        assert_eq!(task.status, "backlog");
+        assert_eq!(task.priority, "medium");
         assert!(task.tags.is_empty());
         assert!(task.depends_on.is_empty());
         assert!(task.project.is_none());
@@ -167,5 +169,43 @@ mod tests {
         let result = Task::from_markdown("Just plain markdown, no frontmatter.");
 
         assert!(matches!(result, Err(TaskError::MissingFrontmatter)));
+    }
+
+    #[test]
+    fn from_markdown_accepts_an_arbitrary_priority_string() {
+        let markdown = "---\nid: abc123\ntitle: Demo\npriority: urgent\ncreated: 2026-06-11T10:00:00+00:00\n---\n\n";
+
+        let task = Task::from_markdown(markdown).expect("parsing should succeed");
+
+        assert_eq!(task.priority, "urgent");
+    }
+
+    #[test]
+    fn to_markdown_emits_priority_as_a_plain_string() {
+        let mut task = Task::new("Demo".to_string());
+        task.priority = "urgent".to_string();
+
+        let markdown = task.to_markdown().expect("serialization should succeed");
+
+        assert!(markdown.contains("priority: urgent\n"));
+    }
+
+    #[test]
+    fn from_markdown_accepts_an_arbitrary_status_string() {
+        let markdown = "---\nid: abc123\ntitle: Demo\nstatus: on-hold\ncreated: 2026-06-11T10:00:00+00:00\n---\n\n";
+
+        let task = Task::from_markdown(markdown).expect("parsing should succeed");
+
+        assert_eq!(task.status, "on-hold");
+    }
+
+    #[test]
+    fn to_markdown_emits_status_as_a_plain_string() {
+        let mut task = Task::new("Demo".to_string());
+        task.status = "on-hold".to_string();
+
+        let markdown = task.to_markdown().expect("serialization should succeed");
+
+        assert!(markdown.contains("status: on-hold\n"));
     }
 }

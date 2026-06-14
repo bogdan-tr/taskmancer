@@ -2,7 +2,9 @@
   import { onMount } from "svelte";
   import "../styles/global.css";
   import Sidebar from "$lib/components/Sidebar.svelte";
+  import { initDisplay } from "$lib/displaySettings.svelte";
   import { refreshProjects } from "$lib/projects.svelte";
+  import { refreshSettings } from "$lib/settings.svelte";
   import { initSidebar } from "$lib/sidebar.svelte";
   import { refreshTags } from "$lib/tags.svelte";
   import { initTheme } from "$lib/theme.svelte";
@@ -11,10 +13,12 @@
 
   initTheme();
   initSidebar();
+  initDisplay();
 
   onMount(() => {
     void refreshProjects();
     void refreshTags();
+    void refreshSettings();
   });
 </script>
 

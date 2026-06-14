@@ -7,9 +7,10 @@
     type ActiveToken,
   } from "$lib/autocomplete";
   import { parseTaskInput, type ParsedTaskInput } from "$lib/naturalLanguage";
+  import { FALLBACK_PRIORITIES, priorityColor, priorityLabel } from "$lib/priorities.svelte";
   import { projectsState } from "$lib/projects.svelte";
+  import { settingsState } from "$lib/settings.svelte";
   import { tagsState } from "$lib/tags.svelte";
-  import { PRIORITY_LABELS } from "$lib/types";
   import Autocomplete from "./Autocomplete.svelte";
 
   interface Props {
@@ -27,7 +28,9 @@
   let inputEl: HTMLInputElement | undefined = $state();
   let title = $state("");
 
-  let parsed = $derived(parseTaskInput(title));
+  let priorities = $derived(settingsState.current?.priorities ?? FALLBACK_PRIORITIES);
+  let knownPriorities = $derived(priorities.map(({ id, label }) => ({ id, label })));
+  let parsed = $derived(parseTaskInput(title, undefined, knownPriorities));
 
   // The `+Project` quick-add token is a single whitespace-delimited word, so
   // only single-word project names can be completed through it.
@@ -178,7 +181,7 @@
         bind:value={title}
         placeholder="What needs doing? (#tag +project, high/medium/low, due friday, sch next monday)"
         aria-label="New task title"
-        title="Quick-add syntax: #tag, +Project, high/medium/low (or !h/!m/!l), due/sch <today|tomorrow|YYYY-MM-DD|weekday>"
+        title="Quick-add syntax: #tag, +Project, high/medium/low (or !h/!m/!l), due/sch <today|tomorrow|YYYY-MM-DD|weekday|next weekday|month day[ year]>. 'next weekday' skips the upcoming one (e.g. 'next monday' is a week later than 'monday')."
         role="combobox"
         aria-expanded={suggestions.length > 0}
         aria-controls="add-task-suggestions"
@@ -211,8 +214,11 @@
       </div>
       <div class="field-row">
         <dt>Priority</dt>
-        <dd class={parsed.priority ? `filled priority-${parsed.priority}` : ""}>
-          {parsed.priority ? PRIORITY_LABELS[parsed.priority] : "—"}
+        <dd
+          class:filled={!!parsed.priority}
+          style={parsed.priority ? `color: ${priorityColor(priorities, parsed.priority)}` : ""}
+        >
+          {parsed.priority ? priorityLabel(priorities, parsed.priority) : "—"}
         </dd>
       </div>
       <div class="field-row">
@@ -373,18 +379,6 @@
     font-weight: 600;
   }
 
-  .field-row dd.priority-high.filled {
-    color: var(--color-priority-high);
-  }
-
-  .field-row dd.priority-medium.filled {
-    color: var(--color-priority-medium);
-  }
-
-  .field-row dd.priority-low.filled {
-    color: var(--color-priority-low);
-  }
-
   .field-row dd.tags {
     display: flex;
     flex-wrap: wrap;
@@ -408,7 +402,7 @@
     padding: var(--space-sm) var(--space-md);
     border-radius: var(--radius-md);
     background: var(--color-danger-soft);
-    color: var(--color-priority-high);
+    color: var(--color-danger);
     font-weight: 600;
     font-size: var(--text-sm);
   }

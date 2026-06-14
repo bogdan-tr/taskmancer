@@ -116,7 +116,6 @@ pub fn delete_task(dir: &Path, id: &str) -> Result<(), StorageError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::task::TaskStatus;
     use tempfile::tempdir;
 
     #[test]
@@ -196,11 +195,11 @@ mod tests {
         let mut task = Task::new("Do the thing".to_string());
         save_task(dir.path(), &task).unwrap();
 
-        task.status = TaskStatus::Done;
+        task.status = "done".to_string();
         save_task(dir.path(), &task).unwrap();
         let loaded = load_task(dir.path(), &task.id).unwrap();
 
-        assert_eq!(loaded.status, TaskStatus::Done);
+        assert_eq!(loaded.status, "done");
     }
 
     #[test]
@@ -241,7 +240,7 @@ mod tests {
         task.title = "Updated title".to_string();
         task.project = Some("Inbox/Personal".to_string());
         task.tags = vec!["urgent".to_string()];
-        task.priority = crate::task::Priority::High;
+        task.priority = "high".to_string();
         task.due = Some("2026-07-01".to_string());
         task.notes = "Updated notes".to_string();
         update_task(dir.path(), &task).unwrap();
