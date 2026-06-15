@@ -1,10 +1,12 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { dndzone, type DndEvent } from "svelte-dnd-action";
-  import { createTask, deleteTask, listTasks, reorderTask, updateTask } from "$lib/api";
+  import { createTask, deleteTask, finishDay, listTasks, reorderTask, updateTask } from "$lib/api";
   import AddTaskModal from "$lib/components/AddTaskModal.svelte";
+  import ConfirmDialog from "$lib/components/ConfirmDialog.svelte";
   import TaskCard from "$lib/components/TaskCard.svelte";
   import { displayState } from "$lib/displaySettings.svelte";
+  import { formatFinishDayResult } from "$lib/finishDay";
   import {
     bucketsHaveTasks,
     groupByStatusAndPriority,
@@ -124,6 +126,9 @@
   let isLoading = $state(true);
   let errorMessage = $state("");
   let modalOpen = $state(false);
+  let finishDayConfirmOpen = $state(false);
+  let finishDayMessage = $state("");
+  let isFinishingDay = $state(false);
 
   async function refresh() {
     try {
@@ -149,6 +154,7 @@
         recomputeHasOther();
       }
       errorMessage = "";
+      finishDayMessage = "";
       modalOpen = false;
       void refreshTags();
     } catch (error) {
@@ -186,6 +192,7 @@
       const updated = await updateTask(task);
       replaceTask(updated);
       errorMessage = "";
+      finishDayMessage = "";
       void refreshTags();
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : "Failed to update task";
@@ -197,8 +204,26 @@
       await deleteTask(id);
       removeTask(id);
       errorMessage = "";
+      finishDayMessage = "";
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : "Failed to delete task";
+    }
+  }
+
+  /** Archives every done/cancelled task across all projects, after the user confirms. */
+  async function confirmFinishDay() {
+    finishDayConfirmOpen = false;
+    finishDayMessage = "";
+    isFinishingDay = true;
+    try {
+      const result = await finishDay();
+      finishDayMessage = formatFinishDayResult(result.archived_count);
+      errorMessage = "";
+      await refresh();
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : "Failed to finish day";
+    } finally {
+      isFinishingDay = false;
     }
   }
 
@@ -261,6 +286,7 @@
         changed.map((task) => reorderTask(task.id, task.order, task.status, bucket.priorityId)),
       );
       errorMessage = "";
+      finishDayMessage = "";
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : "Failed to reorder tasks";
       await refresh();
@@ -321,6 +347,16 @@
       {/if}
     </div>
     <div class="header-actions">
+      {#if !projectFilter}
+        <button
+          type="button"
+          class="finish-day-button"
+          onclick={() => (finishDayConfirmOpen = true)}
+          disabled={isFinishingDay}
+        >
+          {isFinishingDay ? "Finishing day…" : "Finish day"}
+        </button>
+      {/if}
       {#if project}
         <a
           class="icon-button settings-link"
@@ -384,6 +420,19 @@
   {#if errorMessage && !modalOpen}
     <p class="error" role="alert">{errorMessage}</p>
   {/if}
+
+  {#if finishDayMessage && !errorMessage}
+    <p class="success" role="status">{finishDayMessage}</p>
+  {/if}
+
+  <ConfirmDialog
+    open={finishDayConfirmOpen}
+    title="Finish day?"
+    message="Archive all completed and cancelled tasks across every project? They'll be moved out of the board but kept in an archive."
+    confirmLabel="Finish day"
+    onConfirm={confirmFinishDay}
+    onCancel={() => (finishDayConfirmOpen = false)}
+  />
 
   {#if isLoading}
     <p class="loading">Loading tasks…</p>
@@ -525,12 +574,52 @@
     transform: translateY(-1px);
   }
 
+  .finish-day-button {
+    height: 2.5rem;
+    padding: 0 var(--space-md);
+    flex-shrink: 0;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-surface);
+    color: var(--color-ink-muted);
+    font-weight: 600;
+    font-size: var(--text-sm);
+    cursor: pointer;
+    box-shadow: var(--shadow-sm);
+    transition:
+      background var(--duration-fast) var(--ease-out-expo),
+      box-shadow var(--duration-fast) var(--ease-out-expo),
+      transform var(--duration-fast) var(--ease-out-expo);
+  }
+
+  .finish-day-button:hover:not(:disabled) {
+    background: var(--color-canvas);
+    color: var(--color-ink);
+    box-shadow: var(--shadow-md);
+    transform: translateY(-1px);
+  }
+
+  .finish-day-button:disabled {
+    cursor: not-allowed;
+    opacity: 0.6;
+  }
+
   .error {
     margin: 0 0 var(--space-md);
     padding: var(--space-sm) var(--space-md);
     border-radius: var(--radius-md);
     background: var(--color-danger-soft);
     color: var(--color-danger);
+    font-weight: 600;
+    font-size: var(--text-sm);
+  }
+
+  .success {
+    margin: 0 0 var(--space-md);
+    padding: var(--space-sm) var(--space-md);
+    border-radius: var(--radius-md);
+    background: var(--color-accent-soft);
+    color: var(--color-accent);
     font-weight: 600;
     font-size: var(--text-sm);
   }

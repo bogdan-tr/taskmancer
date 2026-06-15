@@ -1,6 +1,7 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::project::{Project, ProjectBoard, DEFAULT_PROJECT_COLOR};
@@ -14,15 +15,17 @@ use crate::storage;
 use crate::task::Task;
 
 /// Shared application state holding the directory where task markdown
-/// files are stored, the file where project metadata is stored, and the
-/// file where global settings are stored.
+/// files are stored, the directory where archived task markdown files are
+/// moved (see [`finish_day`] and [`delete_project`]), the file where project
+/// metadata is stored, and the file where global settings are stored.
 ///
 /// `projects_lock` serializes the read-modify-write cycles in
-/// [`list_projects`] (which may backfill), [`create_project`], and
-/// [`update_project`] so concurrent commands can't read a stale project
-/// list and overwrite each other's changes.
+/// [`list_projects`] (which may backfill), [`create_project`],
+/// [`update_project`], and [`delete_project`] so concurrent commands can't
+/// read a stale project list and overwrite each other's changes.
 pub struct AppState {
     pub tasks_dir: PathBuf,
+    pub archive_dir: PathBuf,
     pub projects_file: PathBuf,
     pub settings_file: PathBuf,
     pub projects_lock: Mutex<()>,
@@ -573,6 +576,152 @@ pub fn update_project(state: State<AppState>, project: Project) -> Result<Projec
     Ok(updated)
 }
 
+/// Returns an error if `project` is the configured default project: every
+/// task without an explicit project falls back to it (see
+/// [`resolve_project_name`]), so it can never be deleted.
+fn ensure_not_default_project(project: &Project, settings: &Settings) -> Result<(), String> {
+    if project
+        .name
+        .eq_ignore_ascii_case(settings.default_project.trim())
+    {
+        Err(format!(
+            "'{}' is the default project and cannot be deleted",
+            project.name
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// Returns the tasks currently filed under `project_name` (matched
+/// case-insensitively, mirroring [`find_project`]) - i.e. those that need to
+/// be reassigned, archived, or deleted before `project_name` can itself be
+/// deleted.
+fn tasks_for_project<'a>(tasks: &'a [Task], project_name: &str) -> Vec<&'a Task> {
+    tasks
+        .iter()
+        .filter(|t| {
+            t.project
+                .as_deref()
+                .is_some_and(|p| p.eq_ignore_ascii_case(project_name))
+        })
+        .collect()
+}
+
+/// What to do with a project's existing tasks when the project is deleted
+/// (see [`delete_project`]).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ProjectTaskStrategy {
+    /// Move each task to the project identified by `target_project_id`.
+    Reassign { target_project_id: String },
+    /// Move each task's markdown file to the archive directory, like
+    /// [`finish_day`].
+    Archive,
+    /// Permanently delete each task's markdown file, like [`delete_task`].
+    Delete,
+}
+
+/// Applies `strategy` to every task in `tasks` (all belonging to the project
+/// identified by `deleted_project_id`, which is about to be deleted), using
+/// `tasks_dir`/`archive_dir` for file operations and `projects` to resolve a
+/// `Reassign` target's name. Returns the number of tasks affected.
+fn apply_task_strategy(
+    tasks_dir: &Path,
+    archive_dir: &Path,
+    projects: &[Project],
+    deleted_project_id: &str,
+    tasks: &[&Task],
+    strategy: &ProjectTaskStrategy,
+) -> Result<usize, String> {
+    match strategy {
+        ProjectTaskStrategy::Reassign { target_project_id } => {
+            if target_project_id == deleted_project_id {
+                return Err("cannot reassign tasks to the project being deleted".to_string());
+            }
+            let target = projects
+                .iter()
+                .find(|p| &p.id == target_project_id)
+                .ok_or_else(|| format!("target project '{target_project_id}' not found"))?;
+            for task in tasks {
+                let mut updated = (*task).clone();
+                updated.project = Some(target.name.clone());
+                storage::update_task(tasks_dir, &updated).map_err(|e| e.to_string())?;
+            }
+        }
+        ProjectTaskStrategy::Archive => {
+            for task in tasks {
+                storage::archive_task(tasks_dir, archive_dir, &task.id)
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        ProjectTaskStrategy::Delete => {
+            for task in tasks {
+                storage::delete_task(tasks_dir, &task.id).map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    Ok(tasks.len())
+}
+
+/// Result of [`delete_project`]: how many of the deleted project's tasks were
+/// reassigned, archived, or deleted as part of removing it.
+#[derive(Debug, Serialize)]
+pub struct DeleteProjectResult {
+    pub affected_tasks: usize,
+}
+
+/// Deletes the project identified by `project_id`. The configured default
+/// project can never be deleted (see [`ensure_not_default_project`]). If the
+/// project still has tasks (matched by name, case-insensitively - see
+/// [`tasks_for_project`]), `task_strategy` is required and is applied to all
+/// of them (see [`apply_task_strategy`]) before the project itself is removed
+/// from the projects file. Tasks already moved to the archive don't count
+/// toward this check and never block deletion.
+#[tauri::command]
+pub fn delete_project(
+    state: State<AppState>,
+    project_id: String,
+    task_strategy: Option<ProjectTaskStrategy>,
+) -> Result<DeleteProjectResult, String> {
+    let settings =
+        settings_storage::load_settings(&state.settings_file).map_err(|e| e.to_string())?;
+
+    let _guard = state.projects_lock.lock().map_err(|e| e.to_string())?;
+    let mut projects =
+        project_storage::list_projects(&state.projects_file).map_err(|e| e.to_string())?;
+
+    let index = projects
+        .iter()
+        .position(|p| p.id == project_id)
+        .ok_or_else(|| format!("project '{project_id}' not found"))?;
+    ensure_not_default_project(&projects[index], &settings)?;
+
+    let tasks = storage::list_tasks(&state.tasks_dir).map_err(|e| e.to_string())?;
+    let matching = tasks_for_project(&tasks, &projects[index].name);
+
+    let affected_tasks = if matching.is_empty() {
+        0
+    } else {
+        let strategy = task_strategy.ok_or_else(|| {
+            "this project still has tasks; choose how to handle them before deleting it".to_string()
+        })?;
+        apply_task_strategy(
+            &state.tasks_dir,
+            &state.archive_dir,
+            &projects,
+            &project_id,
+            &matching,
+            &strategy,
+        )?
+    };
+
+    projects.remove(index);
+    project_storage::save_projects(&state.projects_file, &projects).map_err(|e| e.to_string())?;
+
+    Ok(DeleteProjectResult { affected_tasks })
+}
+
 /// Returns the global settings (custom priority levels, the global status
 /// list, and global default task attributes), seeding and persisting
 /// defaults on first use if no settings file exists yet.
@@ -692,11 +841,50 @@ pub fn count_tasks_by_status(
     Ok(tally_statuses(&tasks))
 }
 
+/// Returns `true` if `task.status` matches `settings.done_status`, or
+/// `settings.cancelled_status` when one is configured - i.e. this task is
+/// "finished" and should be archived by [`finish_day`].
+fn is_finished(task: &Task, settings: &Settings) -> bool {
+    task.status == settings.done_status
+        || settings
+            .cancelled_status
+            .as_deref()
+            .is_some_and(|cancelled| task.status == cancelled)
+}
+
+/// Result of [`finish_day`]: how many tasks were archived.
+#[derive(Debug, Serialize)]
+pub struct FinishDayResult {
+    pub archived_count: usize,
+}
+
+/// Archives every task across all projects whose status is the configured
+/// done or cancelled status (see [`is_finished`]), by moving its markdown
+/// file from `tasks_dir` to `archive_dir` (see [`storage::archive_task`]).
+#[tauri::command]
+pub fn finish_day(state: State<AppState>) -> Result<FinishDayResult, String> {
+    let settings =
+        settings_storage::load_settings(&state.settings_file).map_err(|e| e.to_string())?;
+    let tasks = storage::list_tasks(&state.tasks_dir).map_err(|e| e.to_string())?;
+
+    let mut archived_count = 0;
+    for task in &tasks {
+        if is_finished(task, &settings) {
+            storage::archive_task(&state.tasks_dir, &state.archive_dir, &task.id)
+                .map_err(|e| e.to_string())?;
+            archived_count += 1;
+        }
+    }
+
+    Ok(FinishDayResult { archived_count })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::project::ProjectBoard;
     use crate::settings::{PriorityLevel, StatusDefinition, TaskDefaults};
+    use tempfile::tempdir;
 
     #[test]
     fn validate_date_field_accepts_none() {
@@ -1545,7 +1733,8 @@ mod tests {
             ..Default::default()
         };
 
-        let mut project = Project::new("Homework".to_string(), DEFAULT_PROJECT_COLOR.to_string(), 1);
+        let mut project =
+            Project::new("Homework".to_string(), DEFAULT_PROJECT_COLOR.to_string(), 1);
         project.defaults.tags = vec!["school".to_string()];
         let projects = vec![project];
 
@@ -1652,5 +1841,245 @@ mod tests {
 
         let err = validate_settings_against_projects(&settings, &projects).unwrap_err();
         assert!(err.contains("low"));
+    }
+
+    #[test]
+    fn tasks_for_project_matches_case_insensitively() {
+        let mut homework = Task::new("Algebra".to_string());
+        homework.project = Some("Homework".to_string());
+        let mut homework_upper = Task::new("Geometry".to_string());
+        homework_upper.project = Some("HOMEWORK".to_string());
+        let mut other = Task::new("Groceries".to_string());
+        other.project = Some("Errands".to_string());
+        let unfiled = Task::new("No project".to_string());
+
+        let tasks = vec![homework, homework_upper, other, unfiled];
+        let matching = tasks_for_project(&tasks, "homework");
+
+        assert_eq!(matching.len(), 2);
+        assert_eq!(matching[0].title, "Algebra");
+        assert_eq!(matching[1].title, "Geometry");
+    }
+
+    #[test]
+    fn ensure_not_default_project_rejects_the_default_project() {
+        let settings = Settings {
+            default_project: "General".to_string(),
+            ..Default::default()
+        };
+        let project = Project::new("General".to_string(), DEFAULT_PROJECT_COLOR.to_string(), 1);
+
+        let err = ensure_not_default_project(&project, &settings).unwrap_err();
+
+        assert!(err.contains("General"));
+    }
+
+    #[test]
+    fn ensure_not_default_project_matches_case_insensitively() {
+        let settings = Settings {
+            default_project: "General".to_string(),
+            ..Default::default()
+        };
+        let project = Project::new("general".to_string(), DEFAULT_PROJECT_COLOR.to_string(), 1);
+
+        assert!(ensure_not_default_project(&project, &settings).is_err());
+    }
+
+    #[test]
+    fn ensure_not_default_project_allows_other_projects() {
+        let settings = Settings {
+            default_project: "General".to_string(),
+            ..Default::default()
+        };
+        let project = Project::new("Work".to_string(), DEFAULT_PROJECT_COLOR.to_string(), 1);
+
+        assert!(ensure_not_default_project(&project, &settings).is_ok());
+    }
+
+    #[test]
+    fn apply_task_strategy_reassign_updates_task_project() {
+        let dir = tempdir().unwrap();
+        let mut task = Task::new("Algebra".to_string());
+        task.project = Some("Homework".to_string());
+        storage::save_task(dir.path(), &task).unwrap();
+
+        let source = Project::new("Homework".to_string(), DEFAULT_PROJECT_COLOR.to_string(), 1);
+        let target = Project::new("School".to_string(), DEFAULT_PROJECT_COLOR.to_string(), 2);
+        let target_id = target.id.clone();
+        let source_id = source.id.clone();
+        let projects = vec![source, target];
+
+        let archive_dir = dir.path().join("archive");
+        let affected = apply_task_strategy(
+            dir.path(),
+            &archive_dir,
+            &projects,
+            &source_id,
+            &[&task],
+            &ProjectTaskStrategy::Reassign {
+                target_project_id: target_id,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(affected, 1);
+        let loaded = storage::load_task(dir.path(), &task.id).unwrap();
+        assert_eq!(loaded.project, Some("School".to_string()));
+    }
+
+    #[test]
+    fn apply_task_strategy_reassign_rejects_self_target() {
+        let dir = tempdir().unwrap();
+        let mut task = Task::new("Algebra".to_string());
+        task.project = Some("Homework".to_string());
+        storage::save_task(dir.path(), &task).unwrap();
+
+        let source = Project::new("Homework".to_string(), DEFAULT_PROJECT_COLOR.to_string(), 1);
+        let source_id = source.id.clone();
+        let projects = vec![source];
+
+        let archive_dir = dir.path().join("archive");
+        let err = apply_task_strategy(
+            dir.path(),
+            &archive_dir,
+            &projects,
+            &source_id,
+            &[&task],
+            &ProjectTaskStrategy::Reassign {
+                target_project_id: source_id.clone(),
+            },
+        )
+        .unwrap_err();
+
+        assert!(err.contains("being deleted"));
+    }
+
+    #[test]
+    fn apply_task_strategy_reassign_rejects_unknown_target() {
+        let dir = tempdir().unwrap();
+        let mut task = Task::new("Algebra".to_string());
+        task.project = Some("Homework".to_string());
+        storage::save_task(dir.path(), &task).unwrap();
+
+        let source = Project::new("Homework".to_string(), DEFAULT_PROJECT_COLOR.to_string(), 1);
+        let source_id = source.id.clone();
+        let projects = vec![source];
+
+        let archive_dir = dir.path().join("archive");
+        let err = apply_task_strategy(
+            dir.path(),
+            &archive_dir,
+            &projects,
+            &source_id,
+            &[&task],
+            &ProjectTaskStrategy::Reassign {
+                target_project_id: "missing-id".to_string(),
+            },
+        )
+        .unwrap_err();
+
+        assert!(err.contains("not found"));
+    }
+
+    #[test]
+    fn apply_task_strategy_archive_moves_task_files() {
+        let dir = tempdir().unwrap();
+        let mut task = Task::new("Algebra".to_string());
+        task.project = Some("Homework".to_string());
+        storage::save_task(dir.path(), &task).unwrap();
+
+        let source = Project::new("Homework".to_string(), DEFAULT_PROJECT_COLOR.to_string(), 1);
+        let source_id = source.id.clone();
+        let projects = vec![source];
+
+        let archive_dir = dir.path().join("archive");
+        let affected = apply_task_strategy(
+            dir.path(),
+            &archive_dir,
+            &projects,
+            &source_id,
+            &[&task],
+            &ProjectTaskStrategy::Archive,
+        )
+        .unwrap();
+
+        assert_eq!(affected, 1);
+        assert!(matches!(
+            storage::load_task(dir.path(), &task.id),
+            Err(storage::StorageError::NotFound(_))
+        ));
+        let archived = storage::load_task(&archive_dir, &task.id).unwrap();
+        assert_eq!(archived.id, task.id);
+    }
+
+    #[test]
+    fn apply_task_strategy_delete_removes_task_files() {
+        let dir = tempdir().unwrap();
+        let mut task = Task::new("Algebra".to_string());
+        task.project = Some("Homework".to_string());
+        storage::save_task(dir.path(), &task).unwrap();
+
+        let source = Project::new("Homework".to_string(), DEFAULT_PROJECT_COLOR.to_string(), 1);
+        let source_id = source.id.clone();
+        let projects = vec![source];
+
+        let archive_dir = dir.path().join("archive");
+        let affected = apply_task_strategy(
+            dir.path(),
+            &archive_dir,
+            &projects,
+            &source_id,
+            &[&task],
+            &ProjectTaskStrategy::Delete,
+        )
+        .unwrap();
+
+        assert_eq!(affected, 1);
+        assert!(matches!(
+            storage::load_task(dir.path(), &task.id),
+            Err(storage::StorageError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn is_finished_matches_done_status() {
+        let settings = Settings::default();
+        let mut task = Task::new("Wrap up".to_string());
+        task.status = "done".to_string();
+
+        assert!(is_finished(&task, &settings));
+    }
+
+    #[test]
+    fn is_finished_matches_cancelled_status_when_set() {
+        let settings = Settings {
+            cancelled_status: Some("cancelled".to_string()),
+            ..Default::default()
+        };
+        let mut task = Task::new("Drop it".to_string());
+        task.status = "cancelled".to_string();
+
+        assert!(is_finished(&task, &settings));
+    }
+
+    #[test]
+    fn is_finished_false_for_other_statuses() {
+        let settings = Settings::default();
+        let mut task = Task::new("Still going".to_string());
+        task.status = "in-progress".to_string();
+
+        assert!(!is_finished(&task, &settings));
+    }
+
+    #[test]
+    fn is_finished_false_for_cancelled_status_string_when_none_configured() {
+        let settings = Settings {
+            cancelled_status: None,
+            ..Default::default()
+        };
+        let mut task = Task::new("Edge case".to_string());
+        task.status = "cancelled".to_string();
+
+        assert!(!is_finished(&task, &settings));
     }
 }

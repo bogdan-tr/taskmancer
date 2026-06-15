@@ -15,10 +15,12 @@ pub fn run() {
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir()?;
             let tasks_dir = app_data_dir.join("tasks");
+            let archive_dir = app_data_dir.join("archive");
             let projects_file = app_data_dir.join("projects.json");
             let settings_file = app_data_dir.join("settings.json");
             app.manage(commands::AppState {
                 tasks_dir,
+                archive_dir,
                 projects_file,
                 settings_file,
                 projects_lock: std::sync::Mutex::new(()),
@@ -34,10 +36,12 @@ pub fn run() {
             commands::list_projects,
             commands::create_project,
             commands::update_project,
+            commands::delete_project,
             commands::get_settings,
             commands::save_settings,
             commands::count_tasks_by_priority,
-            commands::count_tasks_by_status
+            commands::count_tasks_by_status,
+            commands::finish_day
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

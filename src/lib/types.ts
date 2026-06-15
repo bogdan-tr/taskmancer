@@ -110,3 +110,23 @@ export interface Settings {
   cancelled_status?: string;
   default_project: string;
 }
+
+/**
+ * What to do with a project's existing tasks when the project is deleted
+ * (see `deleteProject`). Matches `ProjectTaskStrategy` in
+ * `src-tauri/src/commands.rs`.
+ */
+export type ProjectTaskStrategy =
+  | { type: "reassign"; target_project_id: string }
+  | { type: "archive" }
+  | { type: "delete" };
+
+/** Result of `deleteProject`: how many of the project's tasks were affected. */
+export interface DeleteProjectResult {
+  affected_tasks: number;
+}
+
+/** Result of `finishDay`: how many tasks were archived. */
+export interface FinishDayResult {
+  archived_count: number;
+}

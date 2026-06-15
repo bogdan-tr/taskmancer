@@ -1,5 +1,6 @@
 <script lang="ts">
   import { page } from "$app/state";
+  import DeleteProjectSection from "$lib/components/DeleteProjectSection.svelte";
   import ProjectBoardSettings from "$lib/components/ProjectBoardSettings.svelte";
   import ProjectDefaultsSettings from "$lib/components/ProjectDefaultsSettings.svelte";
   import ProjectDetailsSettings from "$lib/components/ProjectDetailsSettings.svelte";
@@ -19,6 +20,7 @@
       <ProjectDetailsSettings {project} />
       <ProjectBoardSettings {project} />
       <ProjectDefaultsSettings {project} />
+      <DeleteProjectSection {project} />
     </main>
   {/key}
 {:else}

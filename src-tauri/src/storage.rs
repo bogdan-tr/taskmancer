@@ -113,6 +113,21 @@ pub fn delete_task(dir: &Path, id: &str) -> Result<(), StorageError> {
     Ok(())
 }
 
+/// Moves the task file `<tasks_dir>/<id>.md` to `<archive_dir>/<id>.md`,
+/// creating `archive_dir` if necessary. Returns `NotFound` if no task with
+/// `id` exists in `tasks_dir`.
+pub fn archive_task(tasks_dir: &Path, archive_dir: &Path, id: &str) -> Result<(), StorageError> {
+    validate_task_id(id)?;
+    let src = tasks_dir.join(format!("{id}.md"));
+    if !src.exists() {
+        return Err(StorageError::NotFound(id.to_string()));
+    }
+    fs::create_dir_all(archive_dir)?;
+    let dest = archive_dir.join(format!("{id}.md"));
+    fs::rename(src, dest)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -337,5 +352,69 @@ mod tests {
         let second_delete = delete_task(dir.path(), &task.id);
 
         assert!(matches!(second_delete, Err(StorageError::NotFound(_))));
+    }
+
+    #[test]
+    fn archive_task_moves_file_from_tasks_dir_to_archive_dir() {
+        let tasks_dir = tempdir().unwrap();
+        let archive_parent = tempdir().unwrap();
+        let archive_dir = archive_parent.path().join("archive");
+        let task = Task::new("Archive me".to_string());
+        save_task(tasks_dir.path(), &task).unwrap();
+
+        archive_task(tasks_dir.path(), &archive_dir, &task.id).unwrap();
+
+        assert!(matches!(
+            load_task(tasks_dir.path(), &task.id),
+            Err(StorageError::NotFound(_))
+        ));
+        let archived = load_task(&archive_dir, &task.id).unwrap();
+        assert_eq!(archived, task);
+    }
+
+    #[test]
+    fn archive_task_creates_archive_dir_if_missing() {
+        let tasks_dir = tempdir().unwrap();
+        let parent = tempdir().unwrap();
+        let archive_dir = parent.path().join("nested").join("archive");
+        let task = Task::new("Needs new dir".to_string());
+        save_task(tasks_dir.path(), &task).unwrap();
+
+        archive_task(tasks_dir.path(), &archive_dir, &task.id).unwrap();
+
+        assert!(archive_dir.join(format!("{}.md", task.id)).exists());
+    }
+
+    #[test]
+    fn archive_task_returns_not_found_for_missing_source() {
+        let tasks_dir = tempdir().unwrap();
+        let archive_dir = tasks_dir.path().join("archive");
+
+        let result = archive_task(tasks_dir.path(), &archive_dir, "missing-id");
+
+        assert!(matches!(result, Err(StorageError::NotFound(_))));
+    }
+
+    #[test]
+    fn archive_task_rejects_ids_with_path_separators() {
+        let tasks_dir = tempdir().unwrap();
+        let archive_dir = tasks_dir.path().join("archive");
+
+        let result = archive_task(tasks_dir.path(), &archive_dir, "../secrets");
+
+        assert!(matches!(result, Err(StorageError::InvalidId(_))));
+    }
+
+    #[test]
+    fn archive_task_is_not_repeatable() {
+        let tasks_dir = tempdir().unwrap();
+        let archive_dir = tasks_dir.path().join("archive");
+        let task = Task::new("Once only".to_string());
+        save_task(tasks_dir.path(), &task).unwrap();
+
+        archive_task(tasks_dir.path(), &archive_dir, &task.id).unwrap();
+        let second = archive_task(tasks_dir.path(), &archive_dir, &task.id);
+
+        assert!(matches!(second, Err(StorageError::NotFound(_))));
     }
 }
