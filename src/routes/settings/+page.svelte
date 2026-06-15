@@ -1,4 +1,5 @@
 <script lang="ts">
+  import DefaultsSettings from "$lib/components/DefaultsSettings.svelte";
   import DisplaySettings from "$lib/components/DisplaySettings.svelte";
   import PrioritySettings from "$lib/components/PrioritySettings.svelte";
   import StatusSettings from "$lib/components/StatusSettings.svelte";
@@ -54,6 +55,7 @@
   <DisplaySettings />
   <PrioritySettings />
   <StatusSettings />
+  <DefaultsSettings />
 </main>
 
 <style>

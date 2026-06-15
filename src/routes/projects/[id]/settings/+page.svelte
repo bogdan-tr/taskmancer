@@ -1,6 +1,8 @@
 <script lang="ts">
   import { page } from "$app/state";
   import ProjectBoardSettings from "$lib/components/ProjectBoardSettings.svelte";
+  import ProjectDefaultsSettings from "$lib/components/ProjectDefaultsSettings.svelte";
+  import ProjectDetailsSettings from "$lib/components/ProjectDetailsSettings.svelte";
   import { projectsState } from "$lib/projects.svelte";
 
   let project = $derived(projectsState.items.find((p) => p.id === page.params.id));
@@ -14,7 +16,9 @@
         <h1 class="page-title">{project.name} board settings</h1>
       </header>
 
+      <ProjectDetailsSettings {project} />
       <ProjectBoardSettings {project} />
+      <ProjectDefaultsSettings {project} />
     </main>
   {/key}
 {:else}

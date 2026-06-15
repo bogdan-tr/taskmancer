@@ -109,6 +109,27 @@ mod tests {
     }
 
     #[test]
+    fn load_settings_migrates_legacy_settings_missing_done_status() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("settings.json");
+        let legacy_json = r#"{
+            "priorities": [],
+            "statuses": [
+                {"id": "backlog", "label": "Backlog", "order": 1},
+                {"id": "do", "label": "Do", "order": 2},
+                {"id": "done", "label": "Done", "order": 3}
+            ],
+            "defaults": {}
+        }"#;
+        fs::write(&file, legacy_json).unwrap();
+
+        let loaded = load_settings(&file).unwrap();
+
+        assert_eq!(loaded.done_status, "done");
+        assert_eq!(loaded.cancelled_status, None);
+    }
+
+    #[test]
     fn load_settings_returns_error_for_malformed_json() {
         let dir = tempdir().unwrap();
         let file = dir.path().join("settings.json");

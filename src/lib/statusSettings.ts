@@ -55,6 +55,8 @@ export function deleteBlockReason(
   status: StatusDefinition,
   statusCount: number,
   defaultStatusId: string | undefined,
+  doneStatusId: string,
+  cancelledStatusId: string | undefined,
   taskCounts: Record<string, number>,
   referencingProjects: string[],
 ): string | undefined {
@@ -64,6 +66,14 @@ export function deleteBlockReason(
 
   if (status.id === defaultStatusId) {
     return "This is the default status and can't be deleted";
+  }
+
+  if (status.id === doneStatusId) {
+    return "This is the Done status and can't be deleted";
+  }
+
+  if (status.id === cancelledStatusId) {
+    return "This is the Cancelled status and can't be deleted";
   }
 
   const count = taskCounts[status.id] ?? 0;
@@ -80,4 +90,49 @@ export function deleteBlockReason(
   }
 
   return undefined;
+}
+
+/**
+ * Returns the new draft default status id after toggling the "Default"
+ * checkbox for `id`: clears the default if `id` is already the current
+ * default, otherwise makes `id` the new default (replacing any previous one,
+ * since at most one status can be the default).
+ */
+export function toggleDefault(currentId: string | undefined, id: string): string | undefined {
+  return currentId === id ? undefined : id;
+}
+
+export interface SpecialStatusSelection {
+  doneId: string;
+  cancelledId: string | undefined;
+}
+
+/**
+ * Returns the new draft Done/Cancelled selection after toggling the "Done"
+ * checkbox for `id`. The done status always reassigns to `id` (clicking the
+ * row that's already Done is a no-op, since exactly one status must always be
+ * marked Done and it can't be cleared). If `id` was the cancelled status,
+ * clears it — a status can't be both Done and Cancelled.
+ */
+export function toggleDone(current: SpecialStatusSelection, id: string): SpecialStatusSelection {
+  return {
+    doneId: id,
+    cancelledId: current.cancelledId === id ? undefined : current.cancelledId,
+  };
+}
+
+/**
+ * Returns the new draft cancelled-status id after toggling the "Cancelled"
+ * checkbox for `id`: clears it if `id` is already cancelled, otherwise makes
+ * `id` the new cancelled status (replacing any previous one). No-op if `id`
+ * is the current done status, since a status can't be both Done and
+ * Cancelled.
+ */
+export function toggleCancelled(
+  currentCancelledId: string | undefined,
+  doneId: string,
+  id: string,
+): string | undefined {
+  if (id === doneId) return currentCancelledId;
+  return toggleDefault(currentCancelledId, id);
 }

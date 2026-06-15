@@ -57,3 +57,13 @@ export function deleteBlockReason(
 
   return undefined;
 }
+
+/**
+ * Returns the new draft default priority id after toggling the "Default"
+ * checkbox for `id`: clears the default if `id` is already the current
+ * default, otherwise makes `id` the new default (replacing any previous one,
+ * since at most one priority level can be the default).
+ */
+export function toggleDefault(currentId: string | undefined, id: string): string | undefined {
+  return currentId === id ? undefined : id;
+}

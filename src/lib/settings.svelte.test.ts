@@ -15,6 +15,8 @@ const sampleSettings: Settings = {
     { id: "done", label: "Done", order: 5, color: "oklch(58% 0.14 155)" },
   ],
   defaults: { tags: [], priority: "medium", status: "backlog" },
+  done_status: "done",
+  cancelled_status: undefined,
 };
 
 vi.mock("./api", () => ({

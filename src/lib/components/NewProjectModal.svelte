@@ -1,6 +1,7 @@
 <script lang="ts">
   import { createProject } from "$lib/api";
   import { DEFAULT_PROJECT_COLOR, type Project } from "$lib/types";
+  import ColorPicker from "$lib/components/ColorPicker.svelte";
 
   interface Props {
     open: boolean;
@@ -9,22 +10,6 @@
   }
 
   let { open, onClose, onCreated }: Props = $props();
-
-  /**
-   * Preset swatches instead of `<input type="color">`, which opens a native
-   * GTK color picker under webkit2gtk that can hang the window (see the
-   * Phase 3b date-input bug).
-   */
-  const PRESET_COLORS = [
-    "#3b82f6", // blue
-    "#22c55e", // green
-    "#ec4899", // pink
-    "#f59e0b", // amber
-    "#8b5cf6", // violet
-    "#ef4444", // red
-    "#14b8a6", // teal
-    "#64748b", // slate
-  ];
 
   let dialogEl: HTMLDialogElement | undefined = $state();
   let inputEl: HTMLInputElement | undefined = $state();
@@ -129,23 +114,10 @@
       />
     </label>
 
-    <fieldset class="color-field">
-      <legend class="field-label">Color</legend>
-      <div class="color-grid" role="radiogroup" aria-label="Project color">
-        {#each PRESET_COLORS as preset (preset)}
-          <button
-            type="button"
-            class="color-swatch"
-            class:selected={color === preset}
-            style="background: {preset}"
-            role="radio"
-            aria-checked={color === preset}
-            aria-label={preset}
-            onclick={() => (color = preset)}
-          ></button>
-        {/each}
-      </div>
-    </fieldset>
+    <div class="field">
+      <span class="field-label">Color</span>
+      <ColorPicker bind:value={color} label="Project color" />
+    </div>
 
     {#if errorMessage}
       <p class="error" role="alert">{errorMessage}</p>
@@ -248,48 +220,6 @@
     border-color: var(--color-accent);
     box-shadow: 0 0 0 3px var(--color-accent-soft);
     outline: none;
-  }
-
-  .color-field {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2xs);
-    padding: 0;
-    border: none;
-    margin: 0;
-  }
-
-  .color-grid {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-sm);
-  }
-
-  .color-swatch {
-    width: 1.75rem;
-    height: 1.75rem;
-    border-radius: var(--radius-pill);
-    border: 1px solid var(--color-border);
-    cursor: pointer;
-    box-shadow: var(--shadow-sm);
-    transition:
-      box-shadow var(--duration-fast) var(--ease-out-expo),
-      transform var(--duration-fast) var(--ease-out-expo);
-  }
-
-  .color-swatch:hover {
-    transform: translateY(-1px);
-  }
-
-  .color-swatch.selected {
-    box-shadow:
-      0 0 0 2px var(--color-surface-raised),
-      0 0 0 4px var(--color-accent);
-  }
-
-  .color-swatch:focus-visible {
-    outline: 2px solid var(--color-accent);
-    outline-offset: 2px;
   }
 
   .error {

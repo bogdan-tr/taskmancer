@@ -6,11 +6,11 @@ import type { StatusDefinition } from "./types";
  * have finished loading.
  */
 export const FALLBACK_STATUSES: StatusDefinition[] = [
-  { id: "backlog", label: "Backlog", order: 1, color: "oklch(55% 0.01 270)" },
-  { id: "do", label: "Do", order: 2, color: "oklch(52% 0.16 235)" },
-  { id: "in-progress", label: "In Progress", order: 3, color: "oklch(64% 0.14 75)" },
-  { id: "blocked", label: "Blocked", order: 4, color: "oklch(54% 0.2 350)" },
-  { id: "done", label: "Done", order: 5, color: "oklch(58% 0.14 155)" },
+  { id: "backlog", label: "Backlog", order: 1, color: "#6f7178" },
+  { id: "do", label: "Do", order: 2, color: "#0073b6" },
+  { id: "in-progress", label: "In Progress", order: 3, color: "#bd7d00" },
+  { id: "blocked", label: "Blocked", order: 4, color: "#bc267f" },
+  { id: "done", label: "Done", order: 5, color: "#0e9254" },
 ];
 
 /**
@@ -18,7 +18,7 @@ export const FALLBACK_STATUSES: StatusDefinition[] = [
  * (e.g. a task referencing a since-removed status). Matches
  * `default_status_color()` in `src-tauri/src/settings.rs`.
  */
-export const FALLBACK_STATUS_COLOR = "oklch(58% 0.012 60)";
+export const FALLBACK_STATUS_COLOR = "#807973";
 
 /** Returns `statuses` sorted by `order` ascending (order 1 sorts first). */
 export function sortedStatuses(statuses: StatusDefinition[]): StatusDefinition[] {

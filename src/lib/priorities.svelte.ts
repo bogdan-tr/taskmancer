@@ -6,9 +6,9 @@ import type { PriorityLevel } from "./types";
  * settings have finished loading.
  */
 export const FALLBACK_PRIORITIES: PriorityLevel[] = [
-  { id: "high", label: "High", color: "oklch(54% 0.2 350)", rank: 1 },
-  { id: "medium", label: "Medium", color: "oklch(58% 0.13 70)", rank: 2 },
-  { id: "low", label: "Low", color: "oklch(58% 0.14 155)", rank: 3 },
+  { id: "high", label: "High", color: "#bc267f", rank: 1 },
+  { id: "medium", label: "Medium", color: "#aa6a00", rank: 2 },
+  { id: "low", label: "Low", color: "#0e9254", rank: 3 },
 ];
 
 /**
@@ -16,7 +16,7 @@ export const FALLBACK_PRIORITIES: PriorityLevel[] = [
  * (e.g. a task referencing a since-removed level). Matches
  * `default_priority_color()` in `src-tauri/src/settings.rs`.
  */
-export const FALLBACK_PRIORITY_COLOR = "oklch(58% 0.012 60)";
+export const FALLBACK_PRIORITY_COLOR = "#807973";
 
 /** Returns `priorities` sorted by `rank` ascending (rank 1 sorts first). */
 export function sortedPriorities(priorities: PriorityLevel[]): PriorityLevel[] {

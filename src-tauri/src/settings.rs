@@ -3,17 +3,19 @@ use serde::{Deserialize, Serialize};
 /// Fallback color for a priority level that has no color of its own: used
 /// for newly-created custom levels before the user picks a color, and as a
 /// placeholder for `settings.json` files written before `PriorityLevel.color`
-/// was mandatory (see `Settings::normalize`).
+/// was mandatory (see `Settings::normalize`). Hex, to match the format
+/// produced by the `ColorPicker` UI and `Project.color`.
 fn default_priority_color() -> String {
-    "oklch(58% 0.012 60)".to_string()
+    "#807973".to_string()
 }
 
 /// Fallback color for a status that has no color of its own: used for
 /// newly-created custom statuses before the user picks a color, and as a
 /// placeholder for `settings.json` files written before
-/// `StatusDefinition.color` was mandatory (see `Settings::normalize`).
+/// `StatusDefinition.color` was mandatory (see `Settings::normalize`). Hex,
+/// to match the format produced by the `ColorPicker` UI and `Project.color`.
 fn default_status_color() -> String {
-    "oklch(58% 0.012 60)".to_string()
+    "#807973".to_string()
 }
 
 /// A user-defined priority level: an id stored in `Task.priority`, a display
@@ -44,6 +46,10 @@ pub struct StatusDefinition {
 /// Default task attributes. Used both as the global defaults and as a
 /// project's per-field overrides of those global defaults: any field left
 /// `None`/empty here falls back to the corresponding global value.
+///
+/// `due` and `scheduled`, if set, must be one of [`RELATIVE_DATE_CODES`]
+/// rather than an absolute date: they're resolved to an absolute date
+/// relative to "today" at task-creation time (see [`resolve_relative_date`]).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct TaskDefaults {
     #[serde(default)]
@@ -54,11 +60,19 @@ pub struct TaskDefaults {
     pub status: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub due: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheduled: Option<String>,
 }
 
 /// Global, app-wide settings: the available priority levels, the global list
 /// of statuses (from which each project's board is configured), and the
 /// global default task attributes.
+///
+/// `done_status` and `cancelled_status` mark which entries in `statuses`
+/// represent a task being finished or abandoned. Exactly one status must
+/// always be the done status (enforced by [`validate_settings`]); the
+/// cancelled status is optional and, if set, must differ from the done
+/// status — a single status can't mean both "done" and "cancelled".
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Settings {
     #[serde(default)]
@@ -67,32 +81,38 @@ pub struct Settings {
     pub statuses: Vec<StatusDefinition>,
     #[serde(default)]
     pub defaults: TaskDefaults,
+    #[serde(default)]
+    pub done_status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancelled_status: Option<String>,
 }
 
 impl Default for Settings {
     /// Seeds settings matching the app's previously hardcoded priority
     /// levels (low/medium/high) and statuses (backlog/do/in-progress/
     /// blocked/done), with new tasks defaulting to medium priority and the
-    /// backlog status, as before.
+    /// backlog status, as before. Colors are the hex equivalents of the
+    /// app's original OKLCH seed colors, to match the format produced by the
+    /// `ColorPicker` UI and `Project.color`.
     fn default() -> Self {
         Settings {
             priorities: vec![
                 PriorityLevel {
                     id: "high".to_string(),
                     label: "High".to_string(),
-                    color: "oklch(54% 0.2 350)".to_string(),
+                    color: "#bc267f".to_string(),
                     rank: 1,
                 },
                 PriorityLevel {
                     id: "medium".to_string(),
                     label: "Medium".to_string(),
-                    color: "oklch(58% 0.13 70)".to_string(),
+                    color: "#aa6a00".to_string(),
                     rank: 2,
                 },
                 PriorityLevel {
                     id: "low".to_string(),
                     label: "Low".to_string(),
-                    color: "oklch(58% 0.14 155)".to_string(),
+                    color: "#0e9254".to_string(),
                     rank: 3,
                 },
             ],
@@ -101,31 +121,31 @@ impl Default for Settings {
                     id: "backlog".to_string(),
                     label: "Backlog".to_string(),
                     order: 1,
-                    color: "oklch(55% 0.01 270)".to_string(),
+                    color: "#6f7178".to_string(),
                 },
                 StatusDefinition {
                     id: "do".to_string(),
                     label: "Do".to_string(),
                     order: 2,
-                    color: "oklch(52% 0.16 235)".to_string(),
+                    color: "#0073b6".to_string(),
                 },
                 StatusDefinition {
                     id: "in-progress".to_string(),
                     label: "In Progress".to_string(),
                     order: 3,
-                    color: "oklch(64% 0.14 75)".to_string(),
+                    color: "#bd7d00".to_string(),
                 },
                 StatusDefinition {
                     id: "blocked".to_string(),
                     label: "Blocked".to_string(),
                     order: 4,
-                    color: "oklch(54% 0.2 350)".to_string(),
+                    color: "#bc267f".to_string(),
                 },
                 StatusDefinition {
                     id: "done".to_string(),
                     label: "Done".to_string(),
                     order: 5,
-                    color: "oklch(58% 0.14 155)".to_string(),
+                    color: "#0e9254".to_string(),
                 },
             ],
             defaults: TaskDefaults {
@@ -133,7 +153,10 @@ impl Default for Settings {
                 priority: Some("medium".to_string()),
                 status: Some("backlog".to_string()),
                 due: None,
+                scheduled: None,
             },
+            done_status: "done".to_string(),
+            cancelled_status: None,
         }
     }
 }
@@ -141,10 +164,16 @@ impl Default for Settings {
 impl Settings {
     /// Fills in the seeded colors for the well-known default priority ids
     /// (`high`/`medium`/`low`) and status ids (`backlog`/`do`/`in-progress`/
-    /// `blocked`/`done`) when they're still on the neutral fallback color.
+    /// `blocked`/`done`) when they're still on the neutral fallback color,
+    /// and repairs `done_status` if it doesn't reference a defined status.
     /// This recovers `settings.json` files written before
-    /// `PriorityLevel.color`/`StatusDefinition.color` was mandatory, where
-    /// the field was absent and serde supplied the fallback color on load.
+    /// `PriorityLevel.color`/`StatusDefinition.color`/`Settings.done_status`
+    /// were mandatory, where the field was absent and serde supplied an
+    /// empty/fallback value on load.
+    ///
+    /// When repairing `done_status` and no status has id `"done"`, the
+    /// fallback is the status with the highest `order`; if multiple statuses
+    /// tie on `order`, the last one encountered in `self.statuses` is used.
     pub fn normalize(mut self) -> Self {
         let seeded = Self::default();
         for level in &mut self.priorities {
@@ -161,7 +190,58 @@ impl Settings {
                 }
             }
         }
+
+        if !self.statuses.iter().any(|s| s.id == self.done_status) {
+            self.done_status = self
+                .statuses
+                .iter()
+                .find(|s| s.id == "done")
+                .or_else(|| self.statuses.iter().max_by_key(|s| s.order))
+                .map(|s| s.id.clone())
+                .unwrap_or_default();
+        }
+
         self
+    }
+}
+
+/// The fixed set of relative-date codes accepted by `TaskDefaults.due` and
+/// `.scheduled`. Mirrors `RELATIVE_DATE_OPTIONS` in the frontend's
+/// `src/lib/relativeDates.ts` — keep both lists in sync.
+pub const RELATIVE_DATE_CODES: &[&str] = &[
+    "today",
+    "tomorrow",
+    "in_2_days",
+    "in_3_days",
+    "in_1_week",
+    "in_1_month",
+];
+
+/// Returns `Ok(())` if `code` is one of [`RELATIVE_DATE_CODES`], or an error
+/// naming the unrecognized code otherwise.
+pub fn validate_relative_date_code(code: &str) -> Result<(), String> {
+    if RELATIVE_DATE_CODES.contains(&code) {
+        Ok(())
+    } else {
+        Err(format!("'{code}' is not a recognized relative date option"))
+    }
+}
+
+/// Resolves a relative-date code to an absolute date relative to `today`.
+/// Returns `None` for a code outside [`RELATIVE_DATE_CODES`] — this should be
+/// unreachable for codes that passed [`validate_relative_date_code`] at
+/// write-time, but degrades gracefully (no default date applied) for a stale
+/// code left over from a future app version rather than panicking.
+pub fn resolve_relative_date(code: &str, today: chrono::NaiveDate) -> Option<chrono::NaiveDate> {
+    use chrono::{Days, Months};
+    match code {
+        "today" => Some(today),
+        "tomorrow" => today.checked_add_days(Days::new(1)),
+        "in_2_days" => today.checked_add_days(Days::new(2)),
+        "in_3_days" => today.checked_add_days(Days::new(3)),
+        "in_1_week" => today.checked_add_days(Days::new(7)),
+        "in_1_month" => today.checked_add_months(Months::new(1)),
+        _ => None,
     }
 }
 
@@ -191,8 +271,11 @@ pub fn validate_status_id(settings: &Settings, id: &str) -> Result<(), String> {
 /// must each be non-empty with unique ids (an empty or duplicate-id list
 /// would make `validate_priority_id`/`validate_status_id` reject every task
 /// write, including the `resolve_default_priority`/`resolve_default_status`
-/// fallbacks), and `defaults.priority`/`defaults.status`, if set, must
-/// reference one of those ids.
+/// fallbacks), `defaults.priority`/`defaults.status`, if set, must reference
+/// one of those ids, `defaults.due`/`defaults.scheduled`, if set, must be
+/// a recognized relative-date code, `done_status` must be non-empty and
+/// reference a defined status, and `cancelled_status`, if set, must
+/// reference a defined status distinct from `done_status`.
 pub fn validate_settings(settings: &Settings) -> Result<(), String> {
     if settings.priorities.is_empty() {
         return Err("at least one priority level must be defined".to_string());
@@ -228,6 +311,26 @@ pub fn validate_settings(settings: &Settings) -> Result<(), String> {
         validate_status_id(settings, default_status)?;
     }
 
+    if settings.done_status.is_empty() {
+        return Err("a done status must be defined".to_string());
+    }
+    validate_status_id(settings, &settings.done_status)?;
+
+    if let Some(cancelled_status) = &settings.cancelled_status {
+        validate_status_id(settings, cancelled_status)?;
+        if cancelled_status == &settings.done_status {
+            return Err("the cancelled status can't be the same as the done status".to_string());
+        }
+    }
+
+    if let Some(due) = &settings.defaults.due {
+        validate_relative_date_code(due)?;
+    }
+
+    if let Some(scheduled) = &settings.defaults.scheduled {
+        validate_relative_date_code(scheduled)?;
+    }
+
     Ok(())
 }
 
@@ -252,6 +355,15 @@ mod tests {
         assert_eq!(settings.defaults.status, Some("backlog".to_string()));
         assert!(settings.defaults.tags.is_empty());
         assert_eq!(settings.defaults.due, None);
+        assert_eq!(settings.defaults.scheduled, None);
+    }
+
+    #[test]
+    fn default_settings_seed_has_a_done_status_and_no_cancelled_status() {
+        let settings = Settings::default();
+
+        assert_eq!(settings.done_status, "done");
+        assert_eq!(settings.cancelled_status, None);
     }
 
     #[test]
@@ -287,6 +399,26 @@ mod tests {
                 .collect::<std::collections::HashSet<_>>()
                 .len()
         );
+    }
+
+    /// Returns `true` if `color` is a 6-digit hex color (`#RRGGBB`).
+    fn is_six_digit_hex(color: &str) -> bool {
+        color.len() == 7
+            && color.starts_with('#')
+            && color[1..].chars().all(|c| c.is_ascii_hexdigit())
+    }
+
+    #[test]
+    fn default_settings_seed_colors_and_fallback_are_six_digit_hex() {
+        let settings = Settings::default();
+
+        assert!(is_six_digit_hex(&default_priority_color()));
+        assert!(is_six_digit_hex(&default_status_color()));
+        assert!(settings
+            .priorities
+            .iter()
+            .all(|p| is_six_digit_hex(&p.color)));
+        assert!(settings.statuses.iter().all(|s| is_six_digit_hex(&s.color)));
     }
 
     #[test]
@@ -332,6 +464,7 @@ mod tests {
             priorities: Vec::new(),
             statuses: Vec::new(),
             defaults: TaskDefaults::default(),
+            ..Default::default()
         };
 
         let err = validate_settings(&settings).unwrap_err();
@@ -370,6 +503,7 @@ mod tests {
             priorities: Settings::default().priorities,
             statuses: Vec::new(),
             defaults: TaskDefaults::default(),
+            ..Default::default()
         };
 
         let err = validate_settings(&settings).unwrap_err();
@@ -400,6 +534,206 @@ mod tests {
         settings.defaults.status = None;
 
         assert!(validate_settings(&settings).is_ok());
+    }
+
+    #[test]
+    fn validate_settings_rejects_an_empty_done_status() {
+        let mut settings = Settings::default();
+        settings.done_status = String::new();
+
+        let err = validate_settings(&settings).unwrap_err();
+        assert!(err.contains("done status"));
+    }
+
+    #[test]
+    fn validate_settings_rejects_an_unknown_done_status() {
+        let mut settings = Settings::default();
+        settings.done_status = "on-hold".to_string();
+
+        let err = validate_settings(&settings).unwrap_err();
+        assert!(err.contains("on-hold"));
+    }
+
+    #[test]
+    fn validate_settings_accepts_a_valid_done_status() {
+        let mut settings = Settings::default();
+        settings.done_status = "backlog".to_string();
+
+        assert!(validate_settings(&settings).is_ok());
+    }
+
+    #[test]
+    fn validate_settings_accepts_a_missing_cancelled_status() {
+        let mut settings = Settings::default();
+        settings.cancelled_status = None;
+
+        assert!(validate_settings(&settings).is_ok());
+    }
+
+    #[test]
+    fn validate_settings_rejects_an_unknown_cancelled_status() {
+        let mut settings = Settings::default();
+        settings.cancelled_status = Some("on-hold".to_string());
+
+        let err = validate_settings(&settings).unwrap_err();
+        assert!(err.contains("on-hold"));
+    }
+
+    #[test]
+    fn validate_settings_rejects_a_cancelled_status_equal_to_the_done_status() {
+        let mut settings = Settings::default();
+        settings.cancelled_status = Some(settings.done_status.clone());
+
+        let err = validate_settings(&settings).unwrap_err();
+        assert!(err.contains("cancelled"));
+    }
+
+    #[test]
+    fn validate_settings_accepts_a_valid_distinct_cancelled_status() {
+        let mut settings = Settings::default();
+        settings.cancelled_status = Some("blocked".to_string());
+
+        assert!(validate_settings(&settings).is_ok());
+    }
+
+    #[test]
+    fn validate_settings_rejects_an_unknown_default_due() {
+        let mut settings = Settings::default();
+        settings.defaults.due = Some("next_quarter".to_string());
+
+        let err = validate_settings(&settings).unwrap_err();
+        assert!(err.contains("next_quarter"));
+    }
+
+    #[test]
+    fn validate_settings_accepts_a_valid_default_due() {
+        let mut settings = Settings::default();
+        settings.defaults.due = Some("tomorrow".to_string());
+
+        assert!(validate_settings(&settings).is_ok());
+    }
+
+    #[test]
+    fn validate_settings_accepts_a_missing_default_due() {
+        let settings = Settings::default();
+
+        assert_eq!(settings.defaults.due, None);
+        assert!(validate_settings(&settings).is_ok());
+    }
+
+    #[test]
+    fn validate_settings_rejects_an_unknown_default_scheduled() {
+        let mut settings = Settings::default();
+        settings.defaults.scheduled = Some("next_quarter".to_string());
+
+        let err = validate_settings(&settings).unwrap_err();
+        assert!(err.contains("next_quarter"));
+    }
+
+    #[test]
+    fn validate_settings_accepts_a_valid_default_scheduled() {
+        let mut settings = Settings::default();
+        settings.defaults.scheduled = Some("in_1_week".to_string());
+
+        assert!(validate_settings(&settings).is_ok());
+    }
+
+    #[test]
+    fn validate_settings_accepts_a_missing_default_scheduled() {
+        let settings = Settings::default();
+
+        assert_eq!(settings.defaults.scheduled, None);
+        assert!(validate_settings(&settings).is_ok());
+    }
+
+    #[test]
+    fn validate_relative_date_code_accepts_every_defined_code() {
+        for code in RELATIVE_DATE_CODES {
+            assert!(
+                validate_relative_date_code(code).is_ok(),
+                "{code} should be valid"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_relative_date_code_rejects_an_unknown_code() {
+        let err = validate_relative_date_code("next_quarter").unwrap_err();
+        assert!(err.contains("next_quarter"));
+    }
+
+    #[test]
+    fn resolve_relative_date_resolves_today() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 14).unwrap();
+
+        assert_eq!(resolve_relative_date("today", today), Some(today));
+    }
+
+    #[test]
+    fn resolve_relative_date_resolves_tomorrow() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 14).unwrap();
+
+        assert_eq!(
+            resolve_relative_date("tomorrow", today),
+            chrono::NaiveDate::from_ymd_opt(2026, 6, 15)
+        );
+    }
+
+    #[test]
+    fn resolve_relative_date_resolves_in_2_days() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 14).unwrap();
+
+        assert_eq!(
+            resolve_relative_date("in_2_days", today),
+            chrono::NaiveDate::from_ymd_opt(2026, 6, 16)
+        );
+    }
+
+    #[test]
+    fn resolve_relative_date_resolves_in_3_days() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 14).unwrap();
+
+        assert_eq!(
+            resolve_relative_date("in_3_days", today),
+            chrono::NaiveDate::from_ymd_opt(2026, 6, 17)
+        );
+    }
+
+    #[test]
+    fn resolve_relative_date_resolves_in_1_week() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 14).unwrap();
+
+        assert_eq!(
+            resolve_relative_date("in_1_week", today),
+            chrono::NaiveDate::from_ymd_opt(2026, 6, 21)
+        );
+    }
+
+    #[test]
+    fn resolve_relative_date_resolves_in_1_month() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 14).unwrap();
+
+        assert_eq!(
+            resolve_relative_date("in_1_month", today),
+            chrono::NaiveDate::from_ymd_opt(2026, 7, 14)
+        );
+    }
+
+    #[test]
+    fn resolve_relative_date_clamps_in_1_month_to_the_shorter_target_month() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 1, 31).unwrap();
+
+        assert_eq!(
+            resolve_relative_date("in_1_month", today),
+            chrono::NaiveDate::from_ymd_opt(2026, 2, 28)
+        );
+    }
+
+    #[test]
+    fn resolve_relative_date_returns_none_for_an_unrecognized_code() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 14).unwrap();
+
+        assert_eq!(resolve_relative_date("next_quarter", today), None);
     }
 
     #[test]
@@ -444,6 +778,7 @@ mod tests {
             }],
             statuses: Vec::new(),
             defaults: TaskDefaults::default(),
+            ..Default::default()
         };
 
         let normalized = settings.normalize();
@@ -495,6 +830,7 @@ mod tests {
                 color: default_status_color(),
             }],
             defaults: TaskDefaults::default(),
+            ..Default::default()
         };
 
         let normalized = settings.normalize();
@@ -520,6 +856,7 @@ mod tests {
         assert_eq!(defaults.priority, None);
         assert_eq!(defaults.status, None);
         assert_eq!(defaults.due, None);
+        assert_eq!(defaults.scheduled, None);
     }
 
     #[test]
@@ -531,5 +868,76 @@ mod tests {
         assert!(settings.priorities.is_empty());
         assert!(settings.statuses.is_empty());
         assert_eq!(settings.defaults, TaskDefaults::default());
+        assert_eq!(settings.done_status, "");
+        assert_eq!(settings.cancelled_status, None);
+    }
+
+    #[test]
+    fn normalize_migrates_legacy_settings_missing_done_status_to_status_id_done() {
+        let json = r#"{
+            "priorities": [],
+            "statuses": [
+                {"id": "backlog", "label": "Backlog", "order": 1},
+                {"id": "do", "label": "Do", "order": 2},
+                {"id": "done", "label": "Done", "order": 3}
+            ]
+        }"#;
+        let settings: Settings = serde_json::from_str(json).expect("parsing should succeed");
+        assert_eq!(settings.done_status, "");
+
+        let normalized = settings.normalize();
+
+        assert_eq!(normalized.done_status, "done");
+    }
+
+    #[test]
+    fn normalize_falls_back_to_the_last_status_by_order_when_no_status_id_done_exists() {
+        let json = r#"{
+            "priorities": [],
+            "statuses": [
+                {"id": "backlog", "label": "Backlog", "order": 1},
+                {"id": "complete", "label": "Complete", "order": 2}
+            ]
+        }"#;
+        let settings: Settings = serde_json::from_str(json).expect("parsing should succeed");
+
+        let normalized = settings.normalize();
+
+        assert_eq!(normalized.done_status, "complete");
+    }
+
+    #[test]
+    fn normalize_leaves_a_valid_done_status_unchanged() {
+        let mut settings = Settings::default();
+        settings.done_status = "backlog".to_string();
+
+        let normalized = settings.normalize();
+
+        assert_eq!(normalized.done_status, "backlog");
+    }
+
+    #[test]
+    fn normalize_replaces_an_invalid_done_status_with_status_id_done() {
+        let mut settings = Settings::default();
+        settings.done_status = "nonexistent".to_string();
+
+        let normalized = settings.normalize();
+
+        assert_eq!(normalized.done_status, "done");
+    }
+
+    #[test]
+    fn normalize_leaves_done_status_empty_when_there_are_no_statuses() {
+        let settings = Settings {
+            priorities: Vec::new(),
+            statuses: Vec::new(),
+            defaults: TaskDefaults::default(),
+            done_status: String::new(),
+            cancelled_status: None,
+        };
+
+        let normalized = settings.normalize();
+
+        assert_eq!(normalized.done_status, "");
     }
 }

@@ -1,5 +1,14 @@
 import { describe, expect, test } from "vitest";
-import { deleteBlockReason, projectsReferencingStatus, renumber, statusesEqual, uniqueId } from "./statusSettings";
+import {
+  deleteBlockReason,
+  projectsReferencingStatus,
+  renumber,
+  statusesEqual,
+  toggleCancelled,
+  toggleDefault,
+  toggleDone,
+  uniqueId,
+} from "./statusSettings";
 import { DEFAULT_PROJECT_COLOR, type Project, type StatusDefinition } from "./types";
 
 function makeStatus(overrides: Partial<StatusDefinition> = {}): StatusDefinition {
@@ -137,27 +146,47 @@ describe("deleteBlockReason", () => {
   test("blocks deletion of the last remaining status", () => {
     const status = makeStatus({ id: "backlog" });
 
-    expect(deleteBlockReason(status, 1, "do", {}, [])).toBe("At least one status is required");
+    expect(deleteBlockReason(status, 1, "do", "done", undefined, {}, [])).toBe(
+      "At least one status is required",
+    );
   });
 
   test("blocks deletion of the last remaining status even when it is the default", () => {
     const status = makeStatus({ id: "backlog" });
 
-    expect(deleteBlockReason(status, 1, "backlog", {}, [])).toBe("At least one status is required");
+    expect(deleteBlockReason(status, 1, "backlog", "done", undefined, {}, [])).toBe(
+      "At least one status is required",
+    );
   });
 
   test("blocks deletion of the default status", () => {
     const status = makeStatus({ id: "backlog" });
 
-    expect(deleteBlockReason(status, 2, "backlog", {}, [])).toBe(
+    expect(deleteBlockReason(status, 2, "backlog", "done", undefined, {}, [])).toBe(
       "This is the default status and can't be deleted",
+    );
+  });
+
+  test("blocks deletion of the done status", () => {
+    const status = makeStatus({ id: "backlog" });
+
+    expect(deleteBlockReason(status, 2, "do", "backlog", undefined, {}, [])).toBe(
+      "This is the Done status and can't be deleted",
+    );
+  });
+
+  test("blocks deletion of the cancelled status", () => {
+    const status = makeStatus({ id: "backlog" });
+
+    expect(deleteBlockReason(status, 2, "do", "done", "backlog", {}, [])).toBe(
+      "This is the Cancelled status and can't be deleted",
     );
   });
 
   test("blocks deletion when tasks use this status, with singular wording for one task", () => {
     const status = makeStatus({ id: "backlog" });
 
-    expect(deleteBlockReason(status, 2, "do", { backlog: 1 }, [])).toBe(
+    expect(deleteBlockReason(status, 2, "do", "done", undefined, { backlog: 1 }, [])).toBe(
       "1 task uses this status — reassign them first",
     );
   });
@@ -165,7 +194,7 @@ describe("deleteBlockReason", () => {
   test("blocks deletion when tasks use this status, with plural wording for multiple tasks", () => {
     const status = makeStatus({ id: "backlog" });
 
-    expect(deleteBlockReason(status, 2, "do", { backlog: 3 }, [])).toBe(
+    expect(deleteBlockReason(status, 2, "do", "done", undefined, { backlog: 3 }, [])).toBe(
       "3 tasks use this status — reassign them first",
     );
   });
@@ -173,7 +202,7 @@ describe("deleteBlockReason", () => {
   test("blocks deletion when a single project's board references this status", () => {
     const status = makeStatus({ id: "backlog" });
 
-    expect(deleteBlockReason(status, 2, "do", {}, ["Homework"])).toBe(
+    expect(deleteBlockReason(status, 2, "do", "done", undefined, {}, ["Homework"])).toBe(
       'Used by project "Homework" — update its board first',
     );
   });
@@ -181,7 +210,7 @@ describe("deleteBlockReason", () => {
   test("blocks deletion when multiple projects' boards reference this status", () => {
     const status = makeStatus({ id: "backlog" });
 
-    expect(deleteBlockReason(status, 2, "do", {}, ["Homework", "Garden"])).toBe(
+    expect(deleteBlockReason(status, 2, "do", "done", undefined, {}, ["Homework", "Garden"])).toBe(
       'Used by projects "Homework", "Garden" — update their boards first',
     );
   });
@@ -189,7 +218,7 @@ describe("deleteBlockReason", () => {
   test("prioritizes the task-count reason over the project-reference reason", () => {
     const status = makeStatus({ id: "backlog" });
 
-    expect(deleteBlockReason(status, 2, "do", { backlog: 1 }, ["Homework"])).toBe(
+    expect(deleteBlockReason(status, 2, "do", "done", undefined, { backlog: 1 }, ["Homework"])).toBe(
       "1 task uses this status — reassign them first",
     );
   });
@@ -197,12 +226,75 @@ describe("deleteBlockReason", () => {
   test("allows deletion when not the default, no tasks use it, and no project references it", () => {
     const status = makeStatus({ id: "backlog" });
 
-    expect(deleteBlockReason(status, 2, "do", {}, [])).toBeUndefined();
+    expect(deleteBlockReason(status, 2, "do", "done", undefined, {}, [])).toBeUndefined();
   });
 
   test("allows deletion when taskCounts has no entry for this status", () => {
     const status = makeStatus({ id: "backlog" });
 
-    expect(deleteBlockReason(status, 2, "do", {}, [])).toBeUndefined();
+    expect(deleteBlockReason(status, 2, "do", "done", undefined, {}, [])).toBeUndefined();
+  });
+});
+
+describe("toggleDefault", () => {
+  test("sets the clicked status as the default when none was set", () => {
+    expect(toggleDefault(undefined, "backlog")).toBe("backlog");
+  });
+
+  test("sets the clicked status as the default, replacing the previous default", () => {
+    expect(toggleDefault("backlog", "do")).toBe("do");
+  });
+
+  test("clears the default when the current default is clicked again", () => {
+    expect(toggleDefault("backlog", "backlog")).toBeUndefined();
+  });
+});
+
+describe("toggleDone", () => {
+  test("sets the clicked status as done, replacing the previous done status", () => {
+    expect(toggleDone({ doneId: "backlog", cancelledId: undefined }, "do")).toEqual({
+      doneId: "do",
+      cancelledId: undefined,
+    });
+  });
+
+  test("is a no-op when the clicked status is already the done status", () => {
+    expect(toggleDone({ doneId: "backlog", cancelledId: undefined }, "backlog")).toEqual({
+      doneId: "backlog",
+      cancelledId: undefined,
+    });
+  });
+
+  test("clears the cancelled status if the newly-done status was previously cancelled", () => {
+    expect(toggleDone({ doneId: "backlog", cancelledId: "do" }, "do")).toEqual({
+      doneId: "do",
+      cancelledId: undefined,
+    });
+  });
+
+  test("leaves an unrelated cancelled status untouched", () => {
+    expect(toggleDone({ doneId: "backlog", cancelledId: "on-hold" }, "do")).toEqual({
+      doneId: "do",
+      cancelledId: "on-hold",
+    });
+  });
+});
+
+describe("toggleCancelled", () => {
+  test("sets the clicked status as cancelled when none was set", () => {
+    expect(toggleCancelled(undefined, "done", "blocked")).toBe("blocked");
+  });
+
+  test("clears cancelled when the current cancelled status is clicked again", () => {
+    expect(toggleCancelled("blocked", "done", "blocked")).toBeUndefined();
+  });
+
+  test("replaces the previous cancelled status with the newly clicked one", () => {
+    expect(toggleCancelled("blocked", "done", "on-hold")).toBe("on-hold");
+  });
+
+  test("is a no-op when the clicked status is the done status", () => {
+    expect(toggleCancelled("blocked", "done", "done")).toBe("blocked");
+    expect(toggleCancelled(undefined, "done", "done")).toBeUndefined();
   });
 });

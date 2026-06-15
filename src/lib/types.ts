@@ -36,12 +36,18 @@ export interface ProjectBoard {
  * `priority` and `status` are `string` because they reference the ids of
  * user-defined `PriorityLevel`/`StatusDefinition` entries in `Settings`
  * rather than a fixed built-in union.
+ *
+ * `due` and `scheduled`, if set, must be one of the relative-date option ids
+ * in `RELATIVE_DATE_OPTIONS` (see `relativeDates.ts`) rather than an absolute
+ * date: they're resolved to an absolute date relative to "today" at
+ * task-creation time.
  */
 export interface TaskDefaults {
   tags: string[];
   priority?: string;
   status?: string;
   due?: string;
+  scheduled?: string;
 }
 
 export interface Project {
@@ -86,9 +92,16 @@ export interface StatusDefinition {
  * Global, app-wide settings: the available priority levels, the global list
  * of statuses (from which each project's board is configured), and the
  * global default task attributes.
+ *
+ * `done_status` and `cancelled_status` mark which entries in `statuses`
+ * represent a task being finished or abandoned. Exactly one status is always
+ * the done status; the cancelled status is optional and, if set, differs from
+ * the done status.
  */
 export interface Settings {
   priorities: PriorityLevel[];
   statuses: StatusDefinition[];
   defaults: TaskDefaults;
+  done_status: string;
+  cancelled_status?: string;
 }

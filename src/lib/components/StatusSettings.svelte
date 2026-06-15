@@ -3,24 +3,47 @@
   import { countTasksByStatus } from "$lib/api";
   import { projectsState } from "$lib/projects.svelte";
   import { persistSettings, settingsState } from "$lib/settings.svelte";
-  import { deleteBlockReason, projectsReferencingStatus, renumber, statusesEqual, uniqueId } from "$lib/statusSettings";
+  import {
+    deleteBlockReason,
+    projectsReferencingStatus,
+    renumber,
+    statusesEqual,
+    toggleCancelled,
+    toggleDefault,
+    toggleDone,
+    uniqueId,
+  } from "$lib/statusSettings";
   import { FALLBACK_STATUS_COLOR, sortedStatuses } from "$lib/statuses.svelte";
+  import ColorPicker from "$lib/components/ColorPicker.svelte";
   import type { StatusDefinition } from "$lib/types";
 
   let draft = $state<StatusDefinition[]>([]);
+  let draftDefaultId = $state<string | undefined>(undefined);
+  let draftDoneId = $state("");
+  let draftCancelledId = $state<string | undefined>(undefined);
   let initialized = $state(false);
   let taskCounts = $state<Record<string, number>>({});
   let errorMessage = $state("");
   let isSaving = $state(false);
 
   let baseline = $derived(sortedStatuses(settingsState.current?.statuses ?? []));
-  let isDirty = $derived(!statusesEqual(draft, baseline));
-  let defaultStatusId = $derived(settingsState.current?.defaults.status);
+  let baselineDefaultId = $derived(settingsState.current?.defaults.status);
+  let baselineDoneId = $derived(settingsState.current?.done_status ?? "");
+  let baselineCancelledId = $derived(settingsState.current?.cancelled_status);
+  let isDirty = $derived(
+    !statusesEqual(draft, baseline) ||
+      draftDefaultId !== baselineDefaultId ||
+      draftDoneId !== baselineDoneId ||
+      draftCancelledId !== baselineCancelledId,
+  );
 
   /** Seeds `draft` from settings once they finish loading; later edits live only in `draft`. */
   $effect(() => {
     if (settingsState.current && !initialized) {
       draft = sortedStatuses(settingsState.current.statuses).map((status) => ({ ...status }));
+      draftDefaultId = baselineDefaultId;
+      draftDoneId = baselineDoneId;
+      draftCancelledId = baselineCancelledId;
       initialized = true;
     }
   });
@@ -56,7 +79,24 @@
 
   function discardChanges() {
     draft = baseline.map((status) => ({ ...status }));
+    draftDefaultId = baselineDefaultId;
+    draftDoneId = baselineDoneId;
+    draftCancelledId = baselineCancelledId;
     errorMessage = "";
+  }
+
+  function setDefault(id: string) {
+    draftDefaultId = toggleDefault(draftDefaultId, id);
+  }
+
+  function setDone(id: string) {
+    const next = toggleDone({ doneId: draftDoneId, cancelledId: draftCancelledId }, id);
+    draftDoneId = next.doneId;
+    draftCancelledId = next.cancelledId;
+  }
+
+  function setCancelled(id: string) {
+    draftCancelledId = toggleCancelled(draftCancelledId, draftDoneId, id);
   }
 
   async function save() {
@@ -78,7 +118,13 @@
 
     isSaving = true;
     try {
-      await persistSettings({ ...settingsState.current, statuses: trimmed });
+      await persistSettings({
+        ...settingsState.current,
+        statuses: trimmed,
+        defaults: { ...settingsState.current.defaults, status: draftDefaultId },
+        done_status: draftDoneId,
+        cancelled_status: draftCancelledId,
+      });
       draft = trimmed;
       errorMessage = "";
     } catch (error) {
@@ -101,7 +147,7 @@
     <ul class="status-list">
       {#each draft as status, index (status.id)}
         {@const referencingProjects = projectsReferencingStatus(projectsState.items, status.id)}
-        {@const blockReason = deleteBlockReason(status, draft.length, defaultStatusId, taskCounts, referencingProjects)}
+        {@const blockReason = deleteBlockReason(status, draft.length, draftDefaultId, draftDoneId, draftCancelledId, taskCounts, referencingProjects)}
         {@const taskCount = taskCounts[status.id] ?? 0}
         <li class="status-row">
           <div class="rank-controls">
@@ -130,20 +176,44 @@
             aria-label="Status label"
           />
 
-          <div class="color-field">
-            <span class="swatch" style="background: {draft[index].color}" aria-hidden="true"></span>
-            <input
-              type="text"
-              class="color-input"
-              bind:value={draft[index].color}
-              aria-label={`Color for ${status.label || "status"}`}
-            />
-          </div>
+          <ColorPicker
+            bind:value={draft[index].color}
+            label={`Color for ${status.label || "status"}`}
+          />
 
           <div class="row-meta">
-            {#if status.id === defaultStatusId}
-              <span class="badge">Default</span>
-            {/if}
+            <label class="default-toggle" class:checked={draftDefaultId === status.id}>
+              <input
+                type="checkbox"
+                checked={draftDefaultId === status.id}
+                onchange={() => setDefault(status.id)}
+                aria-label={`Set ${status.label || "status"} as default`}
+              />
+              Default
+            </label>
+            <label class="default-toggle" class:checked={draftDoneId === status.id}>
+              <input
+                type="checkbox"
+                checked={draftDoneId === status.id}
+                onchange={() => setDone(status.id)}
+                aria-label={`Set ${status.label || "status"} as the done status`}
+              />
+              Done
+            </label>
+            <label
+              class="default-toggle"
+              class:checked={draftCancelledId === status.id}
+              class:disabled={draftDoneId === status.id}
+            >
+              <input
+                type="checkbox"
+                checked={draftCancelledId === status.id}
+                disabled={draftDoneId === status.id}
+                onchange={() => setCancelled(status.id)}
+                aria-label={`Set ${status.label || "status"} as the cancelled status`}
+              />
+              Cancelled
+            </label>
             {#if taskCount > 0}
               <span class="badge">{taskCount} task{taskCount === 1 ? "" : "s"}</span>
             {/if}
@@ -242,6 +312,7 @@
 
   .status-row {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: var(--space-sm);
     padding: var(--space-sm) var(--space-md);
@@ -286,7 +357,7 @@
 
   .label-input {
     flex: 1;
-    min-width: 0;
+    min-width: 8rem;
     padding: var(--space-2xs) var(--space-sm);
     border-radius: var(--radius-sm);
     border: 1px solid var(--color-border);
@@ -299,40 +370,10 @@
       box-shadow var(--duration-fast) var(--ease-out-expo);
   }
 
-  .label-input:focus-visible,
-  .color-input:focus-visible {
+  .label-input:focus-visible {
     border-color: var(--color-accent);
     box-shadow: 0 0 0 3px var(--color-accent-soft);
     outline: none;
-  }
-
-  .color-field {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2xs);
-    flex-shrink: 0;
-  }
-
-  .swatch {
-    width: 1.25rem;
-    height: 1.25rem;
-    border-radius: var(--radius-pill);
-    border: 1px solid var(--color-border);
-    flex-shrink: 0;
-  }
-
-  .color-input {
-    width: 11rem;
-    padding: var(--space-2xs) var(--space-sm);
-    border-radius: var(--radius-sm);
-    border: 1px solid var(--color-border);
-    background: var(--color-surface);
-    color: var(--color-ink);
-    font-size: var(--text-xs);
-    box-shadow: var(--shadow-sm);
-    transition:
-      border-color var(--duration-fast) var(--ease-out-expo),
-      box-shadow var(--duration-fast) var(--ease-out-expo);
   }
 
   .row-meta {
@@ -351,8 +392,44 @@
     white-space: nowrap;
   }
 
+  .default-toggle {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3xs);
+    padding: var(--space-3xs) var(--space-xs);
+    border-radius: var(--radius-pill);
+    border: 1px solid var(--color-border);
+    background: var(--color-canvas);
+    color: var(--color-ink-muted);
+    font-size: var(--text-xs);
+    white-space: nowrap;
+    cursor: pointer;
+    transition:
+      border-color var(--duration-fast) var(--ease-out-expo),
+      color var(--duration-fast) var(--ease-out-expo);
+  }
+
+  .default-toggle input {
+    cursor: pointer;
+  }
+
+  .default-toggle.checked {
+    border-color: var(--color-accent);
+    color: var(--color-ink);
+  }
+
+  .default-toggle.disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  .default-toggle.disabled input {
+    cursor: not-allowed;
+  }
+
   .status-row button.danger {
     flex-shrink: 0;
+    margin-left: auto;
     padding: var(--space-2xs) var(--space-sm);
     border-radius: var(--radius-sm);
     border: 1px solid transparent;

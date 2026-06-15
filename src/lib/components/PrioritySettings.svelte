@@ -1,25 +1,28 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { countTasksByPriority } from "$lib/api";
-  import { deleteBlockReason, levelsEqual, renumber, uniqueId } from "$lib/prioritySettings";
+  import { deleteBlockReason, levelsEqual, renumber, toggleDefault, uniqueId } from "$lib/prioritySettings";
   import { FALLBACK_PRIORITY_COLOR, sortedPriorities } from "$lib/priorities.svelte";
   import { persistSettings, settingsState } from "$lib/settings.svelte";
+  import ColorPicker from "$lib/components/ColorPicker.svelte";
   import type { PriorityLevel } from "$lib/types";
 
   let draft = $state<PriorityLevel[]>([]);
+  let draftDefaultId = $state<string | undefined>(undefined);
   let initialized = $state(false);
   let taskCounts = $state<Record<string, number>>({});
   let errorMessage = $state("");
   let isSaving = $state(false);
 
   let baseline = $derived(sortedPriorities(settingsState.current?.priorities ?? []));
-  let isDirty = $derived(!levelsEqual(draft, baseline));
-  let defaultPriorityId = $derived(settingsState.current?.defaults.priority);
+  let baselineDefaultId = $derived(settingsState.current?.defaults.priority);
+  let isDirty = $derived(!levelsEqual(draft, baseline) || draftDefaultId !== baselineDefaultId);
 
   /** Seeds `draft` from settings once they finish loading; later edits live only in `draft`. */
   $effect(() => {
     if (settingsState.current && !initialized) {
       draft = sortedPriorities(settingsState.current.priorities).map((level) => ({ ...level }));
+      draftDefaultId = baselineDefaultId;
       initialized = true;
     }
   });
@@ -55,7 +58,12 @@
 
   function discardChanges() {
     draft = baseline.map((level) => ({ ...level }));
+    draftDefaultId = baselineDefaultId;
     errorMessage = "";
+  }
+
+  function setDefault(id: string) {
+    draftDefaultId = toggleDefault(draftDefaultId, id);
   }
 
   async function save() {
@@ -77,7 +85,11 @@
 
     isSaving = true;
     try {
-      await persistSettings({ ...settingsState.current, priorities: trimmed });
+      await persistSettings({
+        ...settingsState.current,
+        priorities: trimmed,
+        defaults: { ...settingsState.current.defaults, priority: draftDefaultId },
+      });
       draft = trimmed;
       errorMessage = "";
     } catch (error) {
@@ -99,7 +111,7 @@
   {:else}
     <ul class="priority-list">
       {#each draft as level, index (level.id)}
-        {@const blockReason = deleteBlockReason(level, draft.length, defaultPriorityId, taskCounts)}
+        {@const blockReason = deleteBlockReason(level, draft.length, draftDefaultId, taskCounts)}
         {@const taskCount = taskCounts[level.id] ?? 0}
         <li class="priority-row">
           <div class="rank-controls">
@@ -128,20 +140,21 @@
             aria-label="Priority label"
           />
 
-          <div class="color-field">
-            <span class="swatch" style="background: {draft[index].color}" aria-hidden="true"></span>
-            <input
-              type="text"
-              class="color-input"
-              bind:value={draft[index].color}
-              aria-label={`Color for ${level.label || "priority"}`}
-            />
-          </div>
+          <ColorPicker
+            bind:value={draft[index].color}
+            label={`Color for ${level.label || "priority"}`}
+          />
 
           <div class="row-meta">
-            {#if level.id === defaultPriorityId}
-              <span class="badge">Default</span>
-            {/if}
+            <label class="default-toggle" class:checked={draftDefaultId === level.id}>
+              <input
+                type="checkbox"
+                checked={draftDefaultId === level.id}
+                onchange={() => setDefault(level.id)}
+                aria-label={`Set ${level.label || "priority"} as default`}
+              />
+              Default
+            </label>
             {#if taskCount > 0}
               <span class="badge">{taskCount} task{taskCount === 1 ? "" : "s"}</span>
             {/if}
@@ -235,6 +248,7 @@
 
   .priority-row {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: var(--space-sm);
     padding: var(--space-sm) var(--space-md);
@@ -279,7 +293,7 @@
 
   .label-input {
     flex: 1;
-    min-width: 0;
+    min-width: 8rem;
     padding: var(--space-2xs) var(--space-sm);
     border-radius: var(--radius-sm);
     border: 1px solid var(--color-border);
@@ -292,40 +306,10 @@
       box-shadow var(--duration-fast) var(--ease-out-expo);
   }
 
-  .label-input:focus-visible,
-  .color-input:focus-visible {
+  .label-input:focus-visible {
     border-color: var(--color-accent);
     box-shadow: 0 0 0 3px var(--color-accent-soft);
     outline: none;
-  }
-
-  .color-field {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2xs);
-    flex-shrink: 0;
-  }
-
-  .swatch {
-    width: 1.25rem;
-    height: 1.25rem;
-    border-radius: var(--radius-pill);
-    border: 1px solid var(--color-border);
-    flex-shrink: 0;
-  }
-
-  .color-input {
-    width: 11rem;
-    padding: var(--space-2xs) var(--space-sm);
-    border-radius: var(--radius-sm);
-    border: 1px solid var(--color-border);
-    background: var(--color-surface);
-    color: var(--color-ink);
-    font-size: var(--text-xs);
-    box-shadow: var(--shadow-sm);
-    transition:
-      border-color var(--duration-fast) var(--ease-out-expo),
-      box-shadow var(--duration-fast) var(--ease-out-expo);
   }
 
   .row-meta {
@@ -344,8 +328,35 @@
     white-space: nowrap;
   }
 
+  .default-toggle {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3xs);
+    padding: var(--space-3xs) var(--space-xs);
+    border-radius: var(--radius-pill);
+    border: 1px solid var(--color-border);
+    background: var(--color-canvas);
+    color: var(--color-ink-muted);
+    font-size: var(--text-xs);
+    white-space: nowrap;
+    cursor: pointer;
+    transition:
+      border-color var(--duration-fast) var(--ease-out-expo),
+      color var(--duration-fast) var(--ease-out-expo);
+  }
+
+  .default-toggle input {
+    cursor: pointer;
+  }
+
+  .default-toggle.checked {
+    border-color: var(--color-accent);
+    color: var(--color-ink);
+  }
+
   .priority-row button.danger {
     flex-shrink: 0;
+    margin-left: auto;
     padding: var(--space-2xs) var(--space-sm);
     border-radius: var(--radius-sm);
     border: 1px solid transparent;

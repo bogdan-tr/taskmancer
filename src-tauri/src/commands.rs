@@ -5,7 +5,10 @@ use tauri::State;
 
 use crate::project::{Project, ProjectBoard, DEFAULT_PROJECT_COLOR};
 use crate::project_storage;
-use crate::settings::{validate_priority_id, validate_settings, validate_status_id, Settings};
+use crate::settings::{
+    resolve_relative_date, validate_priority_id, validate_relative_date_code, validate_settings,
+    validate_status_id, Settings, TaskDefaults,
+};
 use crate::settings_storage;
 use crate::storage;
 use crate::task::Task;
@@ -76,14 +79,80 @@ fn resolve_default_status(settings: &Settings, project_board: Option<&ProjectBoa
         .unwrap_or_else(|| "backlog".to_string())
 }
 
-/// Looks up `project_name` case-insensitively among `projects` and returns
-/// its board configuration, or `None` if no project matches (e.g. the named
-/// project doesn't exist yet and will be backfilled by `list_projects`).
-fn find_project_board<'a>(projects: &'a [Project], project_name: &str) -> Option<&'a ProjectBoard> {
+/// Looks up `project_name` case-insensitively among `projects`, or `None` if
+/// no project matches (e.g. the named project doesn't exist yet and will be
+/// backfilled by `list_projects`).
+fn find_project<'a>(projects: &'a [Project], project_name: &str) -> Option<&'a Project> {
     projects
         .iter()
         .find(|p| p.name.eq_ignore_ascii_case(project_name))
-        .map(|p| &p.board)
+}
+
+/// Merges `defaults` into `explicit`, appending any default tag not already
+/// present so quick-add tags always come first and no tag is duplicated.
+fn merge_tags(explicit: Vec<String>, defaults: Vec<String>) -> Vec<String> {
+    let mut merged = explicit;
+    for tag in defaults {
+        if !merged.contains(&tag) {
+            merged.push(tag);
+        }
+    }
+    merged
+}
+
+/// Returns the default tags that should be merged into a newly-created
+/// task's explicit tags: the project's default tags if it has any, otherwise
+/// the global default tags.
+fn effective_default_tags(global: &TaskDefaults, project: Option<&TaskDefaults>) -> Vec<String> {
+    match project {
+        Some(p) if !p.tags.is_empty() => p.tags.clone(),
+        _ => global.tags.clone(),
+    }
+}
+
+/// Resolves the effective relative-date code for a `due`/`scheduled`
+/// default: the project-level override if set, otherwise the global default.
+fn effective_default_code<'a>(
+    global: &'a Option<String>,
+    project: Option<&'a Option<String>>,
+) -> Option<&'a String> {
+    project.and_then(|p| p.as_ref()).or(global.as_ref())
+}
+
+/// Resolves a relative-date `code` (e.g. `"tomorrow"`) to an absolute
+/// `YYYY-MM-DD` date string relative to `today`. Returns `None` if `code` is
+/// `None` or isn't a recognized relative-date code.
+fn resolve_default_date(code: Option<&String>, today: chrono::NaiveDate) -> Option<String> {
+    code.and_then(|c| resolve_relative_date(c, today))
+        .map(|date| date.format("%Y-%m-%d").to_string())
+}
+
+/// Resolves the tags, due date, and scheduled date for a newly-created task
+/// by combining explicit quick-add values with the global and project-level
+/// defaults. Explicit `due`/`scheduled` values from the caller always win;
+/// otherwise the project's default code is used if set, falling back to the
+/// global default. Tags are merged additively: any default tag not already
+/// present in the explicit tags is appended.
+fn resolve_creation_defaults(
+    settings: &Settings,
+    project_defaults: Option<&TaskDefaults>,
+    today: chrono::NaiveDate,
+    tags: Option<Vec<String>>,
+    due: Option<String>,
+    scheduled: Option<String>,
+) -> (Vec<String>, Option<String>, Option<String>) {
+    let due_code = effective_default_code(&settings.defaults.due, project_defaults.map(|d| &d.due));
+    let scheduled_code = effective_default_code(
+        &settings.defaults.scheduled,
+        project_defaults.map(|d| &d.scheduled),
+    );
+    let resolved_due = due.or_else(|| resolve_default_date(due_code, today));
+    let resolved_scheduled = scheduled.or_else(|| resolve_default_date(scheduled_code, today));
+
+    let default_tags = effective_default_tags(&settings.defaults, project_defaults);
+    let final_tags = merge_tags(tags.unwrap_or_default(), default_tags);
+
+    (final_tags, resolved_due, resolved_scheduled)
 }
 
 /// Applies optional overrides parsed from quick-add syntax onto a freshly
@@ -143,14 +212,30 @@ pub fn create_task(
 
     let projects =
         project_storage::list_projects(&state.projects_file).map_err(|e| e.to_string())?;
-    let project_board = project
+    let matched_project = project
         .as_deref()
-        .and_then(|name| find_project_board(&projects, name));
+        .and_then(|name| find_project(&projects, name));
+    let project_board = matched_project.map(|p| &p.board);
+    let project_defaults = matched_project.map(|p| &p.defaults);
     let status = resolve_default_status(&settings, project_board);
+
+    // Use the user's local date so relative-date defaults (e.g. "today",
+    // "tomorrow") match the day they see on their device's calendar,
+    // regardless of the machine's UTC offset.
+    let today = chrono::Local::now().date_naive();
+    let (final_tags, resolved_due, resolved_scheduled) =
+        resolve_creation_defaults(&settings, project_defaults, today, tags, due, scheduled);
 
     let mut task = Task::new(title);
     task.status = status;
-    apply_create_overrides(&mut task, project, tags, Some(priority), due, scheduled);
+    apply_create_overrides(
+        &mut task,
+        project,
+        Some(final_tags),
+        Some(priority),
+        resolved_due,
+        resolved_scheduled,
+    );
 
     storage::save_task(&state.tasks_dir, &task).map_err(|e| e.to_string())?;
     Ok(task)
@@ -315,10 +400,43 @@ pub fn list_projects(state: State<AppState>) -> Result<Vec<Project>, String> {
     Ok(projects)
 }
 
+/// Returns `Ok(())` if `color` is a 6-digit hex color (`#RRGGBB`,
+/// case-insensitive), and an error otherwise. `Project.color` has always
+/// been hex by convention (see [`DEFAULT_PROJECT_COLOR`]) and is now
+/// exclusively produced by the `ColorPicker` UI, unlike
+/// `PriorityLevel.color`/`StatusDefinition.color`, which still accept any
+/// valid CSS color from their free-form text inputs.
+fn validate_hex_color(color: &str) -> Result<(), String> {
+    let digits = color.strip_prefix('#');
+    let is_valid =
+        matches!(digits, Some(d) if d.len() == 6 && d.chars().all(|c| c.is_ascii_hexdigit()));
+    if is_valid {
+        Ok(())
+    } else {
+        Err(format!(
+            "'{color}' is not a valid hex color (expected #RRGGBB)"
+        ))
+    }
+}
+
+/// Resolves the color for a newly-created project: validates `color` as a
+/// 6-digit hex color (see [`validate_hex_color`]) if provided, or falls back
+/// to [`DEFAULT_PROJECT_COLOR`] when `color` is `None`.
+fn resolve_project_color(color: Option<String>) -> Result<String, String> {
+    match color {
+        Some(c) => {
+            validate_hex_color(&c)?;
+            Ok(c)
+        }
+        None => Ok(DEFAULT_PROJECT_COLOR.to_string()),
+    }
+}
+
 /// Creates a new project with a trimmed, non-empty, case-insensitively
 /// unique name. `order` is set to one past the current maximum so new
 /// projects sort after existing ones. Falls back to
-/// [`DEFAULT_PROJECT_COLOR`] when `color` is `None`.
+/// [`DEFAULT_PROJECT_COLOR`] when `color` is `None`; otherwise `color` must
+/// be a 6-digit hex color (see [`validate_hex_color`]).
 #[tauri::command]
 pub fn create_project(
     state: State<AppState>,
@@ -330,6 +448,8 @@ pub fn create_project(
         return Err("project name must not be empty".to_string());
     }
 
+    let color = resolve_project_color(color)?;
+
     let _guard = state.projects_lock.lock().map_err(|e| e.to_string())?;
     let mut projects =
         project_storage::list_projects(&state.projects_file).map_err(|e| e.to_string())?;
@@ -338,7 +458,6 @@ pub fn create_project(
     }
 
     let order = next_order(&projects);
-    let color = color.unwrap_or_else(|| DEFAULT_PROJECT_COLOR.to_string());
     let project = Project::new(name, color, order);
     projects.push(project.clone());
     project_storage::save_projects(&state.projects_file, &projects).map_err(|e| e.to_string())?;
@@ -349,10 +468,14 @@ pub fn create_project(
 /// Applies an `update_project` request onto the project at `index` within
 /// `projects`, preserving that project's `id` and `created` timestamp from
 /// disk. Validates that `update.name` (trimmed) is non-empty and
-/// case-insensitively unique among the *other* projects, and that every
+/// case-insensitively unique among the *other* projects, that every
 /// status/priority id referenced by `update.board` and `update.defaults` is
-/// defined in `settings` (mirroring the checks `validate_settings` applies to
-/// `Settings.defaults`).
+/// defined in `settings`, and that `update.defaults.due`/`.scheduled`, if
+/// set, are recognized relative-date codes (mirroring the checks
+/// `validate_settings` applies to `Settings.defaults`). If `update.color`
+/// differs from the project's current color, it must be a 6-digit hex color
+/// (see [`validate_hex_color`]); an unchanged color is left as-is even if
+/// it predates that requirement.
 fn apply_project_update(
     projects: &mut [Project],
     index: usize,
@@ -383,8 +506,18 @@ fn apply_project_update(
     if let Some(priority_id) = &update.defaults.priority {
         validate_priority_id(settings, priority_id)?;
     }
+    if let Some(due_code) = &update.defaults.due {
+        validate_relative_date_code(due_code)?;
+    }
+    if let Some(scheduled_code) = &update.defaults.scheduled {
+        validate_relative_date_code(scheduled_code)?;
+    }
 
     let existing = &projects[index];
+    if update.color != existing.color {
+        validate_hex_color(&update.color)?;
+    }
+
     let updated = Project {
         id: existing.id.clone(),
         name,
@@ -608,6 +741,230 @@ mod tests {
     }
 
     #[test]
+    fn merge_tags_appends_default_tags_not_already_present() {
+        let merged = merge_tags(
+            vec!["urgent".to_string()],
+            vec!["home".to_string(), "urgent".to_string()],
+        );
+
+        assert_eq!(merged, vec!["urgent".to_string(), "home".to_string()]);
+    }
+
+    #[test]
+    fn merge_tags_with_empty_explicit_returns_defaults() {
+        let merged = merge_tags(Vec::new(), vec!["home".to_string()]);
+
+        assert_eq!(merged, vec!["home".to_string()]);
+    }
+
+    #[test]
+    fn merge_tags_with_empty_defaults_returns_explicit() {
+        let merged = merge_tags(vec!["urgent".to_string()], Vec::new());
+
+        assert_eq!(merged, vec!["urgent".to_string()]);
+    }
+
+    #[test]
+    fn effective_default_tags_uses_project_tags_when_non_empty() {
+        let global = TaskDefaults {
+            tags: vec!["global".to_string()],
+            ..Default::default()
+        };
+        let project = TaskDefaults {
+            tags: vec!["project".to_string()],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            effective_default_tags(&global, Some(&project)),
+            vec!["project".to_string()]
+        );
+    }
+
+    #[test]
+    fn effective_default_tags_falls_back_to_global_when_project_tags_empty() {
+        let global = TaskDefaults {
+            tags: vec!["global".to_string()],
+            ..Default::default()
+        };
+        let project = TaskDefaults::default();
+
+        assert_eq!(
+            effective_default_tags(&global, Some(&project)),
+            vec!["global".to_string()]
+        );
+    }
+
+    #[test]
+    fn effective_default_tags_falls_back_to_global_when_no_project() {
+        let global = TaskDefaults {
+            tags: vec!["global".to_string()],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            effective_default_tags(&global, None),
+            vec!["global".to_string()]
+        );
+    }
+
+    #[test]
+    fn effective_default_code_prefers_project_override() {
+        let global = Some("tomorrow".to_string());
+        let project = Some("in_1_week".to_string());
+
+        assert_eq!(
+            effective_default_code(&global, Some(&project)),
+            Some(&"in_1_week".to_string())
+        );
+    }
+
+    #[test]
+    fn effective_default_code_falls_back_to_global_when_project_has_no_override() {
+        let global = Some("tomorrow".to_string());
+        let project = None;
+
+        assert_eq!(
+            effective_default_code(&global, Some(&project)),
+            Some(&"tomorrow".to_string())
+        );
+    }
+
+    #[test]
+    fn effective_default_code_falls_back_to_global_when_no_project_defaults() {
+        let global = Some("tomorrow".to_string());
+
+        assert_eq!(
+            effective_default_code(&global, None),
+            Some(&"tomorrow".to_string())
+        );
+    }
+
+    #[test]
+    fn effective_default_code_returns_none_when_neither_set() {
+        let global = None;
+
+        assert_eq!(effective_default_code(&global, Some(&None)), None);
+    }
+
+    #[test]
+    fn resolve_default_date_resolves_a_known_code() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 14).unwrap();
+        let code = "tomorrow".to_string();
+
+        assert_eq!(
+            resolve_default_date(Some(&code), today),
+            Some("2026-06-15".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_default_date_returns_none_when_code_is_none() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 14).unwrap();
+
+        assert_eq!(resolve_default_date(None, today), None);
+    }
+
+    #[test]
+    fn resolve_creation_defaults_falls_back_fully_to_global_when_no_project() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 14).unwrap();
+        let settings = Settings {
+            defaults: TaskDefaults {
+                tags: vec!["global".to_string()],
+                due: Some("tomorrow".to_string()),
+                scheduled: Some("in_1_week".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let (tags, due, scheduled) =
+            resolve_creation_defaults(&settings, None, today, None, None, None);
+
+        assert_eq!(tags, vec!["global".to_string()]);
+        assert_eq!(due, Some("2026-06-15".to_string()));
+        assert_eq!(scheduled, Some("2026-06-21".to_string()));
+    }
+
+    #[test]
+    fn resolve_creation_defaults_project_tags_override_replaces_global_tags() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 14).unwrap();
+        let settings = Settings {
+            defaults: TaskDefaults {
+                tags: vec!["global".to_string()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let project_defaults = TaskDefaults {
+            tags: vec!["project".to_string()],
+            ..Default::default()
+        };
+
+        let (tags, _due, _scheduled) = resolve_creation_defaults(
+            &settings,
+            Some(&project_defaults),
+            today,
+            Some(vec!["urgent".to_string()]),
+            None,
+            None,
+        );
+
+        assert_eq!(tags, vec!["urgent".to_string(), "project".to_string()]);
+    }
+
+    #[test]
+    fn resolve_creation_defaults_project_due_and_scheduled_override_wins_over_global() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 14).unwrap();
+        let settings = Settings {
+            defaults: TaskDefaults {
+                due: Some("tomorrow".to_string()),
+                scheduled: Some("tomorrow".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let project_defaults = TaskDefaults {
+            due: Some("in_1_week".to_string()),
+            scheduled: Some("in_1_month".to_string()),
+            ..Default::default()
+        };
+
+        let (_tags, due, scheduled) =
+            resolve_creation_defaults(&settings, Some(&project_defaults), today, None, None, None);
+
+        assert_eq!(due, Some("2026-06-21".to_string()));
+        assert_eq!(scheduled, Some("2026-07-14".to_string()));
+    }
+
+    #[test]
+    fn resolve_creation_defaults_explicit_values_short_circuit_defaults() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 14).unwrap();
+        let settings = Settings {
+            defaults: TaskDefaults {
+                tags: vec!["global".to_string()],
+                due: Some("tomorrow".to_string()),
+                scheduled: Some("in_1_week".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let (tags, due, scheduled) = resolve_creation_defaults(
+            &settings,
+            None,
+            today,
+            Some(vec!["explicit".to_string()]),
+            Some("2026-08-01".to_string()),
+            Some("2026-08-02".to_string()),
+        );
+
+        assert_eq!(tags, vec!["explicit".to_string(), "global".to_string()]);
+        assert_eq!(due, Some("2026-08-01".to_string()));
+        assert_eq!(scheduled, Some("2026-08-02".to_string()));
+    }
+
+    #[test]
     fn next_order_returns_one_for_empty_list() {
         assert_eq!(next_order(&[]), 1);
     }
@@ -705,6 +1062,56 @@ mod tests {
     }
 
     #[test]
+    fn validate_hex_color_accepts_a_six_digit_hex_color() {
+        assert!(validate_hex_color("#3b82f6").is_ok());
+    }
+
+    #[test]
+    fn validate_hex_color_accepts_uppercase_hex_digits() {
+        assert!(validate_hex_color("#3B82F6").is_ok());
+    }
+
+    #[test]
+    fn validate_hex_color_rejects_a_color_missing_the_hash() {
+        assert!(validate_hex_color("3b82f6").is_err());
+    }
+
+    #[test]
+    fn validate_hex_color_rejects_a_three_digit_hex_color() {
+        assert!(validate_hex_color("#fff").is_err());
+    }
+
+    #[test]
+    fn validate_hex_color_rejects_a_css_color_keyword() {
+        assert!(validate_hex_color("blue").is_err());
+    }
+
+    #[test]
+    fn validate_hex_color_rejects_an_oklch_color() {
+        assert!(validate_hex_color("oklch(54% 0.2 350)").is_err());
+    }
+
+    #[test]
+    fn resolve_project_color_falls_back_to_default_when_none() {
+        assert_eq!(resolve_project_color(None).unwrap(), DEFAULT_PROJECT_COLOR);
+    }
+
+    #[test]
+    fn resolve_project_color_accepts_a_valid_hex_color() {
+        assert_eq!(
+            resolve_project_color(Some("#abcdef".to_string())).unwrap(),
+            "#abcdef"
+        );
+    }
+
+    #[test]
+    fn resolve_project_color_rejects_a_non_hex_color() {
+        let result = resolve_project_color(Some("not-a-color".to_string()));
+
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn apply_project_update_preserves_id_and_created_from_disk() {
         let existing = Project::new("Inbox".to_string(), "#abcdef".to_string(), 1);
         let existing_id = existing.id.clone();
@@ -779,6 +1186,33 @@ mod tests {
     }
 
     #[test]
+    fn apply_project_update_rejects_changing_color_to_a_non_hex_value() {
+        let mut projects = vec![Project::new("Inbox".to_string(), "#abcdef".to_string(), 1)];
+        let mut update = projects[0].clone();
+        update.color = "oklch(54% 0.2 350)".to_string();
+
+        let result = apply_project_update(&mut projects, 0, update, &Settings::default());
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn apply_project_update_allows_an_unchanged_legacy_color_when_other_fields_change() {
+        let mut projects = vec![Project::new(
+            "Inbox".to_string(),
+            "oklch(54% 0.2 350)".to_string(),
+            1,
+        )];
+        let mut update = projects[0].clone();
+        update.name = "Renamed".to_string();
+
+        let updated = apply_project_update(&mut projects, 0, update, &Settings::default()).unwrap();
+
+        assert_eq!(updated.name, "Renamed");
+        assert_eq!(updated.color, "oklch(54% 0.2 350)");
+    }
+
+    #[test]
     fn apply_project_update_persists_board_and_defaults() {
         let mut projects = vec![Project::new("Inbox".to_string(), "#abcdef".to_string(), 1)];
         let mut update = projects[0].clone();
@@ -791,6 +1225,7 @@ mod tests {
             priority: Some("high".to_string()),
             status: None,
             due: Some("tomorrow".to_string()),
+            scheduled: Some("in_1_week".to_string()),
         };
 
         let updated =
@@ -885,6 +1320,7 @@ mod tests {
             priorities: Vec::new(),
             statuses: Vec::new(),
             defaults: TaskDefaults::default(),
+            ..Default::default()
         };
 
         assert_eq!(resolve_default_priority(&settings), "medium");
@@ -909,6 +1345,7 @@ mod tests {
             ],
             statuses: Vec::new(),
             defaults: TaskDefaults::default(),
+            ..Default::default()
         };
 
         assert_eq!(resolve_default_priority(&settings), "now");
@@ -987,6 +1424,7 @@ mod tests {
             priorities: Vec::new(),
             statuses: Vec::new(),
             defaults: TaskDefaults::default(),
+            ..Default::default()
         };
 
         assert_eq!(resolve_default_status(&settings, None), "backlog");
@@ -1011,32 +1449,33 @@ mod tests {
                 },
             ],
             defaults: TaskDefaults::default(),
+            ..Default::default()
         };
 
         assert_eq!(resolve_default_status(&settings, None), "now");
     }
 
     #[test]
-    fn find_project_board_matches_case_insensitively() {
+    fn find_project_matches_case_insensitively() {
         let mut project =
             Project::new("Homework".to_string(), DEFAULT_PROJECT_COLOR.to_string(), 1);
         project.board.default_status = Some("done".to_string());
         let projects = vec![project];
 
-        let board = find_project_board(&projects, "HOMEWORK").expect("should find a match");
+        let found = find_project(&projects, "HOMEWORK").expect("should find a match");
 
-        assert_eq!(board.default_status, Some("done".to_string()));
+        assert_eq!(found.board.default_status, Some("done".to_string()));
     }
 
     #[test]
-    fn find_project_board_returns_none_when_no_project_matches() {
+    fn find_project_returns_none_when_no_project_matches() {
         let projects = vec![Project::new(
             "Homework".to_string(),
             DEFAULT_PROJECT_COLOR.to_string(),
             1,
         )];
 
-        assert!(find_project_board(&projects, "Inbox").is_none());
+        assert!(find_project(&projects, "Inbox").is_none());
     }
 
     #[test]

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { deleteBlockReason, levelsEqual, renumber, uniqueId } from "./prioritySettings";
+import { deleteBlockReason, levelsEqual, renumber, toggleDefault, uniqueId } from "./prioritySettings";
 import type { PriorityLevel } from "./types";
 
 function makeLevel(overrides: Partial<PriorityLevel> = {}): PriorityLevel {
@@ -140,5 +140,19 @@ describe("deleteBlockReason", () => {
     const level = makeLevel({ id: "medium" });
 
     expect(deleteBlockReason(level, 2, "high", {})).toBeUndefined();
+  });
+});
+
+describe("toggleDefault", () => {
+  test("sets the clicked level as the default when none was set", () => {
+    expect(toggleDefault(undefined, "medium")).toBe("medium");
+  });
+
+  test("sets the clicked level as the default, replacing the previous default", () => {
+    expect(toggleDefault("high", "medium")).toBe("medium");
+  });
+
+  test("clears the default when the current default is clicked again", () => {
+    expect(toggleDefault("medium", "medium")).toBeUndefined();
   });
 });
