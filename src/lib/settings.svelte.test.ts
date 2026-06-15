@@ -17,6 +17,7 @@ const sampleSettings: Settings = {
   defaults: { tags: [], priority: "medium", status: "backlog" },
   done_status: "done",
   cancelled_status: undefined,
+  default_project: "General",
 };
 
 vi.mock("./api", () => ({

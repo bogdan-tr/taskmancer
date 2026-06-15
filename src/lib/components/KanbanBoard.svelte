@@ -125,9 +125,6 @@
   let errorMessage = $state("");
   let modalOpen = $state(false);
 
-  /** Pre-fills the add-task input with `+ProjectName ` when scoped to a project. */
-  let addTaskPrefill = $derived(projectFilter ? `+${projectFilter} ` : "");
-
   async function refresh() {
     try {
       const allTasks = await listTasks();
@@ -380,7 +377,7 @@
     open={modalOpen}
     onClose={() => (modalOpen = false)}
     onSubmit={handleAddTask}
-    initialInput={addTaskPrefill}
+    {projectFilter}
     {errorMessage}
   />
 
@@ -428,7 +425,7 @@
 
 <style>
   .page {
-    max-width: 1200px;
+    max-width: min(var(--board-width, 1200px), 95vw);
     margin: 0 auto;
     padding: var(--space-xl) var(--space-lg) var(--space-2xl);
   }

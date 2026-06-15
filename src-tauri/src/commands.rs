@@ -88,6 +88,16 @@ fn find_project<'a>(projects: &'a [Project], project_name: &str) -> Option<&'a P
         .find(|p| p.name.eq_ignore_ascii_case(project_name))
 }
 
+/// Resolves the project name a task should be saved with: `project`, trimmed,
+/// if it's non-empty, otherwise `settings.default_project`. Ensures a task can
+/// never be created or updated with an empty/missing project.
+fn resolve_project_name(project: Option<String>, settings: &Settings) -> String {
+    match project.as_deref().map(str::trim) {
+        Some(trimmed) if !trimmed.is_empty() => trimmed.to_string(),
+        _ => settings.default_project.trim().to_string(),
+    }
+}
+
 /// Merges `defaults` into `explicit`, appending any default tag not already
 /// present so quick-add tags always come first and no tag is duplicated.
 fn merge_tags(explicit: Vec<String>, defaults: Vec<String>) -> Vec<String> {
@@ -182,6 +192,9 @@ fn apply_create_overrides(
     }
 }
 
+/// Creates and saves a new task. An empty/missing `project` falls back to
+/// `settings.default_project` (see [`resolve_project_name`]), so a task can
+/// never be created without a project.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub fn create_task(
@@ -210,11 +223,11 @@ pub fn create_task(
         None => resolve_default_priority(&settings),
     };
 
+    let project_name = resolve_project_name(project, &settings);
+
     let projects =
         project_storage::list_projects(&state.projects_file).map_err(|e| e.to_string())?;
-    let matched_project = project
-        .as_deref()
-        .and_then(|name| find_project(&projects, name));
+    let matched_project = find_project(&projects, &project_name);
     let project_board = matched_project.map(|p| &p.board);
     let project_defaults = matched_project.map(|p| &p.defaults);
     let status = resolve_default_status(&settings, project_board);
@@ -230,7 +243,7 @@ pub fn create_task(
     task.status = status;
     apply_create_overrides(
         &mut task,
-        project,
+        Some(project_name),
         Some(final_tags),
         Some(priority),
         resolved_due,
@@ -256,6 +269,10 @@ fn validate_date_field(value: &Option<String>, field: &str) -> Result<(), String
 /// `status`, and `depends_on` are loaded from disk and preserved, so a
 /// stale or malformed `task` payload from the frontend cannot corrupt
 /// these fields or redirect the write to a different task's file.
+///
+/// An empty/missing `task.project` falls back to `settings.default_project`
+/// (see [`resolve_project_name`]), so a task can never be saved without a
+/// project.
 #[tauri::command]
 pub fn update_task(state: State<AppState>, task: Task) -> Result<Task, String> {
     let title = task.title.trim().to_string();
@@ -271,7 +288,7 @@ pub fn update_task(state: State<AppState>, task: Task) -> Result<Task, String> {
 
     let mut existing = storage::load_task(&state.tasks_dir, &task.id).map_err(|e| e.to_string())?;
     existing.title = title;
-    existing.project = task.project;
+    existing.project = Some(resolve_project_name(task.project, &settings));
     existing.tags = task.tags;
     existing.priority = task.priority;
     existing.due = task.due;
@@ -1476,6 +1493,69 @@ mod tests {
         )];
 
         assert!(find_project(&projects, "Inbox").is_none());
+    }
+
+    #[test]
+    fn resolve_project_name_returns_the_trimmed_explicit_project() {
+        let settings = Settings::default();
+
+        let resolved = resolve_project_name(Some("  Homework  ".to_string()), &settings);
+
+        assert_eq!(resolved, "Homework");
+    }
+
+    #[test]
+    fn resolve_project_name_falls_back_to_default_project_when_none() {
+        let mut settings = Settings::default();
+        settings.default_project = "Inbox".to_string();
+
+        let resolved = resolve_project_name(None, &settings);
+
+        assert_eq!(resolved, "Inbox");
+    }
+
+    #[test]
+    fn resolve_project_name_falls_back_to_default_project_when_empty() {
+        let mut settings = Settings::default();
+        settings.default_project = "Inbox".to_string();
+
+        let resolved = resolve_project_name(Some(String::new()), &settings);
+
+        assert_eq!(resolved, "Inbox");
+    }
+
+    #[test]
+    fn resolve_project_name_falls_back_to_default_project_when_whitespace_only() {
+        let mut settings = Settings::default();
+        settings.default_project = "Inbox".to_string();
+
+        let resolved = resolve_project_name(Some("   ".to_string()), &settings);
+
+        assert_eq!(resolved, "Inbox");
+    }
+
+    /// `create_task` resolves the project name (falling back to
+    /// `settings.default_project`) *before* looking it up with
+    /// `find_project`, so a task created with no `+Project` token still picks
+    /// up the default project's `TaskDefaults` and `ProjectBoard`.
+    #[test]
+    fn default_project_fallback_resolves_to_project_with_matching_defaults() {
+        let settings = Settings {
+            default_project: "Homework".to_string(),
+            ..Default::default()
+        };
+
+        let mut project = Project::new("Homework".to_string(), DEFAULT_PROJECT_COLOR.to_string(), 1);
+        project.defaults.tags = vec!["school".to_string()];
+        let projects = vec![project];
+
+        let project_name = resolve_project_name(None, &settings);
+        let matched = find_project(&projects, &project_name);
+
+        assert_eq!(
+            matched.map(|p| p.defaults.tags.clone()),
+            Some(vec!["school".to_string()])
+        );
     }
 
     #[test]

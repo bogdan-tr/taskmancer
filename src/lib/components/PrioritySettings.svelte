@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { countTasksByPriority } from "$lib/api";
+  import { cssColorToHex } from "$lib/colorPresets";
   import { deleteBlockReason, levelsEqual, renumber, toggleDefault, uniqueId } from "$lib/prioritySettings";
   import { FALLBACK_PRIORITY_COLOR, sortedPriorities } from "$lib/priorities.svelte";
   import { persistSettings, settingsState } from "$lib/settings.svelte";
@@ -14,14 +15,22 @@
   let errorMessage = $state("");
   let isSaving = $state(false);
 
-  let baseline = $derived(sortedPriorities(settingsState.current?.priorities ?? []));
+  // Colors are normalized to hex here so `baseline` matches what `ColorPicker`
+  // displays (its `$effect` migrates legacy oklch values to hex on display) —
+  // otherwise the form would appear dirty as soon as it loads legacy colors.
+  let baseline = $derived(
+    sortedPriorities(settingsState.current?.priorities ?? []).map((level) => ({
+      ...level,
+      color: cssColorToHex(level.color),
+    })),
+  );
   let baselineDefaultId = $derived(settingsState.current?.defaults.priority);
   let isDirty = $derived(!levelsEqual(draft, baseline) || draftDefaultId !== baselineDefaultId);
 
   /** Seeds `draft` from settings once they finish loading; later edits live only in `draft`. */
   $effect(() => {
     if (settingsState.current && !initialized) {
-      draft = sortedPriorities(settingsState.current.priorities).map((level) => ({ ...level }));
+      draft = baseline.map((level) => ({ ...level }));
       draftDefaultId = baselineDefaultId;
       initialized = true;
     }

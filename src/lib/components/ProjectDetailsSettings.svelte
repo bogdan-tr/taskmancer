@@ -1,7 +1,7 @@
 <script lang="ts">
   import { updateProject } from "$lib/api";
   import { refreshProjects } from "$lib/projects.svelte";
-  import { isHexColor } from "$lib/colorPresets";
+  import { cssColorToHex, isHexColor } from "$lib/colorPresets";
   import ColorPicker from "$lib/components/ColorPicker.svelte";
   import type { Project } from "$lib/types";
 
@@ -12,7 +12,10 @@
   let { project }: Props = $props();
 
   let baselineName = $derived(project.name);
-  let baselineColor = $derived(project.color);
+  // Normalized to hex so `baseline` matches what `ColorPicker` displays (its
+  // `$effect` migrates legacy oklch values to hex on display) — otherwise the
+  // form would appear dirty as soon as it loads a legacy color.
+  let baselineColor = $derived(cssColorToHex(project.color));
 
   let draftName = $state("");
   let draftColor = $state("");

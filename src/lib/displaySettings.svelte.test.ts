@@ -2,7 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const FONT_SCALE_KEY = "taskmancer:font-scale";
 const COLUMN_WIDTH_KEY = "taskmancer:column-width";
+const BOARD_WIDTH_KEY = "taskmancer:board-width";
 const SHOW_PRIORITY_GROUPS_KEY = "taskmancer:show-priority-groups";
+const SHOW_PRIORITY_CHIP_KEY = "taskmancer:show-priority-chip";
 
 describe("displaySettings.svelte", () => {
   let store: Record<string, string>;
@@ -118,6 +120,49 @@ describe("displaySettings.svelte", () => {
     });
   });
 
+  describe("setBoardWidth", () => {
+    it("updates reactive state, the --board-width custom property, and storage", async () => {
+      const { displayState, setBoardWidth } = await import("./displaySettings.svelte");
+
+      setBoardWidth(1400);
+
+      expect(displayState.boardWidth).toBe(1400);
+      expect(setPropertyMock).toHaveBeenCalledWith("--board-width", "1400px");
+      expect(localStorage.getItem(BOARD_WIDTH_KEY)).toBe("1400");
+    });
+
+    it("clamps values below the minimum", async () => {
+      const { displayState, setBoardWidth, MIN_BOARD_WIDTH } = await import("./displaySettings.svelte");
+
+      setBoardWidth(10);
+
+      expect(displayState.boardWidth).toBe(MIN_BOARD_WIDTH);
+    });
+
+    it("clamps values above the maximum", async () => {
+      const { displayState, setBoardWidth, MAX_BOARD_WIDTH } = await import("./displaySettings.svelte");
+
+      setBoardWidth(10000);
+
+      expect(displayState.boardWidth).toBe(MAX_BOARD_WIDTH);
+    });
+
+    it("does not throw when storage access fails", async () => {
+      vi.stubGlobal("localStorage", {
+        getItem: vi.fn(() => {
+          throw new Error("storage disabled");
+        }),
+        setItem: vi.fn(() => {
+          throw new Error("storage disabled");
+        }),
+      });
+      const { displayState, setBoardWidth } = await import("./displaySettings.svelte");
+
+      expect(() => setBoardWidth(1400)).not.toThrow();
+      expect(displayState.boardWidth).toBe(1400);
+    });
+  });
+
   describe("setShowPriorityGroups", () => {
     it("updates reactive state and storage", async () => {
       const { displayState, setShowPriorityGroups } = await import("./displaySettings.svelte");
@@ -149,20 +194,56 @@ describe("displaySettings.svelte", () => {
     });
   });
 
+  describe("setShowPriorityChip", () => {
+    it("updates reactive state and storage", async () => {
+      const { displayState, setShowPriorityChip } = await import("./displaySettings.svelte");
+
+      setShowPriorityChip(false);
+
+      expect(displayState.showPriorityChip).toBe(false);
+      expect(localStorage.getItem(SHOW_PRIORITY_CHIP_KEY)).toBe("false");
+
+      setShowPriorityChip(true);
+
+      expect(displayState.showPriorityChip).toBe(true);
+      expect(localStorage.getItem(SHOW_PRIORITY_CHIP_KEY)).toBe("true");
+    });
+
+    it("does not throw when storage access fails", async () => {
+      vi.stubGlobal("localStorage", {
+        getItem: vi.fn(() => {
+          throw new Error("storage disabled");
+        }),
+        setItem: vi.fn(() => {
+          throw new Error("storage disabled");
+        }),
+      });
+      const { displayState, setShowPriorityChip } = await import("./displaySettings.svelte");
+
+      expect(() => setShowPriorityChip(false)).not.toThrow();
+      expect(displayState.showPriorityChip).toBe(false);
+    });
+  });
+
   describe("initDisplay", () => {
     it("restores previously persisted values", async () => {
       store[FONT_SCALE_KEY] = "120";
       store[COLUMN_WIDTH_KEY] = "320";
+      store[BOARD_WIDTH_KEY] = "1500";
       store[SHOW_PRIORITY_GROUPS_KEY] = "false";
+      store[SHOW_PRIORITY_CHIP_KEY] = "false";
       const { displayState, initDisplay } = await import("./displaySettings.svelte");
 
       initDisplay();
 
       expect(displayState.fontScale).toBe(120);
       expect(displayState.columnWidth).toBe(320);
+      expect(displayState.boardWidth).toBe(1500);
       expect(displayState.showPriorityGroups).toBe(false);
+      expect(displayState.showPriorityChip).toBe(false);
       expect(document.documentElement.style.fontSize).toBe("120%");
       expect(setPropertyMock).toHaveBeenCalledWith("--column-width", "320px");
+      expect(setPropertyMock).toHaveBeenCalledWith("--board-width", "1500px");
     });
 
     it("falls back to defaults when storage is empty", async () => {
@@ -171,33 +252,39 @@ describe("displaySettings.svelte", () => {
         initDisplay,
         DEFAULT_FONT_SCALE,
         DEFAULT_COLUMN_WIDTH,
+        DEFAULT_BOARD_WIDTH,
         DEFAULT_SHOW_PRIORITY_GROUPS,
+        DEFAULT_SHOW_PRIORITY_CHIP,
       } = await import("./displaySettings.svelte");
 
       initDisplay();
 
       expect(displayState.fontScale).toBe(DEFAULT_FONT_SCALE);
       expect(displayState.columnWidth).toBe(DEFAULT_COLUMN_WIDTH);
+      expect(displayState.boardWidth).toBe(DEFAULT_BOARD_WIDTH);
       expect(displayState.showPriorityGroups).toBe(DEFAULT_SHOW_PRIORITY_GROUPS);
+      expect(displayState.showPriorityChip).toBe(DEFAULT_SHOW_PRIORITY_CHIP);
     });
 
     it("falls back to defaults when storage holds non-numeric values", async () => {
       store[FONT_SCALE_KEY] = "not-a-number";
       store[COLUMN_WIDTH_KEY] = "also-not-a-number";
-      const { displayState, initDisplay, DEFAULT_FONT_SCALE, DEFAULT_COLUMN_WIDTH } = await import(
-        "./displaySettings.svelte"
-      );
+      store[BOARD_WIDTH_KEY] = "not-a-number-either";
+      const { displayState, initDisplay, DEFAULT_FONT_SCALE, DEFAULT_COLUMN_WIDTH, DEFAULT_BOARD_WIDTH } =
+        await import("./displaySettings.svelte");
 
       initDisplay();
 
       expect(displayState.fontScale).toBe(DEFAULT_FONT_SCALE);
       expect(displayState.columnWidth).toBe(DEFAULT_COLUMN_WIDTH);
+      expect(displayState.boardWidth).toBe(DEFAULT_BOARD_WIDTH);
     });
 
     it("clamps out-of-range persisted values", async () => {
       store[FONT_SCALE_KEY] = "5";
       store[COLUMN_WIDTH_KEY] = "999999";
-      const { displayState, initDisplay, MIN_FONT_SCALE, MAX_COLUMN_WIDTH } = await import(
+      store[BOARD_WIDTH_KEY] = "999999";
+      const { displayState, initDisplay, MIN_FONT_SCALE, MAX_COLUMN_WIDTH, MAX_BOARD_WIDTH } = await import(
         "./displaySettings.svelte"
       );
 
@@ -205,6 +292,7 @@ describe("displaySettings.svelte", () => {
 
       expect(displayState.fontScale).toBe(MIN_FONT_SCALE);
       expect(displayState.columnWidth).toBe(MAX_COLUMN_WIDTH);
+      expect(displayState.boardWidth).toBe(MAX_BOARD_WIDTH);
     });
 
     it("does not throw when storage access fails", async () => {

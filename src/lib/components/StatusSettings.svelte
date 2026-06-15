@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { countTasksByStatus } from "$lib/api";
+  import { cssColorToHex } from "$lib/colorPresets";
   import { projectsState } from "$lib/projects.svelte";
   import { persistSettings, settingsState } from "$lib/settings.svelte";
   import {
@@ -26,7 +27,15 @@
   let errorMessage = $state("");
   let isSaving = $state(false);
 
-  let baseline = $derived(sortedStatuses(settingsState.current?.statuses ?? []));
+  // Colors are normalized to hex here so `baseline` matches what `ColorPicker`
+  // displays (its `$effect` migrates legacy oklch values to hex on display) —
+  // otherwise the form would appear dirty as soon as it loads legacy colors.
+  let baseline = $derived(
+    sortedStatuses(settingsState.current?.statuses ?? []).map((status) => ({
+      ...status,
+      color: cssColorToHex(status.color),
+    })),
+  );
   let baselineDefaultId = $derived(settingsState.current?.defaults.status);
   let baselineDoneId = $derived(settingsState.current?.done_status ?? "");
   let baselineCancelledId = $derived(settingsState.current?.cancelled_status);
@@ -40,7 +49,7 @@
   /** Seeds `draft` from settings once they finish loading; later edits live only in `draft`. */
   $effect(() => {
     if (settingsState.current && !initialized) {
-      draft = sortedStatuses(settingsState.current.statuses).map((status) => ({ ...status }));
+      draft = baseline.map((status) => ({ ...status }));
       draftDefaultId = baselineDefaultId;
       draftDoneId = baselineDoneId;
       draftCancelledId = baselineCancelledId;

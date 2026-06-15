@@ -3,6 +3,7 @@
   import "../styles/global.css";
   import Sidebar from "$lib/components/Sidebar.svelte";
   import { initDisplay } from "$lib/displaySettings.svelte";
+  import { initGeneral } from "$lib/generalSettings.svelte";
   import { refreshProjects } from "$lib/projects.svelte";
   import { refreshSettings } from "$lib/settings.svelte";
   import { initSidebar } from "$lib/sidebar.svelte";
@@ -14,6 +15,7 @@
   initTheme();
   initSidebar();
   initDisplay();
+  initGeneral();
 
   onMount(() => {
     void refreshProjects();

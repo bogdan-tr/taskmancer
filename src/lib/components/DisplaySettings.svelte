@@ -1,14 +1,19 @@
 <script lang="ts">
   import {
+    BOARD_WIDTH_STEP,
     COLUMN_WIDTH_STEP,
     displayState,
     FONT_SCALE_STEP,
+    MAX_BOARD_WIDTH,
     MAX_COLUMN_WIDTH,
     MAX_FONT_SCALE,
+    MIN_BOARD_WIDTH,
     MIN_COLUMN_WIDTH,
     MIN_FONT_SCALE,
+    setBoardWidth,
     setColumnWidth,
     setFontScale,
+    setShowPriorityChip,
     setShowPriorityGroups,
   } from "$lib/displaySettings.svelte";
 
@@ -20,8 +25,16 @@
     setColumnWidth(Number((event.currentTarget as HTMLInputElement).value));
   }
 
+  function handleBoardWidthInput(event: Event) {
+    setBoardWidth(Number((event.currentTarget as HTMLInputElement).value));
+  }
+
   function handleShowPriorityGroupsChange(event: Event) {
     setShowPriorityGroups((event.currentTarget as HTMLInputElement).checked);
+  }
+
+  function handleShowPriorityChipChange(event: Event) {
+    setShowPriorityChip((event.currentTarget as HTMLInputElement).checked);
   }
 </script>
 
@@ -62,6 +75,22 @@
     />
   </div>
 
+  <div class="control-row">
+    <div class="control-label">
+      <label for="board-width-input">Board width</label>
+      <span class="control-value">{displayState.boardWidth}px</span>
+    </div>
+    <input
+      id="board-width-input"
+      type="range"
+      min={MIN_BOARD_WIDTH}
+      max={MAX_BOARD_WIDTH}
+      step={BOARD_WIDTH_STEP}
+      value={displayState.boardWidth}
+      oninput={handleBoardWidthInput}
+    />
+  </div>
+
   <label class="toggle-row">
     <input
       type="checkbox"
@@ -73,6 +102,21 @@
       <span class="toggle-description">
         Show separate priority sections inside each status column. When off, tasks stay sorted by
         priority but the column isn't divided into separate blocks.
+      </span>
+    </span>
+  </label>
+
+  <label class="toggle-row">
+    <input
+      type="checkbox"
+      checked={displayState.showPriorityChip}
+      onchange={handleShowPriorityChipChange}
+    />
+    <span class="toggle-text">
+      <span class="toggle-label">Show priority labels on task cards</span>
+      <span class="toggle-description">
+        Display the priority name and dot on each task card. When off, the priority chip is
+        hidden, but the card's priority accent color is still shown.
       </span>
     </span>
   </label>

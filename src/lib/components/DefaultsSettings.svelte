@@ -4,6 +4,7 @@
   import { formatTags, parseTags } from "$lib/taskFields";
   import type { TaskDefaults } from "$lib/types";
 
+  let draftDefaultProject = $state("");
   let draftTags = $state("");
   let draftDue = $state("");
   let draftScheduled = $state("");
@@ -11,6 +12,7 @@
   let errorMessage = $state("");
   let isSaving = $state(false);
 
+  let baselineDefaultProject = $derived(settingsState.current?.default_project ?? "");
   let baselineTags = $derived(formatTags(settingsState.current?.defaults.tags ?? []));
   let baselineDue = $derived(settingsState.current?.defaults.due ?? "");
   let baselineScheduled = $derived(settingsState.current?.defaults.scheduled ?? "");
@@ -18,6 +20,7 @@
   /** Seeds the draft from settings once they finish loading; later edits live only in the draft. */
   $effect(() => {
     if (settingsState.current && !initialized) {
+      draftDefaultProject = baselineDefaultProject;
       draftTags = baselineTags;
       draftDue = baselineDue;
       draftScheduled = baselineScheduled;
@@ -26,10 +29,14 @@
   });
 
   let isDirty = $derived(
-    draftTags !== baselineTags || draftDue !== baselineDue || draftScheduled !== baselineScheduled,
+    draftDefaultProject !== baselineDefaultProject ||
+      draftTags !== baselineTags ||
+      draftDue !== baselineDue ||
+      draftScheduled !== baselineScheduled,
   );
 
   function discardChanges() {
+    draftDefaultProject = baselineDefaultProject;
     draftTags = baselineTags;
     draftDue = baselineDue;
     draftScheduled = baselineScheduled;
@@ -38,6 +45,12 @@
 
   async function save() {
     if (!settingsState.current) return;
+
+    const defaultProject = draftDefaultProject.trim();
+    if (!defaultProject) {
+      errorMessage = "Default project name cannot be empty";
+      return;
+    }
 
     const defaults: TaskDefaults = {
       ...settingsState.current.defaults,
@@ -48,7 +61,8 @@
 
     isSaving = true;
     try {
-      await persistSettings({ ...settingsState.current, defaults });
+      await persistSettings({ ...settingsState.current, default_project: defaultProject, defaults });
+      draftDefaultProject = defaultProject;
       draftTags = formatTags(defaults.tags);
       draftDue = defaults.due ?? "";
       draftScheduled = defaults.scheduled ?? "";
@@ -64,13 +78,24 @@
 <section aria-labelledby="defaults-heading">
   <h2 id="defaults-heading">New task defaults</h2>
   <p class="description">
-    Applied to every new task. Quick-add tags are added alongside the default tags, and an
-    explicit quick-add due/scheduled date always takes precedence over these defaults.
+    Applied to every new task. The default project is used whenever a task isn't created with a
+    `+Project` or from a project's board. Quick-add tags are added alongside the default tags,
+    and an explicit quick-add due/scheduled date always takes precedence over these defaults.
   </p>
 
   {#if !settingsState.current}
     <p class="loading">Loading defaults…</p>
   {:else}
+    <div class="field">
+      <label for="default-project">Default project name</label>
+      <input
+        id="default-project"
+        type="text"
+        placeholder="e.g. General"
+        bind:value={draftDefaultProject}
+      />
+    </div>
+
     <div class="field">
       <label for="default-tags">Default tags</label>
       <input

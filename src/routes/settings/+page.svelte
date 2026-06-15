@@ -1,6 +1,7 @@
 <script lang="ts">
   import DefaultsSettings from "$lib/components/DefaultsSettings.svelte";
   import DisplaySettings from "$lib/components/DisplaySettings.svelte";
+  import GeneralSettings from "$lib/components/GeneralSettings.svelte";
   import PrioritySettings from "$lib/components/PrioritySettings.svelte";
   import StatusSettings from "$lib/components/StatusSettings.svelte";
   import { setTheme, themeState } from "$lib/theme.svelte";
@@ -52,6 +53,7 @@
     </div>
   </section>
 
+  <GeneralSettings />
   <DisplaySettings />
   <PrioritySettings />
   <StatusSettings />

@@ -11,6 +11,7 @@
   import { projectsState } from "$lib/projects.svelte";
   import { settingsState } from "$lib/settings.svelte";
   import { tagsState } from "$lib/tags.svelte";
+  import { resolveTaskPreview } from "$lib/taskPreview";
   import Autocomplete from "./Autocomplete.svelte";
 
   interface Props {
@@ -18,11 +19,11 @@
     onClose: () => void;
     onSubmit: (parsed: ParsedTaskInput) => Promise<void> | void;
     errorMessage?: string;
-    /** Pre-filled into the input when the dialog opens, e.g. `+ProjectName `. */
-    initialInput?: string;
+    /** When set, this dialog was opened from a project-scoped board: new tasks default to this project. */
+    projectFilter?: string;
   }
 
-  let { open, onClose, onSubmit, errorMessage = "", initialInput = "" }: Props = $props();
+  let { open, onClose, onSubmit, errorMessage = "", projectFilter }: Props = $props();
 
   let dialogEl: HTMLDialogElement | undefined = $state();
   let inputEl: HTMLInputElement | undefined = $state();
@@ -31,6 +32,33 @@
   let priorities = $derived(settingsState.current?.priorities ?? FALLBACK_PRIORITIES);
   let knownPriorities = $derived(priorities.map(({ id, label }) => ({ id, label })));
   let parsed = $derived(parseTaskInput(title, undefined, knownPriorities));
+
+  let defaultProjectName = $derived(settingsState.current?.default_project ?? "General");
+  let globalDefaults = $derived(settingsState.current?.defaults ?? { tags: [] });
+
+  /**
+   * The project the task will be created under: the `+Project` quick-add
+   * token, else this dialog's `projectFilter`, else the configured default
+   * project. Looked up case-insensitively (mirroring `find_project` in the
+   * Rust command layer) to resolve its `TaskDefaults` overrides.
+   */
+  let resolvedProjectName = $derived(parsed.project ?? projectFilter ?? defaultProjectName);
+  let matchedProject = $derived(
+    projectsState.items.find((project) => project.name.toLowerCase() === resolvedProjectName.toLowerCase()),
+  );
+
+  /** The effective project, priority, tags, due, and scheduled this task will be created with. */
+  let preview = $derived(
+    resolveTaskPreview({
+      parsed,
+      projectFilter,
+      defaultProjectName,
+      globalDefaults,
+      projectDefaults: matchedProject?.defaults,
+      matchedProjectName: matchedProject?.name,
+      priorities,
+    }),
+  );
 
   // The `+Project` quick-add token is a single whitespace-delimited word, so
   // only single-word project names can be completed through it.
@@ -46,7 +74,7 @@
     if (!dialogEl) return;
     if (open) {
       if (!dialogEl.open) {
-        title = initialInput;
+        title = "";
         suggestions = [];
         activeToken = undefined;
         dialogEl.showModal();
@@ -135,7 +163,7 @@
   async function handleSubmit(event: Event) {
     event.preventDefault();
     if (!parsed.title) return;
-    await onSubmit(parsed);
+    await onSubmit({ ...parsed, project: preview.project });
   }
 </script>
 
@@ -210,22 +238,19 @@
     <dl class="field-list">
       <div class="field-row">
         <dt>Project</dt>
-        <dd class:filled={!!parsed.project}>{parsed.project ?? "—"}</dd>
+        <dd class="filled">{preview.project}</dd>
       </div>
       <div class="field-row">
         <dt>Priority</dt>
-        <dd
-          class:filled={!!parsed.priority}
-          style={parsed.priority ? `color: ${priorityColor(priorities, parsed.priority)}` : ""}
-        >
-          {parsed.priority ? priorityLabel(priorities, parsed.priority) : "—"}
+        <dd class="filled" style={`color: ${priorityColor(priorities, preview.priorityId)}`}>
+          {priorityLabel(priorities, preview.priorityId)}
         </dd>
       </div>
       <div class="field-row">
         <dt>Tags</dt>
         <dd class="tags">
-          {#if parsed.tags.length > 0}
-            {#each parsed.tags as tag (tag)}
+          {#if preview.tags.length > 0}
+            {#each preview.tags as tag (tag)}
               <span class="chip">#{tag}</span>
             {/each}
           {:else}
@@ -235,11 +260,11 @@
       </div>
       <div class="field-row">
         <dt>Scheduled</dt>
-        <dd class:filled={!!parsed.scheduled}>{parsed.scheduled ?? "—"}</dd>
+        <dd class:filled={!!preview.scheduled}>{preview.scheduled ?? "—"}</dd>
       </div>
       <div class="field-row">
         <dt>Due</dt>
-        <dd class:filled={!!parsed.due}>{parsed.due ?? "—"}</dd>
+        <dd class:filled={!!preview.due}>{preview.due ?? "—"}</dd>
       </div>
     </dl>
 

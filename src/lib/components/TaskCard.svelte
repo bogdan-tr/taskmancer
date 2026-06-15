@@ -1,5 +1,7 @@
 <script lang="ts">
   import { applyTagsSuggestion, filterSuggestions, splitTagsInput } from "$lib/autocomplete";
+  import { displayState } from "$lib/displaySettings.svelte";
+  import { generalState } from "$lib/generalSettings.svelte";
   import {
     FALLBACK_PRIORITIES,
     priorityColor,
@@ -12,6 +14,7 @@
   import { tagsState } from "$lib/tags.svelte";
   import type { Task } from "$lib/types";
   import Autocomplete from "./Autocomplete.svelte";
+  import ConfirmDialog from "./ConfirmDialog.svelte";
 
   interface Props {
     task: Task;
@@ -32,6 +35,7 @@
   let draftScheduled = $state("");
   let draftNotes = $state("");
   let editError = $state("");
+  let showDeleteConfirm = $state(false);
 
   let projectSuggestions: string[] = $state([]);
   let projectSuggestionIndex = $state(0);
@@ -152,9 +156,20 @@
   }
 
   function handleDelete() {
-    if (confirm(`Delete "${task.title}"?`)) {
+    if (generalState.confirmTaskDeletion) {
+      showDeleteConfirm = true;
+    } else {
       onDelete(task.id);
     }
+  }
+
+  function confirmDelete() {
+    showDeleteConfirm = false;
+    onDelete(task.id);
+  }
+
+  function cancelDelete() {
+    showDeleteConfirm = false;
   }
 
   function handleTitleKeydown(event: KeyboardEvent) {
@@ -237,23 +252,11 @@
       </label>
       <label>
         Due
-        <input
-          type="text"
-          bind:value={draftDue}
-          placeholder="YYYY-MM-DD"
-          pattern="\d{4}-\d{2}-\d{2}"
-          title="Format: YYYY-MM-DD"
-        />
+        <input type="text" bind:value={draftDue} placeholder="YYYY-MM-DD" />
       </label>
       <label>
         Scheduled
-        <input
-          type="text"
-          bind:value={draftScheduled}
-          placeholder="YYYY-MM-DD"
-          pattern="\d{4}-\d{2}-\d{2}"
-          title="Format: YYYY-MM-DD"
-        />
+        <input type="text" bind:value={draftScheduled} placeholder="YYYY-MM-DD" />
       </label>
       <label>
         Notes
@@ -280,10 +283,12 @@
     </div>
 
     <div class="task-meta">
-      <span class="chip priority">
-        <span class="priority-dot" aria-hidden="true"></span>
-        {priorityLabel(priorities, task.priority)}
-      </span>
+      {#if displayState.showPriorityChip}
+        <span class="chip priority">
+          <span class="priority-dot" aria-hidden="true"></span>
+          {priorityLabel(priorities, task.priority)}
+        </span>
+      {/if}
       {#if task.project}
         <span class="chip project">{task.project}</span>
       {/if}
@@ -295,6 +300,15 @@
       {/if}
     </div>
   {/if}
+
+  <ConfirmDialog
+    open={showDeleteConfirm}
+    title="Delete task"
+    message={`Delete "${task.title}"? This can't be undone.`}
+    confirmLabel="Delete"
+    onConfirm={confirmDelete}
+    onCancel={cancelDelete}
+  />
 </li>
 
 <style>

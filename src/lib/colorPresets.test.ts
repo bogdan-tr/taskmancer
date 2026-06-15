@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { isHexColor, PRESET_COLOR_NAMES, PRESET_COLORS } from "./colorPresets";
+import { cssColorToHex, isHexColor, PRESET_COLOR_NAMES, PRESET_COLORS } from "./colorPresets";
 
 describe("isHexColor", () => {
   test("accepts a 6-digit hex color", () => {
@@ -43,5 +43,27 @@ describe("PRESET_COLOR_NAMES", () => {
   test("has one name per preset color", () => {
     expect(PRESET_COLOR_NAMES).toHaveLength(PRESET_COLORS.length);
     expect(new Set(PRESET_COLOR_NAMES).size).toBe(PRESET_COLOR_NAMES.length);
+  });
+});
+
+describe("cssColorToHex", () => {
+  test("converts an oklch color (percentage lightness) to its hex equivalent", () => {
+    expect(cssColorToHex("oklch(58% 0.13 70)")).toBe("#aa6a00");
+  });
+
+  test("converts an oklch color with a high chroma/hue to its hex equivalent", () => {
+    expect(cssColorToHex("oklch(54% 0.2 350)")).toBe("#bc267f");
+  });
+
+  test("converts an oklch color with a fractional (non-percentage) lightness", () => {
+    expect(cssColorToHex("oklch(0.58 0.13 70)")).toBe("#aa6a00");
+  });
+
+  test("returns an already-hex color unchanged, lowercased", () => {
+    expect(cssColorToHex("#3B82F6")).toBe("#3b82f6");
+  });
+
+  test("returns unrecognized color formats unchanged", () => {
+    expect(cssColorToHex("rebeccapurple")).toBe("rebeccapurple");
   });
 });

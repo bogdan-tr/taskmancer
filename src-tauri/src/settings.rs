@@ -18,6 +18,13 @@ fn default_status_color() -> String {
     "#807973".to_string()
 }
 
+/// Fallback project name for newly-created tasks that don't specify a
+/// project, used as the seeded value of `Settings.default_project` and to
+/// fill in `settings.json` files written before that field existed.
+fn default_project_name() -> String {
+    "General".to_string()
+}
+
 /// A user-defined priority level: an id stored in `Task.priority`, a display
 /// label, a `color` used to render that priority throughout the UI, and a
 /// `rank` used to sort tasks by priority (lower `rank` sorts first / is
@@ -73,6 +80,11 @@ pub struct TaskDefaults {
 /// always be the done status (enforced by [`validate_settings`]); the
 /// cancelled status is optional and, if set, must differ from the done
 /// status — a single status can't mean both "done" and "cancelled".
+///
+/// `default_project` names the project a new task is filed under when no
+/// project was specified (and no project-scoped board supplied one); it must
+/// be non-empty (enforced by [`validate_settings`]) so a task can never be
+/// created or saved without a project.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Settings {
     #[serde(default)]
@@ -85,6 +97,8 @@ pub struct Settings {
     pub done_status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cancelled_status: Option<String>,
+    #[serde(default = "default_project_name")]
+    pub default_project: String,
 }
 
 impl Default for Settings {
@@ -157,6 +171,7 @@ impl Default for Settings {
             },
             done_status: "done".to_string(),
             cancelled_status: None,
+            default_project: default_project_name(),
         }
     }
 }
@@ -274,8 +289,9 @@ pub fn validate_status_id(settings: &Settings, id: &str) -> Result<(), String> {
 /// fallbacks), `defaults.priority`/`defaults.status`, if set, must reference
 /// one of those ids, `defaults.due`/`defaults.scheduled`, if set, must be
 /// a recognized relative-date code, `done_status` must be non-empty and
-/// reference a defined status, and `cancelled_status`, if set, must
-/// reference a defined status distinct from `done_status`.
+/// reference a defined status, `cancelled_status`, if set, must
+/// reference a defined status distinct from `done_status`, and
+/// `default_project` must be non-empty after trimming whitespace.
 pub fn validate_settings(settings: &Settings) -> Result<(), String> {
     if settings.priorities.is_empty() {
         return Err("at least one priority level must be defined".to_string());
@@ -331,6 +347,10 @@ pub fn validate_settings(settings: &Settings) -> Result<(), String> {
         validate_relative_date_code(scheduled)?;
     }
 
+    if settings.default_project.trim().is_empty() {
+        return Err("a default project name must be defined".to_string());
+    }
+
     Ok(())
 }
 
@@ -364,6 +384,20 @@ mod tests {
 
         assert_eq!(settings.done_status, "done");
         assert_eq!(settings.cancelled_status, None);
+    }
+
+    #[test]
+    fn default_settings_seed_has_a_default_project_name_of_general() {
+        let settings = Settings::default();
+
+        assert_eq!(settings.default_project, "General");
+    }
+
+    #[test]
+    fn deserializing_settings_without_default_project_fills_in_general() {
+        let settings: Settings = serde_json::from_str("{}").unwrap();
+
+        assert_eq!(settings.default_project, "General");
     }
 
     #[test]
@@ -643,6 +677,37 @@ mod tests {
         let settings = Settings::default();
 
         assert_eq!(settings.defaults.scheduled, None);
+        assert!(validate_settings(&settings).is_ok());
+    }
+
+    #[test]
+    fn validate_settings_rejects_an_empty_default_project() {
+        let settings = Settings {
+            default_project: String::new(),
+            ..Default::default()
+        };
+
+        let err = validate_settings(&settings).unwrap_err();
+        assert!(err.contains("default project"));
+    }
+
+    #[test]
+    fn validate_settings_rejects_a_whitespace_only_default_project() {
+        let settings = Settings {
+            default_project: "   ".to_string(),
+            ..Default::default()
+        };
+
+        assert!(validate_settings(&settings).is_err());
+    }
+
+    #[test]
+    fn validate_settings_accepts_a_valid_default_project() {
+        let settings = Settings {
+            default_project: "Inbox".to_string(),
+            ..Default::default()
+        };
+
         assert!(validate_settings(&settings).is_ok());
     }
 
@@ -934,6 +999,7 @@ mod tests {
             defaults: TaskDefaults::default(),
             done_status: String::new(),
             cancelled_status: None,
+            default_project: default_project_name(),
         };
 
         let normalized = settings.normalize();

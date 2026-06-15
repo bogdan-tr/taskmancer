@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { PRESET_COLOR_NAMES, PRESET_COLORS } from "$lib/colorPresets";
+  import { cssColorToHex, isHexColor, PRESET_COLOR_NAMES, PRESET_COLORS } from "$lib/colorPresets";
 
   interface Props {
     value: string;
@@ -9,6 +9,14 @@
   let { value = $bindable(), label }: Props = $props();
 
   let isValid = $derived(value.trim() !== "" && CSS.supports("color", value));
+
+  // Migrates legacy non-hex (e.g. oklch) color values to hex on display, so
+  // saving the form persists the hex form without further action.
+  $effect(() => {
+    if (value.trim() === "" || isHexColor(value)) return;
+    const hex = cssColorToHex(value);
+    if (hex !== value) value = hex;
+  });
 </script>
 
 <div class="color-picker">

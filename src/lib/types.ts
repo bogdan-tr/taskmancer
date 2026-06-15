@@ -97,6 +97,10 @@ export interface StatusDefinition {
  * represent a task being finished or abandoned. Exactly one status is always
  * the done status; the cancelled status is optional and, if set, differs from
  * the done status.
+ *
+ * `default_project` names the project a new task is filed under when no
+ * project was specified (and no project-scoped board supplied one); the
+ * backend never creates or saves a task with an empty/missing project.
  */
 export interface Settings {
   priorities: PriorityLevel[];
@@ -104,4 +108,5 @@ export interface Settings {
   defaults: TaskDefaults;
   done_status: string;
   cancelled_status?: string;
+  default_project: string;
 }
