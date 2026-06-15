@@ -1,10 +1,12 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { dndzone, type DndEvent } from "svelte-dnd-action";
+  import type { DndEvent } from "svelte-dnd-action";
   import { createTask, deleteTask, finishDay, listTasks, reorderTask, updateTask } from "$lib/api";
+  import { isVisibleOnBoard } from "$lib/boardVisibility";
   import AddTaskModal from "$lib/components/AddTaskModal.svelte";
   import ConfirmDialog from "$lib/components/ConfirmDialog.svelte";
-  import TaskCard from "$lib/components/TaskCard.svelte";
+  import KanbanGrid from "$lib/components/KanbanGrid.svelte";
+  import WeekView from "$lib/components/WeekView.svelte";
   import { displayState } from "$lib/displaySettings.svelte";
   import { formatFinishDayResult } from "$lib/finishDay";
   import {
@@ -15,6 +17,7 @@
     removeTaskFromBuckets,
     renumberBucket,
     sortBucketTasks,
+    type BoardColumn,
     type PriorityBucket,
     type StatusBuckets,
   } from "$lib/kanbanGrouping";
@@ -31,6 +34,7 @@
   } from "$lib/statuses.svelte";
   import { refreshTags } from "$lib/tags.svelte";
   import type { Task } from "$lib/types";
+  import { formatDateISO } from "$lib/weekRange";
 
   interface Props {
     title: string;
@@ -44,19 +48,6 @@
 
   /** Spacing between sequential `order` values when a bucket is renumbered after a drag. */
   const ORDER_STEP = 1000;
-  const FLIP_DURATION_MS = 150;
-
-  /**
-   * A Kanban column: either a configured status (`id` set) or the trailing
-   * "Other" status column (`id` undefined) for tasks whose status falls
-   * outside the board's configured statuses.
-   */
-  interface BoardColumn {
-    id: string | undefined;
-    label: string;
-    color: string;
-    buckets: PriorityBucket[];
-  }
 
   let priorities = $derived(settingsState.current?.priorities ?? FALLBACK_PRIORITIES);
   let statuses = $derived(sortedStatuses(settingsState.current?.statuses ?? FALLBACK_STATUSES));
@@ -130,13 +121,27 @@
   let finishDayMessage = $state("");
   let isFinishingDay = $state(false);
 
+  /** Which view this board shows: the Kanban grid or the calendar week view. */
+  let activeView: "board" | "week" = $state("board");
+
+  /**
+   * Every task visible on this board (project-filtered, but not subject to
+   * Item 3's future-`scheduled` visibility rule) - passed to `WeekView`,
+   * which shows scheduled/due bars regardless of whether a task is currently
+   * hidden from the Kanban grid.
+   */
+  let visibleTasks: Task[] = $state([]);
+
   async function refresh() {
     try {
       const allTasks = await listTasks();
       const visible = projectFilter
         ? allTasks.filter((task) => task.project === projectFilter)
         : allTasks;
-      buckets = groupByStatusAndPriority(visible, priorities, boardStatusIds, groupByPriority);
+      visibleTasks = visible;
+      const today = formatDateISO(new Date());
+      const boardVisible = visible.filter((task) => isVisibleOnBoard(task, today));
+      buckets = groupByStatusAndPriority(boardVisible, priorities, boardStatusIds, groupByPriority);
       recomputeHasOther();
       errorMessage = "";
     } catch (error) {
@@ -149,10 +154,7 @@
   async function handleAddTask(parsed: ParsedTaskInput) {
     try {
       const task = await createTask(parsed);
-      if (!projectFilter || task.project === projectFilter) {
-        buckets = insertTaskIntoBuckets(buckets, task, priorities, groupByPriority);
-        recomputeHasOther();
-      }
+      replaceTask(task);
       errorMessage = "";
       finishDayMessage = "";
       modalOpen = false;
@@ -162,28 +164,37 @@
     }
   }
 
-  /** Removes a task from whichever bucket currently holds it. */
+  /** Removes a task from whichever bucket currently holds it, and from `visibleTasks`. */
   function removeTask(id: string) {
     buckets = removeTaskFromBuckets(buckets, id);
+    visibleTasks = visibleTasks.filter((task) => task.id !== id);
     recomputeHasOther();
   }
 
   /**
-   * Moves a task to the bucket matching its (possibly new) status and
-   * priority. If this board is scoped to a project and the edit moved the
-   * task to a different project, it's removed from view instead.
+   * Upserts a created/edited task into `visibleTasks` and `buckets`. If this
+   * board is scoped to a project and the task's `project` doesn't match, it's
+   * removed from view entirely instead. A task that's in `visibleTasks` but
+   * not currently `isVisibleOnBoard` (Item 3's future-`scheduled` rule) is
+   * left out of `buckets` - it stays hidden from the Kanban grid but remains
+   * available to the week view.
    */
   function replaceTask(updated: Task) {
     if (projectFilter && updated.project !== projectFilter) {
       removeTask(updated.id);
       return;
     }
-    buckets = insertTaskIntoBuckets(
-      removeTaskFromBuckets(buckets, updated.id),
-      updated,
-      priorities,
-      groupByPriority,
-    );
+
+    const index = visibleTasks.findIndex((task) => task.id === updated.id);
+    visibleTasks =
+      index === -1
+        ? [...visibleTasks, updated]
+        : visibleTasks.map((task) => (task.id === updated.id ? updated : task));
+
+    const withoutUpdated = removeTaskFromBuckets(buckets, updated.id);
+    buckets = isVisibleOnBoard(updated, formatDateISO(new Date()))
+      ? insertTaskIntoBuckets(withoutUpdated, updated, priorities, groupByPriority)
+      : withoutUpdated;
     recomputeHasOther();
   }
 
@@ -281,6 +292,8 @@
     );
     if (changed.length === 0) return;
 
+    visibleTasks = visibleTasks.map((task) => changed.find((c) => c.id === task.id) ?? task);
+
     try {
       await Promise.all(
         changed.map((task) => reorderTask(task.id, task.order, task.status, bucket.priorityId)),
@@ -345,6 +358,28 @@
       {#if tagline}
         <p class="brand-tagline">{tagline}</p>
       {/if}
+    </div>
+    <div class="view-tabs" role="tablist" aria-label="Board view">
+      <button
+        type="button"
+        class="view-tab"
+        class:active={activeView === "board"}
+        role="tab"
+        aria-selected={activeView === "board"}
+        onclick={() => (activeView = "board")}
+      >
+        Board
+      </button>
+      <button
+        type="button"
+        class="view-tab"
+        class:active={activeView === "week"}
+        role="tab"
+        aria-selected={activeView === "week"}
+        onclick={() => (activeView = "week")}
+      >
+        Week
+      </button>
     </div>
     <div class="header-actions">
       {#if !projectFilter}
@@ -436,39 +471,17 @@
 
   {#if isLoading}
     <p class="loading">Loading tasks…</p>
+  {:else if activeView === "week"}
+    <WeekView tasks={visibleTasks} onUpdate={handleUpdate} />
   {:else}
-    <div class="board">
-      {#each boardColumns as column (column.id)}
-        <section class="column" style="--status-accent: {column.color}">
-          <h2>{column.label}</h2>
-          {#each column.buckets as bucket, bucketIndex (bucket.priorityId ?? "other")}
-            <div class="priority-group">
-              {#if groupByPriority}
-                <p class="priority-group-label" style="--priority-color: {bucket.color}">
-                  {bucket.label}
-                </p>
-              {/if}
-              <ul
-                use:dndzone={{
-                  items: bucket.tasks,
-                  flipDurationMs: FLIP_DURATION_MS,
-                  zoneItemTabIndex: -1,
-                  // Empty object overrides (not merges with) the library default
-                  // outline: 'rgba(255, 255, 102, 0.7) solid 2px' — disables it.
-                  dropTargetStyle: {},
-                }}
-                onconsider={(event) => handleConsider(column.id, bucketIndex, event)}
-                onfinalize={(event) => handleFinalize(column.id, bucketIndex, event)}
-              >
-                {#each bucket.tasks as task (task.id)}
-                  <TaskCard {task} onUpdate={handleUpdate} onDelete={handleDelete} />
-                {/each}
-              </ul>
-            </div>
-          {/each}
-        </section>
-      {/each}
-    </div>
+    <KanbanGrid
+      {boardColumns}
+      {groupByPriority}
+      onConsider={handleConsider}
+      onFinalize={handleFinalize}
+      onUpdate={handleUpdate}
+      onDelete={handleDelete}
+    />
   {/if}
 </main>
 
@@ -519,6 +532,46 @@
     color: var(--color-ink-muted);
     text-transform: uppercase;
     letter-spacing: var(--tracking-wide);
+  }
+
+  .view-tabs {
+    display: inline-flex;
+    gap: var(--space-4xs);
+    padding: var(--space-4xs);
+    border-radius: var(--radius-pill);
+    background: var(--color-canvas);
+    border: 1px solid var(--color-border);
+    flex-shrink: 0;
+  }
+
+  .view-tab {
+    padding: var(--space-2xs) var(--space-md);
+    border: none;
+    border-radius: var(--radius-pill);
+    background: transparent;
+    color: var(--color-ink-muted);
+    font-weight: 600;
+    font-size: var(--text-sm);
+    cursor: pointer;
+    transition:
+      background var(--duration-fast) var(--ease-out-expo),
+      color var(--duration-fast) var(--ease-out-expo),
+      box-shadow var(--duration-fast) var(--ease-out-expo);
+  }
+
+  .view-tab:hover {
+    color: var(--color-ink);
+  }
+
+  .view-tab.active {
+    background: var(--color-surface-raised);
+    color: var(--color-ink);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .view-tab:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
   }
 
   .header-actions {
@@ -627,92 +680,5 @@
   .loading {
     color: var(--color-ink-muted);
     font-size: var(--text-sm);
-  }
-
-  .board {
-    display: flex;
-    align-items: flex-start;
-    gap: var(--space-lg);
-    overflow-x: auto;
-    padding-bottom: var(--space-sm);
-  }
-
-  .column {
-    position: relative;
-    display: flex;
-    flex-direction: column;
-    flex: 0 0 var(--column-width, 240px);
-    width: var(--column-width, 240px);
-    gap: var(--space-sm);
-    background: var(--color-surface);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-lg);
-    padding: var(--space-md);
-    min-height: 200px;
-  }
-
-  .column::before {
-    content: "";
-    position: absolute;
-    top: 0;
-    left: var(--space-md);
-    right: var(--space-md);
-    height: 3px;
-    border-radius: 0 0 var(--radius-pill) var(--radius-pill);
-    background: var(--status-accent, var(--color-border-strong));
-  }
-
-  .column h2 {
-    margin: 0;
-    padding-top: var(--space-2xs);
-    font-size: var(--text-xs);
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: var(--tracking-wide);
-    color: var(--color-ink-muted);
-  }
-
-  .priority-group {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2xs);
-  }
-
-  .priority-group-label {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2xs);
-    margin: 0;
-    font-size: var(--text-xs);
-    font-weight: 600;
-    letter-spacing: var(--tracking-wide);
-    color: var(--color-ink-faint);
-  }
-
-  .priority-group-label::before {
-    content: "";
-    width: 0.5rem;
-    height: 0.5rem;
-    border-radius: var(--radius-pill);
-    background: var(--priority-color, var(--color-border-strong));
-    flex-shrink: 0;
-  }
-
-  .column ul {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    /* Tall enough that a dragged card's center can land inside this rect
-       even when the bucket is empty (svelte-dnd-action computes drop
-       targets via element-center-inside-collection-rect). */
-    min-height: 2.5rem;
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-sm);
-  }
-
-  .column ul:empty {
-    border: 1px dashed var(--color-border-strong);
-    border-radius: var(--radius-md);
   }
 </style>

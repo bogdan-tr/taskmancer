@@ -15,6 +15,8 @@
     setFontScale,
     setShowPriorityChip,
     setShowPriorityGroups,
+    setWeekStartsOn,
+    type WeekStartsOn,
   } from "$lib/displaySettings.svelte";
 
   function handleFontScaleInput(event: Event) {
@@ -35,6 +37,10 @@
 
   function handleShowPriorityChipChange(event: Event) {
     setShowPriorityChip((event.currentTarget as HTMLInputElement).checked);
+  }
+
+  function handleWeekStartsOnChange(event: Event) {
+    setWeekStartsOn((event.currentTarget as HTMLSelectElement).value as WeekStartsOn);
   }
 </script>
 
@@ -89,6 +95,16 @@
       value={displayState.boardWidth}
       oninput={handleBoardWidthInput}
     />
+  </div>
+
+  <div class="control-row">
+    <div class="control-label">
+      <label for="week-starts-on-select">Week starts on</label>
+    </div>
+    <select id="week-starts-on-select" value={displayState.weekStartsOn} onchange={handleWeekStartsOnChange}>
+      <option value="monday">Monday</option>
+      <option value="sunday">Sunday</option>
+    </select>
   </div>
 
   <label class="toggle-row">
@@ -168,6 +184,25 @@
   .control-row input[type="range"] {
     width: 100%;
     accent-color: var(--color-accent);
+  }
+
+  .control-row select {
+    padding: var(--space-2xs) var(--space-sm);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--color-border);
+    background: var(--color-surface);
+    color: var(--color-ink);
+    font-size: var(--text-sm);
+    box-shadow: var(--shadow-sm);
+    transition:
+      border-color var(--duration-fast) var(--ease-out-expo),
+      box-shadow var(--duration-fast) var(--ease-out-expo);
+  }
+
+  .control-row select:focus-visible {
+    border-color: var(--color-accent);
+    box-shadow: 0 0 0 3px var(--color-accent-soft);
+    outline: none;
   }
 
   .toggle-row {

@@ -3,6 +3,7 @@ const COLUMN_WIDTH_KEY = "taskmancer:column-width";
 const BOARD_WIDTH_KEY = "taskmancer:board-width";
 const SHOW_PRIORITY_GROUPS_KEY = "taskmancer:show-priority-groups";
 const SHOW_PRIORITY_CHIP_KEY = "taskmancer:show-priority-chip";
+const WEEK_STARTS_ON_KEY = "taskmancer:week-starts-on";
 
 export const MIN_FONT_SCALE = 80;
 export const MAX_FONT_SCALE = 140;
@@ -22,6 +23,9 @@ export const DEFAULT_BOARD_WIDTH = 1200;
 export const DEFAULT_SHOW_PRIORITY_GROUPS = true;
 export const DEFAULT_SHOW_PRIORITY_CHIP = true;
 
+export type WeekStartsOn = "monday" | "sunday";
+export const DEFAULT_WEEK_STARTS_ON: WeekStartsOn = "monday";
+
 /**
  * Boxed in an object because Svelte 5 forbids exporting a reassigned `$state`
  * binding directly from a module — only its properties may be mutated.
@@ -32,12 +36,14 @@ export const displayState = $state<{
   boardWidth: number;
   showPriorityGroups: boolean;
   showPriorityChip: boolean;
+  weekStartsOn: WeekStartsOn;
 }>({
   fontScale: DEFAULT_FONT_SCALE,
   columnWidth: DEFAULT_COLUMN_WIDTH,
   boardWidth: DEFAULT_BOARD_WIDTH,
   showPriorityGroups: DEFAULT_SHOW_PRIORITY_GROUPS,
   showPriorityChip: DEFAULT_SHOW_PRIORITY_CHIP,
+  weekStartsOn: DEFAULT_WEEK_STARTS_ON,
 });
 
 function clamp(value: number, min: number, max: number): number {
@@ -100,6 +106,16 @@ export function setShowPriorityChip(value: boolean): void {
   }
 }
 
+/** Sets which day the week view treats as the first day of the week and persists it. */
+export function setWeekStartsOn(value: WeekStartsOn): void {
+  displayState.weekStartsOn = value;
+  try {
+    localStorage.setItem(WEEK_STARTS_ON_KEY, value);
+  } catch {
+    // Persistence is best-effort; the choice still applies for this session.
+  }
+}
+
 /** Parses a persisted numeric setting, falling back to `fallback` when missing, invalid, or out of range. */
 function parseStoredNumber(raw: string | null, min: number, max: number, fallback: number): number {
   if (raw === null) return fallback;
@@ -115,12 +131,14 @@ export function initDisplay(): void {
   let storedBoardWidth: string | null = null;
   let storedShowPriorityGroups: string | null = null;
   let storedShowPriorityChip: string | null = null;
+  let storedWeekStartsOn: string | null = null;
   try {
     storedFontScale = localStorage.getItem(FONT_SCALE_KEY);
     storedColumnWidth = localStorage.getItem(COLUMN_WIDTH_KEY);
     storedBoardWidth = localStorage.getItem(BOARD_WIDTH_KEY);
     storedShowPriorityGroups = localStorage.getItem(SHOW_PRIORITY_GROUPS_KEY);
     storedShowPriorityChip = localStorage.getItem(SHOW_PRIORITY_CHIP_KEY);
+    storedWeekStartsOn = localStorage.getItem(WEEK_STARTS_ON_KEY);
   } catch {
     // Fall back to defaults below.
   }
@@ -134,4 +152,5 @@ export function initDisplay(): void {
   setShowPriorityChip(
     storedShowPriorityChip === null ? DEFAULT_SHOW_PRIORITY_CHIP : storedShowPriorityChip === "true",
   );
+  setWeekStartsOn(storedWeekStartsOn === "sunday" ? "sunday" : DEFAULT_WEEK_STARTS_ON);
 }

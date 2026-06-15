@@ -29,6 +29,18 @@ export interface StatusBuckets {
   other: PriorityBucket[];
 }
 
+/**
+ * A Kanban column: either a configured status (`id` set) or the trailing
+ * "Other" status column (`id` undefined) for tasks whose status falls
+ * outside the board's configured statuses.
+ */
+export interface BoardColumn {
+  id: string | undefined;
+  label: string;
+  color: string;
+  buckets: PriorityBucket[];
+}
+
 /** Returns whether any bucket in `buckets` contains at least one task. */
 export function bucketsHaveTasks(buckets: PriorityBucket[]): boolean {
   return buckets.some((bucket) => bucket.tasks.length > 0);

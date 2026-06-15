@@ -27,7 +27,14 @@ task entry, and (eventually) time tracking and analytics — built with
   In Progress / Blocked / Done by default — fully customizable, including
   per-project column subsets, from Settings). Columns scroll horizontally
   instead of wrapping, and within each column tasks are grouped by priority
-  (toggleable — see [Display settings](#display-settings)).
+  (toggleable — see [Display settings](#display-settings)). Tasks with a
+  `scheduled` date in the future are hidden from the board until that day
+  arrives (they remain visible in the Week view).
+- **Week view** — a "Board" / "Week" switcher (on both the global and
+  per-project boards) shows a 7-day calendar grid with project-colored bars
+  for tasks scheduled or due that day. Navigate with prev/next/Today; click a
+  bar to see task details and jump into editing. See
+  [Week view](#week-view) for details.
 - **Compact task cards** — the title sits on one line, with a wrapping row
   of chips below it (priority badge, project, tags, due date) that only
   grows onto extra lines when needed.
@@ -36,6 +43,7 @@ task entry, and (eventually) time tracking and analytics — built with
 - **Natural-language quick add** (`Ctrl+T` or the `+` button) — recognizes
   `#tag`, `+Project`, bare `high`/`medium`/`low` priority words, and
   `due <phrase>` / `sch <phrase>` (e.g. `due next friday`, `sch tomorrow`).
+  A "?" button next to the title field opens a syntax cheat-sheet popover.
 - **Tag & project autocomplete** in the Add Task modal and on task cards.
 - **Themes & display settings** — Light, Dark, and Dark Blue themes (shared
   OKLCH design-token system), plus app-wide font size and Kanban column width
@@ -46,10 +54,10 @@ task entry, and (eventually) time tracking and analytics — built with
 
 ### Planned
 
-Time tracking, Pomodoro/focus mode, idle detection, calendar/daily/weekly
-views, recurring tasks, habit tracking, analytics dashboards, plugin system,
-calendar sync, and import/export. See the in-app roadmap for current
-priorities.
+Time tracking, Pomodoro/focus mode, idle detection, calendar/month view (in
+addition to the existing Week view), recurring tasks, habit tracking,
+analytics dashboards, plugin system, calendar sync, and import/export. See
+the in-app roadmap for current priorities.
 
 ## Tech stack
 
@@ -178,6 +186,19 @@ Anything left over becomes the task title.
 
 `due:<token>` / `sch:<token>` (the colon form) only support `today`, `tomorrow`, `YYYY-MM-DD`, and plain weekday names — not `next <weekday>` or absolute month/day dates.
 
+### Week view
+
+Switch from "Board" to "Week" using the view tabs at the top of the global
+board or any project board. The week view shows a 7-day grid (Monday- or
+Sunday-start, per [Display settings](#display-settings)) with prev/next/Today
+navigation.
+
+Each day column lists a small bar for every task that's **scheduled** for
+that day or **due** that day (a task with both gets one bar per date),
+tinted with its project's color and marked with a scheduled/due icon.
+Clicking a bar opens a popover with the task's details and an **Edit**
+button that opens the full task editor.
+
 ### Keyboard shortcuts
 
 | Shortcut | Action |
@@ -198,9 +219,10 @@ Also on the **Settings** page, under "Display":
 | Font size | 80%–140% (5% steps) | Scales the whole app's text via the root `font-size`. |
 | Status column width | 200px–400px (10px steps) | Width of each Kanban status column. Columns scroll horizontally as a single row instead of wrapping. |
 | Group tasks by priority | on/off | When on, each status column is divided into labeled priority sections. When off, tasks stay sorted by priority but the column isn't visually divided — a small priority badge on each card still shows its level. |
+| Week starts on | Monday / Sunday | Controls which day is the first column in the [Week view](#week-view). |
 
-All three settings apply instantly and are saved in `localStorage`, so they
-persist across restarts.
+All settings apply instantly and are saved in `localStorage`, so they persist
+across restarts.
 
 ## Testing
 

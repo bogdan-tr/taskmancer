@@ -5,6 +5,7 @@ const COLUMN_WIDTH_KEY = "taskmancer:column-width";
 const BOARD_WIDTH_KEY = "taskmancer:board-width";
 const SHOW_PRIORITY_GROUPS_KEY = "taskmancer:show-priority-groups";
 const SHOW_PRIORITY_CHIP_KEY = "taskmancer:show-priority-chip";
+const WEEK_STARTS_ON_KEY = "taskmancer:week-starts-on";
 
 describe("displaySettings.svelte", () => {
   let store: Record<string, string>;
@@ -225,6 +226,37 @@ describe("displaySettings.svelte", () => {
     });
   });
 
+  describe("setWeekStartsOn", () => {
+    it("updates reactive state and storage", async () => {
+      const { displayState, setWeekStartsOn } = await import("./displaySettings.svelte");
+
+      setWeekStartsOn("sunday");
+
+      expect(displayState.weekStartsOn).toBe("sunday");
+      expect(localStorage.getItem(WEEK_STARTS_ON_KEY)).toBe("sunday");
+
+      setWeekStartsOn("monday");
+
+      expect(displayState.weekStartsOn).toBe("monday");
+      expect(localStorage.getItem(WEEK_STARTS_ON_KEY)).toBe("monday");
+    });
+
+    it("does not throw when storage access fails", async () => {
+      vi.stubGlobal("localStorage", {
+        getItem: vi.fn(() => {
+          throw new Error("storage disabled");
+        }),
+        setItem: vi.fn(() => {
+          throw new Error("storage disabled");
+        }),
+      });
+      const { displayState, setWeekStartsOn } = await import("./displaySettings.svelte");
+
+      expect(() => setWeekStartsOn("sunday")).not.toThrow();
+      expect(displayState.weekStartsOn).toBe("sunday");
+    });
+  });
+
   describe("initDisplay", () => {
     it("restores previously persisted values", async () => {
       store[FONT_SCALE_KEY] = "120";
@@ -232,6 +264,7 @@ describe("displaySettings.svelte", () => {
       store[BOARD_WIDTH_KEY] = "1500";
       store[SHOW_PRIORITY_GROUPS_KEY] = "false";
       store[SHOW_PRIORITY_CHIP_KEY] = "false";
+      store[WEEK_STARTS_ON_KEY] = "sunday";
       const { displayState, initDisplay } = await import("./displaySettings.svelte");
 
       initDisplay();
@@ -241,6 +274,7 @@ describe("displaySettings.svelte", () => {
       expect(displayState.boardWidth).toBe(1500);
       expect(displayState.showPriorityGroups).toBe(false);
       expect(displayState.showPriorityChip).toBe(false);
+      expect(displayState.weekStartsOn).toBe("sunday");
       expect(document.documentElement.style.fontSize).toBe("120%");
       expect(setPropertyMock).toHaveBeenCalledWith("--column-width", "320px");
       expect(setPropertyMock).toHaveBeenCalledWith("--board-width", "1500px");
@@ -255,6 +289,7 @@ describe("displaySettings.svelte", () => {
         DEFAULT_BOARD_WIDTH,
         DEFAULT_SHOW_PRIORITY_GROUPS,
         DEFAULT_SHOW_PRIORITY_CHIP,
+        DEFAULT_WEEK_STARTS_ON,
       } = await import("./displaySettings.svelte");
 
       initDisplay();
@@ -264,6 +299,16 @@ describe("displaySettings.svelte", () => {
       expect(displayState.boardWidth).toBe(DEFAULT_BOARD_WIDTH);
       expect(displayState.showPriorityGroups).toBe(DEFAULT_SHOW_PRIORITY_GROUPS);
       expect(displayState.showPriorityChip).toBe(DEFAULT_SHOW_PRIORITY_CHIP);
+      expect(displayState.weekStartsOn).toBe(DEFAULT_WEEK_STARTS_ON);
+    });
+
+    it("falls back to the default week start when storage holds an unrecognized value", async () => {
+      store[WEEK_STARTS_ON_KEY] = "tuesday";
+      const { displayState, initDisplay, DEFAULT_WEEK_STARTS_ON } = await import("./displaySettings.svelte");
+
+      initDisplay();
+
+      expect(displayState.weekStartsOn).toBe(DEFAULT_WEEK_STARTS_ON);
     });
 
     it("falls back to defaults when storage holds non-numeric values", async () => {

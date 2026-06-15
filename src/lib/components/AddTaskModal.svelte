@@ -207,9 +207,8 @@
         bind:this={inputEl}
         type="text"
         bind:value={title}
-        placeholder="What needs doing? (#tag +project, high/medium/low, due friday, sch next monday)"
+        placeholder="Task title"
         aria-label="New task title"
-        title="Quick-add syntax: #tag, +Project, high/medium/low (or !h/!m/!l), due/sch <today|tomorrow|YYYY-MM-DD|weekday|next weekday|month day[ year]>. 'next weekday' skips the upcoming one (e.g. 'next monday' is a week later than 'monday')."
         role="combobox"
         aria-expanded={suggestions.length > 0}
         aria-controls="add-task-suggestions"
@@ -225,6 +224,24 @@
         onkeydown={handleTitleKeydown}
         onblur={() => (suggestions = [])}
       />
+      <details class="syntax-help">
+        <summary aria-label="Quick-add syntax help" title="Quick-add syntax help">?</summary>
+        <div class="syntax-help-content" role="note">
+          <p class="syntax-help-title">Quick-add syntax</p>
+          <ul>
+            <li><code>#tag</code> — add a tag</li>
+            <li><code>+Project</code> — set the project</li>
+            <li><code>high</code> / <code>medium</code> / <code>low</code> (or <code>!h</code> / <code>!m</code> / <code>!l</code>) — set priority</li>
+            <li>
+              <code>due …</code> / <code>sch …</code> — due / scheduled date: <code>today</code>,
+              <code>tomorrow</code>, <code>YYYY-MM-DD</code>, a weekday, "next weekday", or "month day[ year]"
+            </li>
+          </ul>
+          <p class="syntax-help-note">
+            "next weekday" skips the upcoming one — e.g. "next monday" is a week later than "monday".
+          </p>
+        </div>
+      </details>
       <Autocomplete
         id="add-task-suggestions"
         items={suggestions}
@@ -345,6 +362,7 @@
   .add-task-modal input[type="text"] {
     width: 100%;
     padding: var(--space-sm) var(--space-md);
+    padding-right: calc(var(--space-md) + 1.75rem);
     border-radius: var(--radius-md);
     border: 1px solid var(--color-border);
     background: var(--color-surface);
@@ -360,6 +378,95 @@
     border-color: var(--color-accent);
     box-shadow: 0 0 0 3px var(--color-accent-soft);
     outline: none;
+  }
+
+  .syntax-help {
+    position: absolute;
+    top: 50%;
+    right: var(--space-sm);
+    transform: translateY(-50%);
+  }
+
+  .syntax-help summary {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.5rem;
+    height: 1.5rem;
+    border-radius: var(--radius-pill);
+    border: 1px solid var(--color-border);
+    background: var(--color-canvas);
+    color: var(--color-ink-muted);
+    font-size: var(--text-xs);
+    font-weight: 700;
+    cursor: pointer;
+    list-style: none;
+    transition:
+      color var(--duration-fast) var(--ease-out-expo),
+      border-color var(--duration-fast) var(--ease-out-expo);
+  }
+
+  .syntax-help summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .syntax-help summary::marker {
+    content: "";
+  }
+
+  .syntax-help summary:hover,
+  .syntax-help[open] summary {
+    color: var(--color-ink);
+    border-color: var(--color-accent);
+  }
+
+  .syntax-help summary:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+
+  .syntax-help-content {
+    position: absolute;
+    top: calc(100% + var(--space-2xs));
+    right: 0;
+    z-index: 20;
+    width: 19rem;
+    max-width: calc(100vw - 2 * var(--space-lg));
+    padding: var(--space-sm) var(--space-md);
+    border-radius: var(--radius-md);
+    border: 1px solid var(--color-border);
+    background: var(--color-surface-raised);
+    box-shadow: var(--shadow-lg);
+    font-size: var(--text-xs);
+    color: var(--color-ink-muted);
+  }
+
+  .syntax-help-content ul {
+    margin: var(--space-2xs) 0;
+    padding-left: var(--space-md);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3xs);
+  }
+
+  .syntax-help-title {
+    margin: 0;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-wide);
+    color: var(--color-ink);
+  }
+
+  .syntax-help-note {
+    margin: var(--space-2xs) 0 0;
+  }
+
+  .syntax-help-content code {
+    padding: 0 0.2em;
+    border-radius: var(--radius-sm);
+    background: var(--color-canvas);
+    color: var(--color-ink);
+    font-size: 0.9em;
   }
 
   .field-list {
