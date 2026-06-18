@@ -1,12 +1,19 @@
 /** Maximum number of suggestions shown in an autocomplete dropdown. */
-const MAX_SUGGESTIONS = 8;
+export const MAX_SUGGESTIONS = 8;
 
-/** Matches a trailing `#tag` or `+project` token at the end of a string. */
-const ACTIVE_TOKEN_PATTERN = /(?:^|\s)([#+])(\S+)$/;
+/**
+ * Matches a trailing `#tag`, `+project`, `!priority`, or `@status` token at
+ * the end of a string. The text after the prefix may be empty (a bare
+ * `#`/`+`/`!`/`@`), so typing just the prefix character immediately offers
+ * every option to browse — the caller decides per-prefix whether showing
+ * "everything" makes sense for that option list (e.g. tags suppress this
+ * once there are too many to usefully browse — see `AddTaskModal`).
+ */
+const ACTIVE_TOKEN_PATTERN = /(?:^|\s)([#+!@])(\S*)$/;
 
 export interface ActiveToken {
   /** The token's prefix character. */
-  prefix: "#" | "+";
+  prefix: "#" | "+" | "!" | "@";
   /** The token's text after the prefix, e.g. "he" for "#he". */
   text: string;
   /** Index of the prefix character within the source string. */
@@ -16,10 +23,9 @@ export interface ActiveToken {
 }
 
 /**
- * Finds the `#tag` or `+project` token immediately before `cursor`, for
- * triggering autocomplete in a free-text input. Returns `undefined` if the
- * cursor isn't immediately after such a token, including when the token is
- * a bare `#`/`+` with no characters yet.
+ * Finds the `#tag`, `+project`, `!priority`, or `@status` token immediately
+ * before `cursor`, for triggering autocomplete in a free-text input. Returns
+ * `undefined` if the cursor isn't immediately after such a token.
  */
 export function findActiveToken(value: string, cursor: number): ActiveToken | undefined {
   const beforeCursor = value.slice(0, cursor);
@@ -27,7 +33,19 @@ export function findActiveToken(value: string, cursor: number): ActiveToken | un
   if (!match) return undefined;
 
   const [, prefix, text] = match;
-  return { prefix: prefix as "#" | "+", text, start: cursor - text.length - 1, end: cursor };
+  return { prefix: prefix as "#" | "+" | "!" | "@", text, start: cursor - text.length - 1, end: cursor };
+}
+
+/**
+ * Prefers a human-readable `label` for an autocomplete suggestion, falling
+ * back to `id` when the label contains whitespace — a multi-word value can't
+ * round-trip through a single bare token like `@label`/`!label`, so offering
+ * it would insert text that re-parses as something else (or nothing).
+ * Avoids showing a status/priority's leftover auto-generated id (e.g.
+ * "new-status") once the user has renamed its label to something real.
+ */
+export function preferredSuggestionText(id: string, label: string): string {
+  return /\s/.test(label) ? id : label;
 }
 
 /**

@@ -128,6 +128,87 @@ pub fn archive_task(tasks_dir: &Path, archive_dir: &Path, id: &str) -> Result<()
     Ok(())
 }
 
+/// One-time migration for `*.md` task files saved before every task was
+/// required to have a `scheduled` date. For each task missing `scheduled`,
+/// backfills it with the local-timezone date of the task's `created`
+/// timestamp and rewrites the file. Tasks that already have `scheduled` set
+/// are left untouched, so re-running this migration is a no-op. Returns `Ok`
+/// without doing anything if `dir` does not exist. Files that fail to parse,
+/// or whose `created` timestamp isn't valid RFC3339, are skipped with a
+/// warning printed to stderr.
+pub fn migrate_scheduled_dates(dir: &Path) -> Result<(), StorageError> {
+    if !dir.exists() {
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+            continue;
+        }
+
+        let content = match fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(err) => {
+                eprintln!(
+                    "skipping unreadable task file {} during scheduled-date migration: {err}",
+                    path.display()
+                );
+                continue;
+            }
+        };
+        let mut task = match Task::from_markdown(&content) {
+            Ok(task) => task,
+            Err(err) => {
+                eprintln!(
+                    "skipping unreadable task file {} during scheduled-date migration: {err}",
+                    path.display()
+                );
+                continue;
+            }
+        };
+
+        if task.scheduled.is_some() {
+            continue;
+        }
+
+        let created = match chrono::DateTime::parse_from_rfc3339(&task.created) {
+            Ok(created) => created,
+            Err(err) => {
+                eprintln!(
+                    "skipping task {} with unparseable created timestamp during scheduled-date migration: {err}",
+                    task.id
+                );
+                continue;
+            }
+        };
+
+        let scheduled_date = created.with_timezone(&chrono::Local).date_naive();
+        task.scheduled = Some(scheduled_date.format("%Y-%m-%d").to_string());
+
+        let markdown = match task.to_markdown() {
+            Ok(markdown) => markdown,
+            Err(err) => {
+                eprintln!(
+                    "skipping task {} due to a serialization error during scheduled-date migration: {err}",
+                    task.id
+                );
+                continue;
+            }
+        };
+
+        if let Err(err) = fs::write(&path, markdown) {
+            eprintln!(
+                "failed to write migrated scheduled date for task file {} during scheduled-date migration: {err}",
+                path.display()
+            );
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -416,5 +497,66 @@ mod tests {
         let second = archive_task(tasks_dir.path(), &archive_dir, &task.id);
 
         assert!(matches!(second, Err(StorageError::NotFound(_))));
+    }
+
+    #[test]
+    fn migrate_scheduled_dates_returns_ok_for_missing_directory() {
+        let dir = tempdir().unwrap();
+        let missing = dir.path().join("does-not-exist");
+
+        let result = migrate_scheduled_dates(&missing);
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn migrate_scheduled_dates_backfills_scheduled_from_created_for_tasks_missing_it() {
+        let dir = tempdir().unwrap();
+        let mut task = Task::new("Needs scheduled".to_string());
+        task.scheduled = None;
+        task.created = "2026-06-10T12:00:00+00:00".to_string();
+        save_task(dir.path(), &task).unwrap();
+
+        migrate_scheduled_dates(dir.path()).unwrap();
+
+        let expected = chrono::DateTime::parse_from_rfc3339(&task.created)
+            .unwrap()
+            .with_timezone(&chrono::Local)
+            .date_naive()
+            .format("%Y-%m-%d")
+            .to_string();
+        let loaded = load_task(dir.path(), &task.id).unwrap();
+        assert_eq!(loaded.scheduled, Some(expected));
+    }
+
+    #[test]
+    fn migrate_scheduled_dates_does_not_overwrite_an_existing_scheduled_date() {
+        let dir = tempdir().unwrap();
+        let mut task = Task::new("Already scheduled".to_string());
+        task.scheduled = Some("2026-01-01".to_string());
+        task.created = "2026-06-10T12:00:00+00:00".to_string();
+        save_task(dir.path(), &task).unwrap();
+
+        migrate_scheduled_dates(dir.path()).unwrap();
+        migrate_scheduled_dates(dir.path()).unwrap();
+
+        let loaded = load_task(dir.path(), &task.id).unwrap();
+        assert_eq!(loaded.scheduled, Some("2026-01-01".to_string()));
+    }
+
+    #[test]
+    fn migrate_scheduled_dates_skips_unparseable_files_and_continues() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("broken.md"), "not valid frontmatter").unwrap();
+
+        let mut task = Task::new("Valid task".to_string());
+        task.scheduled = None;
+        save_task(dir.path(), &task).unwrap();
+
+        let result = migrate_scheduled_dates(dir.path());
+
+        assert!(result.is_ok());
+        let loaded = load_task(dir.path(), &task.id).unwrap();
+        assert!(loaded.scheduled.is_some());
     }
 }

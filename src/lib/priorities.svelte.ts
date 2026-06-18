@@ -40,6 +40,15 @@ export function priorityColor(priorities: PriorityLevel[], id: string): string {
 }
 
 /**
+ * Returns the `rank` of the priority level with id `id`, or
+ * `Number.POSITIVE_INFINITY` if no such level exists, so tasks with an
+ * unrecognized priority sort after all recognized priorities.
+ */
+export function priorityRank(priorities: PriorityLevel[], id: string): number {
+  return priorities.find((level) => level.id === id)?.rank ?? Number.POSITIVE_INFINITY;
+}
+
+/**
  * Resolves the priority a new task should get when none was explicitly
  * requested, mirroring `resolve_default_priority` in the Rust command layer:
  * `defaultPriority` if it names a currently-defined priority level,

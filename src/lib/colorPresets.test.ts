@@ -1,5 +1,14 @@
 import { describe, expect, test } from "vitest";
-import { cssColorToHex, isHexColor, PRESET_COLOR_NAMES, PRESET_COLORS } from "./colorPresets";
+import {
+  cssColorToHex,
+  hexToOklch,
+  isHexColor,
+  isLightColor,
+  neonCardColor,
+  PRESET_COLOR_NAMES,
+  PRESET_COLORS,
+  relativeLuminance,
+} from "./colorPresets";
 
 describe("isHexColor", () => {
   test("accepts a 6-digit hex color", () => {
@@ -65,5 +74,95 @@ describe("cssColorToHex", () => {
 
   test("returns unrecognized color formats unchanged", () => {
     expect(cssColorToHex("rebeccapurple")).toBe("rebeccapurple");
+  });
+});
+
+describe("relativeLuminance", () => {
+  test("white has luminance 1", () => {
+    expect(relativeLuminance("#ffffff")).toBeCloseTo(1, 5);
+  });
+
+  test("black has luminance 0", () => {
+    expect(relativeLuminance("#000000")).toBeCloseTo(0, 5);
+  });
+
+  test("treats non-hex input as mid-gray (0.5)", () => {
+    expect(relativeLuminance("oklch(58% 0.13 70)")).toBe(0.5);
+  });
+});
+
+describe("isLightColor", () => {
+  test("white is light", () => {
+    expect(isLightColor("#ffffff")).toBe(true);
+  });
+
+  test("black is not light", () => {
+    expect(isLightColor("#000000")).toBe(false);
+  });
+
+  test("a light pastel color is light", () => {
+    expect(isLightColor("#fef3c7")).toBe(true);
+  });
+
+  test("every PRESET_COLORS swatch is mid-saturation enough to need light text", () => {
+    // All 8 presets sit at medium lightness (relative luminance ~0.17-0.44),
+    // where white text reads better than black — confirms the 0.45 threshold
+    // doesn't accidentally flip to dark text for the app's own preset palette.
+    expect(PRESET_COLORS.every((hex) => !isLightColor(hex))).toBe(true);
+  });
+
+  test("non-hex input falls back to mid-gray (luminance 0.5), which is above the light threshold", () => {
+    expect(isLightColor("oklch(58% 0.13 70)")).toBe(true);
+  });
+});
+
+describe("hexToOklch", () => {
+  test("round-trips through cssColorToHex for a known oklch color", () => {
+    const original = { l: 0.54, c: 0.2, h: 350 };
+    const hex = cssColorToHex(`oklch(${original.l * 100}% ${original.c} ${original.h})`);
+    const result = hexToOklch(hex);
+    expect(result.l).toBeCloseTo(original.l, 1);
+    expect(result.c).toBeCloseTo(original.c, 1);
+    expect(result.h).toBeCloseTo(original.h, 0);
+  });
+
+  test("white has lightness 1 and zero chroma", () => {
+    const result = hexToOklch("#ffffff");
+    expect(result.l).toBeCloseTo(1, 2);
+    expect(result.c).toBeCloseTo(0, 2);
+  });
+
+  test("black has lightness 0 and zero chroma", () => {
+    const result = hexToOklch("#000000");
+    expect(result.l).toBeCloseTo(0, 2);
+    expect(result.c).toBeCloseTo(0, 2);
+  });
+
+  test("returns all-zero for non-hex input", () => {
+    expect(hexToOklch("oklch(58% 0.13 70)")).toEqual({ l: 0, c: 0, h: 0 });
+  });
+});
+
+describe("neonCardColor", () => {
+  test("preserves the original hue at a fixed target lightness", () => {
+    const { h: originalHue } = hexToOklch("#3b82f6");
+    const result = neonCardColor("#3b82f6", 0.85);
+    const match = /^oklch\(85\.0% ([\d.]+) ([\d.]+)\)$/.exec(result);
+    expect(match).not.toBeNull();
+    expect(Number(match?.[2])).toBeCloseTo(originalHue, 0);
+  });
+
+  test("chromaBoost scales the original chroma", () => {
+    const base = neonCardColor("#3b82f6", 0.85, 1);
+    const boosted = neonCardColor("#3b82f6", 0.85, 1.5);
+    const baseChroma = Number(/oklch\([\d.]+% ([\d.]+) /.exec(base)?.[1]);
+    const boostedChroma = Number(/oklch\([\d.]+% ([\d.]+) /.exec(boosted)?.[1]);
+    expect(boostedChroma).toBeCloseTo(baseChroma * 1.5, 2);
+  });
+
+  test("clamps chroma to a believable ceiling instead of producing an absurd value", () => {
+    const result = neonCardColor("#3b82f6", 0.85, 100);
+    const chroma = Number(/oklch\([\d.]+% ([\d.]+) /.exec(result)?.[1]);
+    expect(chroma).toBeLessThanOrEqual(0.4);
   });
 });

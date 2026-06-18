@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { RELATIVE_DATE_OPTIONS } from "$lib/relativeDates";
+  import { DUE_RELATIVE_DATE_OPTIONS, SCHEDULED_RELATIVE_DATE_OPTIONS } from "$lib/relativeDates";
   import { persistSettings, settingsState } from "$lib/settings.svelte";
   import { formatTags, parseTags } from "$lib/taskFields";
   import type { TaskDefaults } from "$lib/types";
@@ -44,7 +44,7 @@
   }
 
   async function save() {
-    if (!settingsState.current) return;
+    if (!settingsState.current || !initialized) return;
 
     const defaultProject = draftDefaultProject.trim();
     if (!defaultProject) {
@@ -55,8 +55,8 @@
     const defaults: TaskDefaults = {
       ...settingsState.current.defaults,
       tags: parseTags(draftTags),
-      due: draftDue || undefined,
-      scheduled: draftScheduled || undefined,
+      due: draftDue,
+      scheduled: draftScheduled,
     };
 
     isSaving = true;
@@ -107,23 +107,23 @@
     </div>
 
     <div class="field">
-      <label for="default-due">Default due date</label>
-      <select id="default-due" bind:value={draftDue}>
-        <option value="">None</option>
-        {#each RELATIVE_DATE_OPTIONS as option (option.id)}
+      <label for="default-scheduled">Default scheduled date</label>
+      <select id="default-scheduled" bind:value={draftScheduled}>
+        {#each SCHEDULED_RELATIVE_DATE_OPTIONS as option (option.id)}
           <option value={option.id}>{option.label}</option>
         {/each}
       </select>
+      <p class="hint">Every task must have a scheduled date.</p>
     </div>
 
     <div class="field">
-      <label for="default-scheduled">Default scheduled date</label>
-      <select id="default-scheduled" bind:value={draftScheduled}>
-        <option value="">None</option>
-        {#each RELATIVE_DATE_OPTIONS as option (option.id)}
+      <label for="default-due">Default due date</label>
+      <select id="default-due" bind:value={draftDue}>
+        {#each DUE_RELATIVE_DATE_OPTIONS as option (option.id)}
           <option value={option.id}>{option.label}</option>
         {/each}
       </select>
+      <p class="hint">Relative to the task's scheduled date, not today.</p>
     </div>
 
     {#if errorMessage}
@@ -199,6 +199,12 @@
     border-color: var(--color-accent);
     box-shadow: 0 0 0 3px var(--color-accent-soft);
     outline: none;
+  }
+
+  .hint {
+    margin: 0;
+    font-size: var(--text-xs);
+    color: var(--color-ink-faint);
   }
 
   .error {

@@ -7,7 +7,8 @@ use tauri::State;
 use crate::project::{Project, ProjectBoard, DEFAULT_PROJECT_COLOR};
 use crate::project_storage;
 use crate::settings::{
-    resolve_relative_date, validate_priority_id, validate_relative_date_code, validate_settings,
+    resolve_due_relative_date, resolve_scheduled_relative_date, validate_due_relative_date_code,
+    validate_priority_id, validate_scheduled_relative_date_code, validate_settings,
     validate_status_id, Settings, TaskDefaults,
 };
 use crate::settings_storage;
@@ -132,20 +133,37 @@ fn effective_default_code<'a>(
     project.and_then(|p| p.as_ref()).or(global.as_ref())
 }
 
-/// Resolves a relative-date `code` (e.g. `"tomorrow"`) to an absolute
-/// `YYYY-MM-DD` date string relative to `today`. Returns `None` if `code` is
-/// `None` or isn't a recognized relative-date code.
-fn resolve_default_date(code: Option<&String>, today: chrono::NaiveDate) -> Option<String> {
-    code.and_then(|c| resolve_relative_date(c, today))
+/// Resolves a [`SCHEDULED_RELATIVE_DATE_CODES`](crate::settings::SCHEDULED_RELATIVE_DATE_CODES)
+/// `code` (e.g. `"tomorrow"`) to an absolute `YYYY-MM-DD` date string relative
+/// to `today`. Returns `None` if `code` is `None` or isn't a recognized
+/// scheduled-date code.
+fn resolve_default_scheduled_date(
+    code: Option<&String>,
+    today: chrono::NaiveDate,
+) -> Option<String> {
+    code.and_then(|c| resolve_scheduled_relative_date(c, today))
+        .map(|date| date.format("%Y-%m-%d").to_string())
+}
+
+/// Resolves a [`DUE_RELATIVE_DATE_CODES`](crate::settings::DUE_RELATIVE_DATE_CODES)
+/// `code` (e.g. `"next_day"`) to an absolute `YYYY-MM-DD` date string relative
+/// to `scheduled`. Returns `None` if `code` is `None`, is `"none"` (never
+/// due), or isn't a recognized due-date code.
+fn resolve_default_due_date(code: Option<&String>, scheduled: chrono::NaiveDate) -> Option<String> {
+    code.and_then(|c| resolve_due_relative_date(c, scheduled))
         .map(|date| date.format("%Y-%m-%d").to_string())
 }
 
 /// Resolves the tags, due date, and scheduled date for a newly-created task
 /// by combining explicit quick-add values with the global and project-level
-/// defaults. Explicit `due`/`scheduled` values from the caller always win;
-/// otherwise the project's default code is used if set, falling back to the
-/// global default. Tags are merged additively: any default tag not already
-/// present in the explicit tags is appended.
+/// defaults. Explicit `scheduled` always wins; otherwise the project's
+/// scheduled-default code is used if set, falling back to the global default,
+/// falling back to `today` if neither resolves. Explicit `due` always wins,
+/// except for the `"none"` sentinel (meaning "never due"), which resolves to
+/// `None`; otherwise the project's due-default code is used if set, falling
+/// back to the global default, resolved relative to the resolved `scheduled`
+/// date (not `today`). Tags are merged additively: any default tag not
+/// already present in the explicit tags is appended.
 fn resolve_creation_defaults(
     settings: &Settings,
     project_defaults: Option<&TaskDefaults>,
@@ -153,14 +171,26 @@ fn resolve_creation_defaults(
     tags: Option<Vec<String>>,
     due: Option<String>,
     scheduled: Option<String>,
-) -> (Vec<String>, Option<String>, Option<String>) {
+) -> (Vec<String>, Option<String>, String) {
     let due_code = effective_default_code(&settings.defaults.due, project_defaults.map(|d| &d.due));
     let scheduled_code = effective_default_code(
         &settings.defaults.scheduled,
         project_defaults.map(|d| &d.scheduled),
     );
-    let resolved_due = due.or_else(|| resolve_default_date(due_code, today));
-    let resolved_scheduled = scheduled.or_else(|| resolve_default_date(scheduled_code, today));
+
+    let resolved_scheduled = scheduled
+        .or_else(|| resolve_default_scheduled_date(scheduled_code, today))
+        .unwrap_or_else(|| today.format("%Y-%m-%d").to_string());
+
+    let resolved_due = match due.as_deref() {
+        Some("none") => None,
+        Some(_) => due,
+        None => {
+            let scheduled_date =
+                chrono::NaiveDate::parse_from_str(&resolved_scheduled, "%Y-%m-%d").ok();
+            scheduled_date.and_then(|date| resolve_default_due_date(due_code, date))
+        }
+    };
 
     let default_tags = effective_default_tags(&settings.defaults, project_defaults);
     let final_tags = merge_tags(tags.unwrap_or_default(), default_tags);
@@ -169,14 +199,16 @@ fn resolve_creation_defaults(
 }
 
 /// Applies optional overrides parsed from quick-add syntax onto a freshly
-/// created task. Fields left as `None` keep `Task::new`'s defaults.
+/// created task. `project`/`tags`/`priority`/`due` left as `None` keep
+/// `Task::new`'s defaults (a `None` due means "never due"). `scheduled` is
+/// always set: every task must have a scheduled date.
 fn apply_create_overrides(
     task: &mut Task,
     project: Option<String>,
     tags: Option<Vec<String>>,
     priority: Option<String>,
     due: Option<String>,
-    scheduled: Option<String>,
+    scheduled: String,
 ) {
     if let Some(project) = project {
         task.project = Some(project);
@@ -190,9 +222,7 @@ fn apply_create_overrides(
     if let Some(due) = due {
         task.due = Some(due);
     }
-    if let Some(scheduled) = scheduled {
-        task.scheduled = Some(scheduled);
-    }
+    task.scheduled = Some(scheduled);
 }
 
 /// Creates and saves a new task. An empty/missing `project` falls back to
@@ -206,6 +236,7 @@ pub fn create_task(
     project: Option<String>,
     tags: Option<Vec<String>>,
     priority: Option<String>,
+    status: Option<String>,
     due: Option<String>,
     scheduled: Option<String>,
 ) -> Result<Task, String> {
@@ -213,7 +244,7 @@ pub fn create_task(
     if title.is_empty() {
         return Err("task title must not be empty".to_string());
     }
-    validate_date_field(&due, "due")?;
+    validate_due_creation_field(&due)?;
     validate_date_field(&scheduled, "scheduled")?;
 
     let settings =
@@ -233,7 +264,13 @@ pub fn create_task(
     let matched_project = find_project(&projects, &project_name);
     let project_board = matched_project.map(|p| &p.board);
     let project_defaults = matched_project.map(|p| &p.defaults);
-    let status = resolve_default_status(&settings, project_board);
+    let status = match status {
+        Some(id) => {
+            validate_status_id(&settings, &id)?;
+            id
+        }
+        None => resolve_default_status(&settings, project_board),
+    };
 
     // Use the user's local date so relative-date defaults (e.g. "today",
     // "tomorrow") match the day they see on their device's calendar,
@@ -267,6 +304,20 @@ fn validate_date_field(value: &Option<String>, field: &str) -> Result<(), String
     }
 }
 
+/// Rejects `Some(value)` values for [`create_task`]'s `due` parameter that
+/// aren't `YYYY-MM-DD` or the `"none"` sentinel (meaning "never due" — see
+/// [`resolve_creation_defaults`]). `None` is always valid (apply the
+/// configured due-date default).
+fn validate_due_creation_field(value: &Option<String>) -> Result<(), String> {
+    match value.as_deref() {
+        None | Some("none") => Ok(()),
+        Some(date) if chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").is_err() => {
+            Err("due must be a valid date in YYYY-MM-DD format, or 'none'".to_string())
+        }
+        _ => Ok(()),
+    }
+}
+
 /// Updates the editable fields of an existing task (title, project, tags,
 /// priority, due/scheduled dates, notes). The task's `id`, `created`,
 /// `status`, and `depends_on` are loaded from disk and preserved, so a
@@ -284,6 +335,9 @@ pub fn update_task(state: State<AppState>, task: Task) -> Result<Task, String> {
     }
     validate_date_field(&task.due, "due")?;
     validate_date_field(&task.scheduled, "scheduled")?;
+    if task.scheduled.is_none() {
+        return Err("scheduled date must not be empty".to_string());
+    }
 
     let settings =
         settings_storage::load_settings(&state.settings_file).map_err(|e| e.to_string())?;
@@ -527,10 +581,10 @@ fn apply_project_update(
         validate_priority_id(settings, priority_id)?;
     }
     if let Some(due_code) = &update.defaults.due {
-        validate_relative_date_code(due_code)?;
+        validate_due_relative_date_code(due_code)?;
     }
     if let Some(scheduled_code) = &update.defaults.scheduled {
-        validate_relative_date_code(scheduled_code)?;
+        validate_scheduled_relative_date_code(scheduled_code)?;
     }
 
     let existing = &projects[index];
@@ -912,17 +966,39 @@ mod tests {
     }
 
     #[test]
-    fn apply_create_overrides_keeps_defaults_when_all_none() {
+    fn validate_due_creation_field_accepts_none() {
+        assert!(validate_due_creation_field(&None).is_ok());
+    }
+
+    #[test]
+    fn validate_due_creation_field_accepts_the_none_sentinel() {
+        assert!(validate_due_creation_field(&Some("none".to_string())).is_ok());
+    }
+
+    #[test]
+    fn validate_due_creation_field_accepts_a_valid_iso_date() {
+        assert!(validate_due_creation_field(&Some("2026-07-01".to_string())).is_ok());
+    }
+
+    #[test]
+    fn validate_due_creation_field_rejects_a_malformed_date() {
+        let result = validate_due_creation_field(&Some("07/01/2026".to_string()));
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn apply_create_overrides_keeps_optional_defaults_when_all_none() {
         let mut task = Task::new("Buy milk".to_string());
         let defaults = task.clone();
 
-        apply_create_overrides(&mut task, None, None, None, None, None);
+        apply_create_overrides(&mut task, None, None, None, None, "2026-06-14".to_string());
 
         assert_eq!(task.project, defaults.project);
         assert_eq!(task.tags, defaults.tags);
         assert_eq!(task.priority, defaults.priority);
         assert_eq!(task.due, defaults.due);
-        assert_eq!(task.scheduled, defaults.scheduled);
+        assert_eq!(task.scheduled, Some("2026-06-14".to_string()));
     }
 
     #[test]
@@ -935,7 +1011,7 @@ mod tests {
             Some(vec!["travel".to_string()]),
             Some("high".to_string()),
             Some("2026-07-01".to_string()),
-            Some("2026-06-25".to_string()),
+            "2026-06-25".to_string(),
         );
 
         assert_eq!(task.project, Some("Vacation".to_string()));
@@ -1053,21 +1129,47 @@ mod tests {
     }
 
     #[test]
-    fn resolve_default_date_resolves_a_known_code() {
+    fn resolve_default_scheduled_date_resolves_a_known_code() {
         let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 14).unwrap();
         let code = "tomorrow".to_string();
 
         assert_eq!(
-            resolve_default_date(Some(&code), today),
+            resolve_default_scheduled_date(Some(&code), today),
             Some("2026-06-15".to_string())
         );
     }
 
     #[test]
-    fn resolve_default_date_returns_none_when_code_is_none() {
+    fn resolve_default_scheduled_date_returns_none_when_code_is_none() {
         let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 14).unwrap();
 
-        assert_eq!(resolve_default_date(None, today), None);
+        assert_eq!(resolve_default_scheduled_date(None, today), None);
+    }
+
+    #[test]
+    fn resolve_default_due_date_resolves_a_known_code() {
+        let scheduled = chrono::NaiveDate::from_ymd_opt(2026, 6, 14).unwrap();
+        let code = "next_day".to_string();
+
+        assert_eq!(
+            resolve_default_due_date(Some(&code), scheduled),
+            Some("2026-06-15".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_default_due_date_returns_none_for_the_none_sentinel() {
+        let scheduled = chrono::NaiveDate::from_ymd_opt(2026, 6, 14).unwrap();
+        let code = "none".to_string();
+
+        assert_eq!(resolve_default_due_date(Some(&code), scheduled), None);
+    }
+
+    #[test]
+    fn resolve_default_due_date_returns_none_when_code_is_none() {
+        let scheduled = chrono::NaiveDate::from_ymd_opt(2026, 6, 14).unwrap();
+
+        assert_eq!(resolve_default_due_date(None, scheduled), None);
     }
 
     #[test]
@@ -1076,7 +1178,7 @@ mod tests {
         let settings = Settings {
             defaults: TaskDefaults {
                 tags: vec!["global".to_string()],
-                due: Some("tomorrow".to_string()),
+                due: Some("next_day".to_string()),
                 scheduled: Some("in_1_week".to_string()),
                 ..Default::default()
             },
@@ -1087,8 +1189,65 @@ mod tests {
             resolve_creation_defaults(&settings, None, today, None, None, None);
 
         assert_eq!(tags, vec!["global".to_string()]);
-        assert_eq!(due, Some("2026-06-15".to_string()));
-        assert_eq!(scheduled, Some("2026-06-21".to_string()));
+        assert_eq!(scheduled, "2026-06-21".to_string());
+        // due is relative to the resolved scheduled date (2026-06-21), not "today".
+        assert_eq!(due, Some("2026-06-22".to_string()));
+    }
+
+    #[test]
+    fn resolve_creation_defaults_falls_back_to_today_when_scheduled_is_unset_everywhere() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 14).unwrap();
+        let settings = Settings {
+            defaults: TaskDefaults::default(),
+            ..Default::default()
+        };
+
+        let (_tags, _due, scheduled) =
+            resolve_creation_defaults(&settings, None, today, None, None, None);
+
+        assert_eq!(scheduled, "2026-06-14".to_string());
+    }
+
+    #[test]
+    fn resolve_creation_defaults_due_none_sentinel_overrides_default() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 14).unwrap();
+        let settings = Settings {
+            defaults: TaskDefaults {
+                due: Some("next_day".to_string()),
+                scheduled: Some("today".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let (_tags, due, _scheduled) =
+            resolve_creation_defaults(&settings, None, today, None, Some("none".to_string()), None);
+
+        assert_eq!(due, None);
+    }
+
+    #[test]
+    fn resolve_creation_defaults_due_default_resolves_relative_to_explicit_scheduled() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 14).unwrap();
+        let settings = Settings {
+            defaults: TaskDefaults {
+                due: Some("same_day".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let (_tags, due, scheduled) = resolve_creation_defaults(
+            &settings,
+            None,
+            today,
+            None,
+            None,
+            Some("2026-07-01".to_string()),
+        );
+
+        assert_eq!(scheduled, "2026-07-01".to_string());
+        assert_eq!(due, Some("2026-07-01".to_string()));
     }
 
     #[test]
@@ -1123,7 +1282,7 @@ mod tests {
         let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 14).unwrap();
         let settings = Settings {
             defaults: TaskDefaults {
-                due: Some("tomorrow".to_string()),
+                due: Some("same_day".to_string()),
                 scheduled: Some("tomorrow".to_string()),
                 ..Default::default()
             },
@@ -1138,8 +1297,10 @@ mod tests {
         let (_tags, due, scheduled) =
             resolve_creation_defaults(&settings, Some(&project_defaults), today, None, None, None);
 
-        assert_eq!(due, Some("2026-06-21".to_string()));
-        assert_eq!(scheduled, Some("2026-07-14".to_string()));
+        // scheduled = in_1_month from 2026-06-14 = 2026-07-14.
+        assert_eq!(scheduled, "2026-07-14".to_string());
+        // due = in_1_week relative to the resolved scheduled date (2026-07-14).
+        assert_eq!(due, Some("2026-07-21".to_string()));
     }
 
     #[test]
@@ -1148,7 +1309,7 @@ mod tests {
         let settings = Settings {
             defaults: TaskDefaults {
                 tags: vec!["global".to_string()],
-                due: Some("tomorrow".to_string()),
+                due: Some("next_day".to_string()),
                 scheduled: Some("in_1_week".to_string()),
                 ..Default::default()
             },
@@ -1166,7 +1327,7 @@ mod tests {
 
         assert_eq!(tags, vec!["explicit".to_string(), "global".to_string()]);
         assert_eq!(due, Some("2026-08-01".to_string()));
-        assert_eq!(scheduled, Some("2026-08-02".to_string()));
+        assert_eq!(scheduled, "2026-08-02".to_string());
     }
 
     #[test]
@@ -1424,12 +1585,13 @@ mod tests {
         update.board = ProjectBoard {
             statuses: vec!["backlog".to_string(), "done".to_string()],
             default_status: Some("backlog".to_string()),
+            ..Default::default()
         };
         update.defaults = TaskDefaults {
             tags: vec!["home".to_string()],
             priority: Some("high".to_string()),
             status: None,
-            due: Some("tomorrow".to_string()),
+            due: Some("next_day".to_string()),
             scheduled: Some("in_1_week".to_string()),
         };
 
@@ -1447,6 +1609,7 @@ mod tests {
         update.board = ProjectBoard {
             statuses: vec!["backlog".to_string(), "on-hold".to_string()],
             default_status: None,
+            ..Default::default()
         };
 
         let result = apply_project_update(&mut projects, 0, update, &Settings::default());
@@ -1462,6 +1625,7 @@ mod tests {
         update.board = ProjectBoard {
             statuses: vec!["backlog".to_string()],
             default_status: Some("on-hold".to_string()),
+            ..Default::default()
         };
 
         let result = apply_project_update(&mut projects, 0, update, &Settings::default());
@@ -1585,6 +1749,7 @@ mod tests {
         let board = ProjectBoard {
             statuses: vec!["backlog".to_string(), "done".to_string()],
             default_status: Some("done".to_string()),
+            ..Default::default()
         };
 
         assert_eq!(resolve_default_status(&settings, Some(&board)), "done");
@@ -1597,6 +1762,7 @@ mod tests {
         let board = ProjectBoard {
             statuses: vec!["done".to_string()],
             default_status: Some("done".to_string()),
+            ..Default::default()
         };
 
         assert_eq!(resolve_default_status(&settings, Some(&board)), "done");
@@ -1609,6 +1775,7 @@ mod tests {
         let board = ProjectBoard {
             statuses: vec!["backlog".to_string()],
             default_status: Some("nonexistent".to_string()),
+            ..Default::default()
         };
 
         assert_eq!(resolve_default_status(&settings, Some(&board)), "do");

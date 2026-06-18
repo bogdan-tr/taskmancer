@@ -4,6 +4,7 @@ import {
   applyTokenSuggestion,
   filterSuggestions,
   findActiveToken,
+  preferredSuggestionText,
   splitTagsInput,
 } from "./autocomplete";
 
@@ -35,8 +36,22 @@ describe("findActiveToken", () => {
     });
   });
 
-  it("returns undefined for a bare # with no characters yet", () => {
-    expect(findActiveToken("buy milk #", 10)).toBeUndefined();
+  it("finds a bare # with no characters yet (browse-all gesture)", () => {
+    expect(findActiveToken("buy milk #", 10)).toEqual({
+      prefix: "#",
+      text: "",
+      start: 9,
+      end: 10,
+    });
+  });
+
+  it("finds a bare + with no characters yet", () => {
+    expect(findActiveToken("+", 1)).toEqual({
+      prefix: "+",
+      text: "",
+      start: 0,
+      end: 1,
+    });
   });
 
   it("returns undefined when the cursor is not after a token", () => {
@@ -45,6 +60,69 @@ describe("findActiveToken", () => {
 
   it("returns undefined when # is part of a larger word", () => {
     expect(findActiveToken("a#b", 3)).toBeUndefined();
+  });
+
+  it("finds an @status token at the end of the string", () => {
+    expect(findActiveToken("Fix bug @d", 10)).toEqual({
+      prefix: "@",
+      text: "d",
+      start: 8,
+      end: 10,
+    });
+  });
+
+  it("finds a !priority token at the end of the string", () => {
+    expect(findActiveToken("Fix bug !hi", 11)).toEqual({
+      prefix: "!",
+      text: "hi",
+      start: 8,
+      end: 11,
+    });
+  });
+
+  it("finds a bare ! with no characters yet", () => {
+    expect(findActiveToken("Fix bug !", 9)).toEqual({
+      prefix: "!",
+      text: "",
+      start: 8,
+      end: 9,
+    });
+  });
+
+  it("finds a bare @ with no characters yet", () => {
+    expect(findActiveToken("Fix bug @", 9)).toEqual({
+      prefix: "@",
+      text: "",
+      start: 8,
+      end: 9,
+    });
+  });
+
+  it("finds a bare @ at the start of the string", () => {
+    expect(findActiveToken("@", 1)).toEqual({
+      prefix: "@",
+      text: "",
+      start: 0,
+      end: 1,
+    });
+  });
+
+  it("returns undefined when @ is part of a larger word", () => {
+    expect(findActiveToken("a@b", 3)).toBeUndefined();
+  });
+
+  it("returns undefined when ! is part of a larger word", () => {
+    expect(findActiveToken("a!b", 3)).toBeUndefined();
+  });
+});
+
+describe("preferredSuggestionText", () => {
+  it("returns the label when it has no whitespace", () => {
+    expect(preferredSuggestionText("in-progress", "Cancelled")).toBe("Cancelled");
+  });
+
+  it("falls back to the id when the label contains whitespace", () => {
+    expect(preferredSuggestionText("in-progress", "In Progress")).toBe("in-progress");
   });
 });
 

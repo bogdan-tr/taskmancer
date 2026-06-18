@@ -1,6 +1,8 @@
 <script lang="ts">
   import { applyTagsSuggestion, filterSuggestions, splitTagsInput } from "$lib/autocomplete";
+  import { isLightColor, NEON_CARD_CHROMA_BOOST, NEON_CARD_LIGHTNESS, neonCardColor } from "$lib/colorPresets";
   import { displayState } from "$lib/displaySettings.svelte";
+  import { formatDueDateDisplay } from "$lib/dueDateDisplay";
   import { generalState } from "$lib/generalSettings.svelte";
   import {
     FALLBACK_PRIORITIES,
@@ -8,8 +10,10 @@
     priorityLabel,
     sortedPriorities,
   } from "$lib/priorities.svelte";
+  import { resolveProjectColor } from "$lib/projectColor";
   import { projectsState } from "$lib/projects.svelte";
   import { settingsState } from "$lib/settings.svelte";
+  import { FALLBACK_STATUSES, statusColor } from "$lib/statuses.svelte";
   import { emptyToUndefined, formatTags, isValidOptionalDate, parseTags } from "$lib/taskFields";
   import { tagsState } from "$lib/tags.svelte";
   import type { Task } from "$lib/types";
@@ -25,6 +29,31 @@
   let { task, onUpdate, onDelete }: Props = $props();
 
   const priorities = $derived(settingsState.current?.priorities ?? FALLBACK_PRIORITIES);
+  const projectColor = $derived(resolveProjectColor(task.project, projectsState.items));
+  const isColorCoded = $derived(displayState.cardColorMode === "color_code");
+  // A vivid, fixed-lightness rendering of the project's hue/chroma — not a
+  // color-mix dilution toward the surface color — so the background always
+  // stays bright enough for dark title text, regardless of the project's
+  // own color, and reads as "neon"/saturated rather than washed-out pastel.
+  const colorCodeBackground = $derived(
+    isColorCoded ? neonCardColor(projectColor, NEON_CARD_LIGHTNESS, NEON_CARD_CHROMA_BOOST) : undefined,
+  );
+  // The urgency category (overdue/today/tomorrow/normal) doesn't depend on
+  // the natural-language-phrasing setting, so `nlEnabled` is irrelevant here.
+  const dueUrgency = $derived(formatDueDateDisplay(task.due, new Date(), false)?.variant);
+  const showDueGlow = $derived(
+    displayState.dueDateGlow && (dueUrgency === "overdue" || dueUrgency === "today"),
+  );
+  // The "Project tag" chip uses `projectColor` directly as text color, which
+  // is illegible for very light project colors (e.g. a pale cream) on the
+  // chip's near-white tint — fall back to the standard ink color in that case.
+  const projectChipTextColor = $derived(isLightColor(projectColor) ? "var(--color-ink)" : projectColor);
+
+  const isDone = $derived(task.status === (settingsState.current?.done_status ?? "done"));
+  const cancelledStatus = $derived(settingsState.current?.cancelled_status);
+  const isCancelled = $derived(!isDone && cancelledStatus !== undefined && task.status === cancelledStatus);
+  const statuses = $derived(settingsState.current?.statuses ?? FALLBACK_STATUSES);
+  const taskStatusColor = $derived(statusColor(statuses, task.status));
 
   let isEditing = $state(false);
   let draftTitle = $state("");
@@ -180,7 +209,14 @@
   }
 </script>
 
-<li class="task" style="--task-priority-color: {priorityColor(priorities, task.priority)}">
+<li
+  class="task"
+  class:color-coded={isColorCoded}
+  class:due-glow={showDueGlow}
+  class:task-done={isDone}
+  class:task-cancelled={isCancelled}
+  style="--task-priority-color: {priorityColor(priorities, task.priority)}; --task-project-color: {projectColor}; --task-color-code-bg: {colorCodeBackground}; --task-status-color: {taskStatusColor}"
+>
   {#if isEditing}
     <form class="edit-form" onsubmit={saveEdit}>
       <label>
@@ -253,6 +289,17 @@
       <label>
         Due
         <input type="text" bind:value={draftDue} placeholder="YYYY-MM-DD" />
+        {#if draftDue}
+          {@const dueHint = formatDueDateDisplay(draftDue, new Date(), displayState.nlDueDates)}
+          {#if dueHint}
+            <span
+              class="due-hint"
+              class:due-today={dueHint.variant === "today"}
+              class:due-tomorrow={dueHint.variant === "tomorrow"}
+              class:due-overdue={dueHint.variant === "overdue"}>{dueHint.label}</span
+            >
+          {/if}
+        {/if}
       </label>
       <label>
         Scheduled
@@ -281,6 +328,13 @@
     >
       {task.title}
     </div>
+    {#if isCancelled}
+      <span class="task-cancelled-x" aria-hidden="true">
+        <svg viewBox="0 0 16 16" width="28" height="28">
+          <path d="M3 3l10 10M13 3L3 13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+        </svg>
+      </span>
+    {/if}
 
     <div class="task-meta">
       {#if displayState.showPriorityChip}
@@ -289,15 +343,30 @@
           {priorityLabel(priorities, task.priority)}
         </span>
       {/if}
-      {#if task.project}
-        <span class="chip project">{task.project}</span>
+      {#if task.project && !isColorCoded}
+        <span class="chip project" style="--chip-color: {projectColor}; --chip-text-color: {projectChipTextColor}">
+          {task.project}
+        </span>
+      {/if}
+      {#if task.due}
+        {@const dueDisplay = formatDueDateDisplay(task.due, new Date(), displayState.nlDueDates)}
+        {#if dueDisplay}
+          <span
+            class="chip due"
+            class:due-today={dueDisplay.variant === "today"}
+            class:due-tomorrow={dueDisplay.variant === "tomorrow"}
+            class:due-overdue={dueDisplay.variant === "overdue"}
+          >
+            {#if dueDisplay.variant !== "normal"}
+              <span class="due-dot" aria-hidden="true"></span>
+            {/if}
+            {dueDisplay.label}
+          </span>
+        {/if}
       {/if}
       {#each task.tags as tag (tag)}
         <span class="chip tag">#{tag}</span>
       {/each}
-      {#if task.due}
-        <span class="chip due">Due {task.due}</span>
-      {/if}
     </div>
   {/if}
 
@@ -313,6 +382,7 @@
 
 <style>
   .task {
+    position: relative;
     display: flex;
     flex-direction: column;
     gap: var(--space-3xs);
@@ -320,7 +390,7 @@
     border-radius: var(--radius-md);
     background: var(--color-surface-raised);
     border: 1px solid var(--color-border);
-    border-left: 3px solid var(--task-priority-color, transparent);
+    border-left: 5px solid var(--task-priority-color, transparent);
     box-shadow: var(--shadow-sm);
     transition:
       box-shadow var(--duration-fast) var(--ease-out-expo),
@@ -330,6 +400,94 @@
   .task:hover {
     box-shadow: var(--shadow-md);
     transform: translateY(-1px);
+  }
+
+  /* "Due-date glow" setting: a soft red halo fading outward from the card,
+     layered with the existing shadow rather than replacing it (multiple
+     box-shadows stack), so hover's lift/shadow still works normally.
+     Uses a dedicated, more saturated red (not --color-urgent, which is
+     tuned for badge fills/text) at higher opacity than a first pass used —
+     diluted further, the warm ivory canvas's own undertone dominated the
+     outer ring and it read as peachy/orange instead of red. */
+  .task.due-glow {
+    box-shadow:
+      var(--shadow-sm),
+      0 0 0 1px oklch(55% 0.22 18 / 0.85),
+      0 0 12px 4px oklch(55% 0.22 18 / 0.55),
+      0 0 22px 8px oklch(55% 0.22 18 / 0.3);
+  }
+
+  .task.due-glow:hover {
+    box-shadow:
+      var(--shadow-md),
+      0 0 0 1px oklch(55% 0.22 18 / 0.85),
+      0 0 12px 4px oklch(55% 0.22 18 / 0.55),
+      0 0 22px 8px oklch(55% 0.22 18 / 0.3);
+  }
+
+  /* Done: tint toward the configured done status's color and strike
+     through the title — a glance should make "this is finished"
+     unmistakable. Cancelled: tint toward the cancelled status's color and
+     overlay an X (see .task-cancelled-x) instead of a strikethrough, so the
+     two finished states read as visually distinct from each other, not
+     just both "muted." Layered on top of color-coded mode's background
+     (not mutually exclusive with it) by mixing rather than replacing. */
+  .task.task-done,
+  .task.task-cancelled {
+    background: color-mix(in oklch, var(--task-status-color) 14%, var(--task-color-code-bg, var(--color-surface-raised)));
+    opacity: 0.8;
+  }
+
+  .task.task-done .task-title {
+    text-decoration: line-through;
+    text-decoration-thickness: 1.5px;
+  }
+
+  .task-cancelled-x {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    color: var(--task-status-color);
+    opacity: 0.55;
+    pointer-events: none;
+  }
+
+  /* "Color code" card display mode: the whole card is tinted by the
+     project's color (rendered via `neonCardColor` at a fixed, bright
+     lightness — see TaskCard.svelte's script) instead of showing a project
+     chip. Title text is always dark ink: the fixed lightness target makes
+     that safe for every project color, with no per-color contrast check
+     needed. Other chips get an explicit opaque background + border here so
+     they stay clearly legible against a more saturated card than the
+     default neutral surface. */
+  .task.color-coded {
+    background: var(--task-color-code-bg);
+    /* Only the non-priority sides — `border-color` is a shorthand that would
+       otherwise also overwrite `border-left`, which is how the priority
+       accent stripe is rendered (see `.task`'s base rule below). That stripe
+       must stay visible in color-coded mode, especially since it's the
+       *only* priority indicator left when "Show priority labels" is off. */
+    border-top-color: color-mix(in oklch, var(--task-project-color) 65%, var(--color-border));
+    border-right-color: color-mix(in oklch, var(--task-project-color) 65%, var(--color-border));
+    border-bottom-color: color-mix(in oklch, var(--task-project-color) 65%, var(--color-border));
+  }
+
+  .task.color-coded .task-title {
+    color: var(--color-ink);
+  }
+
+  /* Tag/priority chips use the generic muted-gray chip styling, which can
+     blend into a saturated color-coded background — give them an explicit
+     opaque background here. The due chip (overdue/today/tomorrow/plain) and
+     project chip are excluded: the due chip's solid/soft red/amber fills
+     already have strong, intentional contrast, and the project chip is
+     hidden entirely in this mode (see the template). */
+  .task.color-coded .chip.tag,
+  .task.color-coded .chip.priority {
+    background: var(--color-surface-raised);
+    border-color: var(--color-border-strong);
+    color: var(--color-ink);
   }
 
   /* Drag placeholder clone (see svelte-dnd-action SHADOW_ELEMENT_ATTRIBUTE_NAME):
@@ -350,6 +508,7 @@
   .task-title {
     cursor: pointer;
     font-size: var(--text-sm);
+    font-weight: 600;
     line-height: var(--leading-tight);
     word-break: break-word;
   }
@@ -377,16 +536,22 @@
     font-size: var(--text-xs);
     line-height: var(--leading-tight);
     padding: var(--space-4xs) var(--space-2xs);
-    border-radius: var(--radius-pill);
+    border-radius: var(--radius-sm);
     background: var(--color-canvas);
     border: 1px solid var(--color-border);
     color: var(--color-ink-muted);
   }
 
+  /* Tags are the one attribute that keeps the pill shape — every other
+     attribute chip (priority/project/due) is rectangular, per design. */
+  .chip.tag {
+    border-radius: var(--radius-pill);
+  }
+
   .chip.project {
-    background: var(--color-accent-soft);
-    border-color: transparent;
-    color: var(--color-accent);
+    background: color-mix(in oklch, var(--chip-color, var(--color-accent)) 16%, var(--color-surface-raised));
+    border-color: color-mix(in oklch, var(--chip-color, var(--color-accent)) 45%, transparent);
+    color: var(--chip-text-color, var(--chip-color, var(--color-accent)));
     font-weight: 600;
   }
 
@@ -394,9 +559,46 @@
     font-variant-numeric: tabular-nums;
   }
 
+  /* "Overdue" is the most urgent signal a card can show, so it gets a
+     solid fill rather than the soft-tint treatment every other chip uses —
+     it should visually outrank the priority/project/tag chips next to it. */
+  .chip.due-overdue {
+    background: var(--color-urgent);
+    border-color: var(--color-urgent);
+    color: var(--color-urgent-ink);
+    font-weight: 700;
+  }
+
+  .chip.due-today {
+    background: var(--color-urgent-soft);
+    border-color: color-mix(in oklch, var(--color-urgent) 40%, transparent);
+    color: var(--color-urgent);
+    font-weight: 700;
+  }
+
+  .chip.due-tomorrow {
+    background: var(--color-soon-soft);
+    border-color: color-mix(in oklch, var(--color-soon) 40%, transparent);
+    color: var(--color-soon);
+    font-weight: 700;
+  }
+
+  .due-dot {
+    width: 0.4rem;
+    height: 0.4rem;
+    border-radius: var(--radius-pill);
+    background: currentColor;
+    flex-shrink: 0;
+  }
+
+  .chip.due-overdue .due-dot {
+    background: var(--color-urgent-ink);
+  }
+
+  /* Plain sentence case, matching the due chip's style — uppercase + tracked
+     letter-spacing (the prior treatment) reads visually larger than the
+     other chips at the same font-size, even though the size itself matches. */
   .chip.priority {
-    text-transform: uppercase;
-    letter-spacing: var(--tracking-wide);
     font-weight: 600;
   }
 
@@ -458,6 +660,23 @@
     border-color: var(--color-accent);
     box-shadow: 0 0 0 3px var(--color-accent-soft);
     outline: none;
+  }
+
+  .due-hint {
+    font-size: var(--text-xs);
+    font-weight: 600;
+    text-transform: none;
+    letter-spacing: normal;
+    color: var(--color-ink-muted);
+  }
+
+  .due-hint.due-today,
+  .due-hint.due-overdue {
+    color: var(--color-urgent);
+  }
+
+  .due-hint.due-tomorrow {
+    color: var(--color-soon);
   }
 
   .edit-error {

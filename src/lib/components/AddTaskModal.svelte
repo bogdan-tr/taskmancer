@@ -4,12 +4,19 @@
     applyTokenSuggestion,
     filterSuggestions,
     findActiveToken,
+    MAX_SUGGESTIONS,
+    preferredSuggestionText,
     type ActiveToken,
   } from "$lib/autocomplete";
+  import { isLightColor } from "$lib/colorPresets";
+  import { displayState } from "$lib/displaySettings.svelte";
+  import { formatDueDateDisplay } from "$lib/dueDateDisplay";
   import { parseTaskInput, type ParsedTaskInput } from "$lib/naturalLanguage";
-  import { FALLBACK_PRIORITIES, priorityColor, priorityLabel } from "$lib/priorities.svelte";
+  import { FALLBACK_PRIORITIES, priorityColor, priorityLabel, sortedPriorities } from "$lib/priorities.svelte";
+  import { resolveProjectColor } from "$lib/projectColor";
   import { projectsState } from "$lib/projects.svelte";
   import { settingsState } from "$lib/settings.svelte";
+  import { FALLBACK_STATUSES, sortedStatuses, statusLabel } from "$lib/statuses.svelte";
   import { tagsState } from "$lib/tags.svelte";
   import { resolveTaskPreview } from "$lib/taskPreview";
   import Autocomplete from "./Autocomplete.svelte";
@@ -31,7 +38,19 @@
 
   let priorities = $derived(settingsState.current?.priorities ?? FALLBACK_PRIORITIES);
   let knownPriorities = $derived(priorities.map(({ id, label }) => ({ id, label })));
-  let parsed = $derived(parseTaskInput(title, undefined, knownPriorities));
+  let statuses = $derived(settingsState.current?.statuses ?? FALLBACK_STATUSES);
+  let knownStatuses = $derived(statuses.map(({ id, label }) => ({ id, label })));
+  // Prefers each level's label for the suggestion list (falling back to its
+  // id only when the label has whitespace, since a multi-word value can't
+  // round-trip through a single bare token) — otherwise a renamed level
+  // would still show its leftover auto-generated id (e.g. "new-status").
+  let priorityOptions = $derived(
+    sortedPriorities(priorities).map((level) => preferredSuggestionText(level.id, level.label)),
+  );
+  let statusOptions = $derived(
+    sortedStatuses(statuses).map((status) => preferredSuggestionText(status.id, status.label)),
+  );
+  let parsed = $derived(parseTaskInput(title, undefined, knownPriorities, knownStatuses));
 
   let defaultProjectName = $derived(settingsState.current?.default_project ?? "General");
   let globalDefaults = $derived(settingsState.current?.defaults ?? { tags: [] });
@@ -47,7 +66,7 @@
     projectsState.items.find((project) => project.name.toLowerCase() === resolvedProjectName.toLowerCase()),
   );
 
-  /** The effective project, priority, tags, due, and scheduled this task will be created with. */
+  /** The effective project, priority, status, tags, due, and scheduled this task will be created with. */
   let preview = $derived(
     resolveTaskPreview({
       parsed,
@@ -57,7 +76,17 @@
       projectDefaults: matchedProject?.defaults,
       matchedProjectName: matchedProject?.name,
       priorities,
+      statuses,
+      projectBoardDefaultStatus: matchedProject?.board.default_status,
     }),
+  );
+
+  let previewProjectColor = $derived(resolveProjectColor(preview.project, projectsState.items));
+  // Falls back to the standard ink color for very light project colors (e.g.
+  // a pale cream), which would otherwise be illegible as text — see TaskCard's
+  // `projectChipTextColor` for the same fix applied to the board chip.
+  let previewProjectTextColor = $derived(
+    isLightColor(previewProjectColor) ? "var(--color-ink)" : previewProjectColor,
   );
 
   // The `+Project` quick-add token is a single whitespace-delimited word, so
@@ -86,6 +115,12 @@
     }
   });
 
+  // Past this many tags, the dropdown stops helping at all (no browse-all,
+  // no filtering either) — the user types the tag's full name from memory.
+  // A long tag list is unwieldy to browse, unlike the much shorter
+  // priority/status/project lists this threshold doesn't apply to.
+  const MAX_LISTABLE_TAGS = 10;
+
   /** Recomputes the active token and its suggestions from the input's current value and cursor. */
   function updateSuggestions() {
     if (!inputEl) return;
@@ -100,8 +135,25 @@
       return;
     }
 
-    const options = token.prefix === "#" ? tagsState.items : projectNames;
-    suggestions = filterSuggestions(options, token.text);
+    if (token.prefix === "#" && tagsState.items.length >= MAX_LISTABLE_TAGS) {
+      suggestions = [];
+      activeSuggestionIndex = 0;
+      return;
+    }
+
+    const options =
+      token.prefix === "#"
+        ? tagsState.items
+        : token.prefix === "!"
+          ? priorityOptions
+          : token.prefix === "@"
+            ? statusOptions
+            : projectNames;
+
+    // A bare prefix (no text yet) browses every option — `filterSuggestions`
+    // itself always returns nothing for an empty prefix, so that case is
+    // handled directly here instead.
+    suggestions = token.text === "" ? options.slice(0, MAX_SUGGESTIONS) : filterSuggestions(options, token.text);
     activeSuggestionIndex = 0;
   }
 
@@ -236,6 +288,8 @@
               <code>due …</code> / <code>sch …</code> — due / scheduled date: <code>today</code>,
               <code>tomorrow</code>, <code>YYYY-MM-DD</code>, a weekday, "next weekday", or "month day[ year]"
             </li>
+            <li><code>due na</code> — never due</li>
+            <li><code>@status</code> — set the status, e.g. <code>@do</code></li>
           </ul>
           <p class="syntax-help-note">
             "next weekday" skips the upcoming one — e.g. "next monday" is a week later than "monday".
@@ -255,13 +309,19 @@
     <dl class="field-list">
       <div class="field-row">
         <dt>Project</dt>
-        <dd class="filled">{preview.project}</dd>
+        <dd class="filled" style={`color: ${previewProjectTextColor}`}>
+          {preview.project}
+        </dd>
       </div>
       <div class="field-row">
         <dt>Priority</dt>
         <dd class="filled" style={`color: ${priorityColor(priorities, preview.priorityId)}`}>
           {priorityLabel(priorities, preview.priorityId)}
         </dd>
+      </div>
+      <div class="field-row">
+        <dt>Status</dt>
+        <dd class="filled">{statusLabel(statuses, preview.statusId)}</dd>
       </div>
       <div class="field-row">
         <dt>Tags</dt>
@@ -281,7 +341,16 @@
       </div>
       <div class="field-row">
         <dt>Due</dt>
-        <dd class:filled={!!preview.due}>{preview.due ?? "—"}</dd>
+        <dd class:filled={!!preview.due}>
+          {#if preview.due && preview.due !== "Never"}
+            {@const dueDisplay = formatDueDateDisplay(preview.due, new Date(), displayState.nlDueDates)}
+            <span class:due-today={dueDisplay?.variant === "today"} class:due-tomorrow={dueDisplay?.variant === "tomorrow"} class:due-overdue={dueDisplay?.variant === "overdue"}>
+              {dueDisplay?.label ?? preview.due}
+            </span>
+          {:else}
+            {preview.due ?? "—"}
+          {/if}
+        </dd>
       </div>
     </dl>
 
@@ -527,6 +596,15 @@
     border: 1px solid transparent;
     color: var(--color-accent);
     font-weight: 600;
+  }
+
+  .due-today,
+  .due-overdue {
+    color: var(--color-urgent);
+  }
+
+  .due-tomorrow {
+    color: var(--color-soon);
   }
 
   .error {

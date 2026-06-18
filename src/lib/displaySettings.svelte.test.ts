@@ -257,6 +257,37 @@ describe("displaySettings.svelte", () => {
     });
   });
 
+  describe("setDueDateGlow", () => {
+    it("updates reactive state and storage", async () => {
+      const { displayState, setDueDateGlow } = await import("./displaySettings.svelte");
+
+      setDueDateGlow(true);
+
+      expect(displayState.dueDateGlow).toBe(true);
+      expect(localStorage.getItem("taskmancer:due-date-glow")).toBe("true");
+
+      setDueDateGlow(false);
+
+      expect(displayState.dueDateGlow).toBe(false);
+      expect(localStorage.getItem("taskmancer:due-date-glow")).toBe("false");
+    });
+
+    it("does not throw when storage access fails", async () => {
+      vi.stubGlobal("localStorage", {
+        getItem: vi.fn(() => {
+          throw new Error("storage disabled");
+        }),
+        setItem: vi.fn(() => {
+          throw new Error("storage disabled");
+        }),
+      });
+      const { displayState, setDueDateGlow } = await import("./displaySettings.svelte");
+
+      expect(() => setDueDateGlow(true)).not.toThrow();
+      expect(displayState.dueDateGlow).toBe(true);
+    });
+  });
+
   describe("initDisplay", () => {
     it("restores previously persisted values", async () => {
       store[FONT_SCALE_KEY] = "120";
@@ -265,6 +296,7 @@ describe("displaySettings.svelte", () => {
       store[SHOW_PRIORITY_GROUPS_KEY] = "false";
       store[SHOW_PRIORITY_CHIP_KEY] = "false";
       store[WEEK_STARTS_ON_KEY] = "sunday";
+      store["taskmancer:due-date-glow"] = "true";
       const { displayState, initDisplay } = await import("./displaySettings.svelte");
 
       initDisplay();
@@ -275,6 +307,7 @@ describe("displaySettings.svelte", () => {
       expect(displayState.showPriorityGroups).toBe(false);
       expect(displayState.showPriorityChip).toBe(false);
       expect(displayState.weekStartsOn).toBe("sunday");
+      expect(displayState.dueDateGlow).toBe(true);
       expect(document.documentElement.style.fontSize).toBe("120%");
       expect(setPropertyMock).toHaveBeenCalledWith("--column-width", "320px");
       expect(setPropertyMock).toHaveBeenCalledWith("--board-width", "1500px");
@@ -290,6 +323,7 @@ describe("displaySettings.svelte", () => {
         DEFAULT_SHOW_PRIORITY_GROUPS,
         DEFAULT_SHOW_PRIORITY_CHIP,
         DEFAULT_WEEK_STARTS_ON,
+        DEFAULT_DUE_DATE_GLOW,
       } = await import("./displaySettings.svelte");
 
       initDisplay();
@@ -300,6 +334,7 @@ describe("displaySettings.svelte", () => {
       expect(displayState.showPriorityGroups).toBe(DEFAULT_SHOW_PRIORITY_GROUPS);
       expect(displayState.showPriorityChip).toBe(DEFAULT_SHOW_PRIORITY_CHIP);
       expect(displayState.weekStartsOn).toBe(DEFAULT_WEEK_STARTS_ON);
+      expect(displayState.dueDateGlow).toBe(DEFAULT_DUE_DATE_GLOW);
     });
 
     it("falls back to the default week start when storage holds an unrecognized value", async () => {

@@ -18,6 +18,7 @@ pub fn run() {
             let archive_dir = app_data_dir.join("archive");
             let projects_file = app_data_dir.join("projects.json");
             let settings_file = app_data_dir.join("settings.json");
+            storage::migrate_scheduled_dates(&tasks_dir)?;
             app.manage(commands::AppState {
                 tasks_dir,
                 archive_dir,

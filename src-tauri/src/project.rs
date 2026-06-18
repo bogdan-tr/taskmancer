@@ -14,12 +14,18 @@ pub const DEFAULT_PROJECT_COLOR: &str = "#3b82f6";
 /// default. An empty `statuses` list means the project hasn't customized
 /// its board and shows the global status list as-is; a `None`
 /// `default_status` falls back to the global `Settings::defaults.status`.
+///
+/// `show_previous_weeks` overrides `Settings::show_previous_weeks_column`
+/// for this project's Week view when set; `None` inherits the global
+/// default.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct ProjectBoard {
     #[serde(default)]
     pub statuses: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_previous_weeks: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

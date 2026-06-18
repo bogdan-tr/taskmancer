@@ -22,10 +22,14 @@ export interface Task {
  * `statuses` list means the project hasn't customized its board and shows
  * the global status list as-is; an unset `default_status` falls back to the
  * global `Settings.defaults.status`.
+ *
+ * `show_previous_weeks` overrides `Settings.show_previous_weeks_column` for
+ * this project's Week view when set; `undefined` inherits the global default.
  */
 export interface ProjectBoard {
   statuses: string[];
   default_status?: string;
+  show_previous_weeks?: boolean;
 }
 
 /**
@@ -37,10 +41,16 @@ export interface ProjectBoard {
  * user-defined `PriorityLevel`/`StatusDefinition` entries in `Settings`
  * rather than a fixed built-in union.
  *
- * `due` and `scheduled`, if set, must be one of the relative-date option ids
- * in `RELATIVE_DATE_OPTIONS` (see `relativeDates.ts`) rather than an absolute
- * date: they're resolved to an absolute date relative to "today" at
- * task-creation time.
+ * `scheduled`, if set, must be one of the option ids in
+ * `SCHEDULED_RELATIVE_DATE_OPTIONS` (see `relativeDates.ts`) rather than an
+ * absolute date: it's resolved to an absolute date relative to "today" at
+ * task-creation time. The global default is always set, since every task
+ * must have a scheduled date.
+ *
+ * `due`, if set, must be one of the option ids in `DUE_RELATIVE_DATE_OPTIONS`
+ * (see `relativeDates.ts`) rather than an absolute date: it's resolved to an
+ * absolute date relative to the task's *scheduled* date (not "today") at
+ * task-creation time. `"none"` means "never due".
  */
 export interface TaskDefaults {
   tags: string[];
@@ -109,6 +119,8 @@ export interface Settings {
   done_status: string;
   cancelled_status?: string;
   default_project: string;
+  /** Global default for whether Week view shows a "previous weeks" column. See `ProjectBoard.show_previous_weeks`. */
+  show_previous_weeks_column: boolean;
 }
 
 /**

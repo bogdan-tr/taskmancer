@@ -1,4 +1,4 @@
-import { FALLBACK_PRIORITY_COLOR, sortedPriorities } from "./priorities.svelte";
+import { FALLBACK_PRIORITY_COLOR, priorityRank, sortedPriorities } from "./priorities.svelte";
 import type { PriorityLevel, Task } from "./types";
 
 /** A group of same-status, same-priority tasks for Kanban column rendering. */
@@ -52,8 +52,8 @@ export function bucketsHaveTasks(buckets: PriorityBucket[]): boolean {
  * doesn't match any defined level sort after all recognized priorities.
  */
 export function comparePriorityThenOrder(a: Task, b: Task, priorities: PriorityLevel[]): number {
-  const rankA = priorities.find((level) => level.id === a.priority)?.rank ?? Number.POSITIVE_INFINITY;
-  const rankB = priorities.find((level) => level.id === b.priority)?.rank ?? Number.POSITIVE_INFINITY;
+  const rankA = priorityRank(priorities, a.priority);
+  const rankB = priorityRank(priorities, b.priority);
   if (rankA !== rankB) return rankA - rankB;
   return a.order - b.order;
 }

@@ -4,6 +4,9 @@ const BOARD_WIDTH_KEY = "taskmancer:board-width";
 const SHOW_PRIORITY_GROUPS_KEY = "taskmancer:show-priority-groups";
 const SHOW_PRIORITY_CHIP_KEY = "taskmancer:show-priority-chip";
 const WEEK_STARTS_ON_KEY = "taskmancer:week-starts-on";
+const NL_DUE_DATES_KEY = "taskmancer:nl-due-dates";
+const CARD_COLOR_MODE_KEY = "taskmancer:card-color-mode";
+const DUE_DATE_GLOW_KEY = "taskmancer:due-date-glow";
 
 export const MIN_FONT_SCALE = 80;
 export const MAX_FONT_SCALE = 140;
@@ -26,6 +29,13 @@ export const DEFAULT_SHOW_PRIORITY_CHIP = true;
 export type WeekStartsOn = "monday" | "sunday";
 export const DEFAULT_WEEK_STARTS_ON: WeekStartsOn = "monday";
 
+export const DEFAULT_NL_DUE_DATES = false;
+
+export type CardColorMode = "project_tag" | "color_code";
+export const DEFAULT_CARD_COLOR_MODE: CardColorMode = "project_tag";
+
+export const DEFAULT_DUE_DATE_GLOW = false;
+
 /**
  * Boxed in an object because Svelte 5 forbids exporting a reassigned `$state`
  * binding directly from a module — only its properties may be mutated.
@@ -37,6 +47,9 @@ export const displayState = $state<{
   showPriorityGroups: boolean;
   showPriorityChip: boolean;
   weekStartsOn: WeekStartsOn;
+  nlDueDates: boolean;
+  cardColorMode: CardColorMode;
+  dueDateGlow: boolean;
 }>({
   fontScale: DEFAULT_FONT_SCALE,
   columnWidth: DEFAULT_COLUMN_WIDTH,
@@ -44,6 +57,9 @@ export const displayState = $state<{
   showPriorityGroups: DEFAULT_SHOW_PRIORITY_GROUPS,
   showPriorityChip: DEFAULT_SHOW_PRIORITY_CHIP,
   weekStartsOn: DEFAULT_WEEK_STARTS_ON,
+  nlDueDates: DEFAULT_NL_DUE_DATES,
+  cardColorMode: DEFAULT_CARD_COLOR_MODE,
+  dueDateGlow: DEFAULT_DUE_DATE_GLOW,
 });
 
 function clamp(value: number, min: number, max: number): number {
@@ -116,6 +132,36 @@ export function setWeekStartsOn(value: WeekStartsOn): void {
   }
 }
 
+/** Toggles natural-language due-date phrases (this/next weekday) and persists it. */
+export function setNlDueDates(value: boolean): void {
+  displayState.nlDueDates = value;
+  try {
+    localStorage.setItem(NL_DUE_DATES_KEY, value ? "true" : "false");
+  } catch {
+    // Persistence is best-effort; the choice still applies for this session.
+  }
+}
+
+/** Sets the card color mode (project tag vs color-coded background) and persists it. */
+export function setCardColorMode(value: CardColorMode): void {
+  displayState.cardColorMode = value;
+  try {
+    localStorage.setItem(CARD_COLOR_MODE_KEY, value);
+  } catch {
+    // Persistence is best-effort; the choice still applies for this session.
+  }
+}
+
+/** Toggles the red glow around overdue/due-today Kanban cards and persists it. */
+export function setDueDateGlow(value: boolean): void {
+  displayState.dueDateGlow = value;
+  try {
+    localStorage.setItem(DUE_DATE_GLOW_KEY, value ? "true" : "false");
+  } catch {
+    // Persistence is best-effort; the choice still applies for this session.
+  }
+}
+
 /** Parses a persisted numeric setting, falling back to `fallback` when missing, invalid, or out of range. */
 function parseStoredNumber(raw: string | null, min: number, max: number, fallback: number): number {
   if (raw === null) return fallback;
@@ -132,6 +178,9 @@ export function initDisplay(): void {
   let storedShowPriorityGroups: string | null = null;
   let storedShowPriorityChip: string | null = null;
   let storedWeekStartsOn: string | null = null;
+  let storedNlDueDates: string | null = null;
+  let storedCardColorMode: string | null = null;
+  let storedDueDateGlow: string | null = null;
   try {
     storedFontScale = localStorage.getItem(FONT_SCALE_KEY);
     storedColumnWidth = localStorage.getItem(COLUMN_WIDTH_KEY);
@@ -139,6 +188,9 @@ export function initDisplay(): void {
     storedShowPriorityGroups = localStorage.getItem(SHOW_PRIORITY_GROUPS_KEY);
     storedShowPriorityChip = localStorage.getItem(SHOW_PRIORITY_CHIP_KEY);
     storedWeekStartsOn = localStorage.getItem(WEEK_STARTS_ON_KEY);
+    storedNlDueDates = localStorage.getItem(NL_DUE_DATES_KEY);
+    storedCardColorMode = localStorage.getItem(CARD_COLOR_MODE_KEY);
+    storedDueDateGlow = localStorage.getItem(DUE_DATE_GLOW_KEY);
   } catch {
     // Fall back to defaults below.
   }
@@ -153,4 +205,7 @@ export function initDisplay(): void {
     storedShowPriorityChip === null ? DEFAULT_SHOW_PRIORITY_CHIP : storedShowPriorityChip === "true",
   );
   setWeekStartsOn(storedWeekStartsOn === "sunday" ? "sunday" : DEFAULT_WEEK_STARTS_ON);
+  setNlDueDates(storedNlDueDates === "true");
+  setCardColorMode(storedCardColorMode === "color_code" ? "color_code" : DEFAULT_CARD_COLOR_MODE);
+  setDueDateGlow(storedDueDateGlow === "true");
 }

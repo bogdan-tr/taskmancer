@@ -54,9 +54,16 @@ pub struct StatusDefinition {
 /// project's per-field overrides of those global defaults: any field left
 /// `None`/empty here falls back to the corresponding global value.
 ///
-/// `due` and `scheduled`, if set, must be one of [`RELATIVE_DATE_CODES`]
-/// rather than an absolute date: they're resolved to an absolute date
-/// relative to "today" at task-creation time (see [`resolve_relative_date`]).
+/// `scheduled`, if set, must be one of [`SCHEDULED_RELATIVE_DATE_CODES`]
+/// rather than an absolute date: it's resolved to an absolute date relative
+/// to "today" at task-creation time (see [`resolve_scheduled_relative_date`]).
+/// The global `defaults.scheduled` is always set (see [`Settings::default`]
+/// and [`Settings::normalize`]) since every task must have a scheduled date.
+///
+/// `due`, if set, must be one of [`DUE_RELATIVE_DATE_CODES`] rather than an
+/// absolute date: it's resolved to an absolute date relative to the task's
+/// *scheduled* date (not "today") at task-creation time (see
+/// [`resolve_due_relative_date`]). `"none"` means "never due".
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct TaskDefaults {
     #[serde(default)]
@@ -85,6 +92,11 @@ pub struct TaskDefaults {
 /// project was specified (and no project-scoped board supplied one); it must
 /// be non-empty (enforced by [`validate_settings`]) so a task can never be
 /// created or saved without a project.
+///
+/// `show_previous_weeks_column` is the global default for whether the Week
+/// view shows an extra leading column listing unfinished tasks scheduled or
+/// due before the visible week. A project's `ProjectBoard.show_previous_weeks`
+/// overrides this when set (see [`crate::project::ProjectBoard`]).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Settings {
     #[serde(default)]
@@ -99,6 +111,8 @@ pub struct Settings {
     pub cancelled_status: Option<String>,
     #[serde(default = "default_project_name")]
     pub default_project: String,
+    #[serde(default)]
+    pub show_previous_weeks_column: bool,
 }
 
 impl Default for Settings {
@@ -166,12 +180,13 @@ impl Default for Settings {
                 tags: Vec::new(),
                 priority: Some("medium".to_string()),
                 status: Some("backlog".to_string()),
-                due: None,
-                scheduled: None,
+                due: Some("none".to_string()),
+                scheduled: Some("today".to_string()),
             },
             done_status: "done".to_string(),
             cancelled_status: None,
             default_project: default_project_name(),
+            show_previous_weeks_column: false,
         }
     }
 }
@@ -189,6 +204,10 @@ impl Settings {
     /// When repairing `done_status` and no status has id `"done"`, the
     /// fallback is the status with the highest `order`; if multiple statuses
     /// tie on `order`, the last one encountered in `self.statuses` is used.
+    ///
+    /// Also backfills `defaults.scheduled`/`defaults.due` to `"today"`/
+    /// `"none"` for `settings.json` files written before every task was
+    /// required to have a scheduled date.
     pub fn normalize(mut self) -> Self {
         let seeded = Self::default();
         for level in &mut self.priorities {
@@ -216,14 +235,21 @@ impl Settings {
                 .unwrap_or_default();
         }
 
+        if self.defaults.scheduled.is_none() {
+            self.defaults.scheduled = Some("today".to_string());
+        }
+        if self.defaults.due.is_none() {
+            self.defaults.due = Some("none".to_string());
+        }
+
         self
     }
 }
 
-/// The fixed set of relative-date codes accepted by `TaskDefaults.due` and
-/// `.scheduled`. Mirrors `RELATIVE_DATE_OPTIONS` in the frontend's
+/// The fixed set of relative-date codes accepted by `TaskDefaults.scheduled`.
+/// Mirrors `SCHEDULED_RELATIVE_DATE_OPTIONS` in the frontend's
 /// `src/lib/relativeDates.ts` — keep both lists in sync.
-pub const RELATIVE_DATE_CODES: &[&str] = &[
+pub const SCHEDULED_RELATIVE_DATE_CODES: &[&str] = &[
     "today",
     "tomorrow",
     "in_2_days",
@@ -232,22 +258,53 @@ pub const RELATIVE_DATE_CODES: &[&str] = &[
     "in_1_month",
 ];
 
-/// Returns `Ok(())` if `code` is one of [`RELATIVE_DATE_CODES`], or an error
-/// naming the unrecognized code otherwise.
-pub fn validate_relative_date_code(code: &str) -> Result<(), String> {
-    if RELATIVE_DATE_CODES.contains(&code) {
+/// The fixed set of relative-date codes accepted by `TaskDefaults.due`.
+/// `"none"` means "never due"; the rest are offsets from the task's
+/// `scheduled` date (not "today") — see [`resolve_due_relative_date`]. Mirrors
+/// `DUE_RELATIVE_DATE_OPTIONS` in the frontend's `src/lib/relativeDates.ts` —
+/// keep both lists in sync.
+pub const DUE_RELATIVE_DATE_CODES: &[&str] = &[
+    "none",
+    "same_day",
+    "next_day",
+    "in_2_days",
+    "in_3_days",
+    "in_1_week",
+    "in_1_month",
+];
+
+/// Returns `Ok(())` if `code` is one of [`SCHEDULED_RELATIVE_DATE_CODES`], or
+/// an error naming the unrecognized code otherwise.
+pub fn validate_scheduled_relative_date_code(code: &str) -> Result<(), String> {
+    if SCHEDULED_RELATIVE_DATE_CODES.contains(&code) {
         Ok(())
     } else {
-        Err(format!("'{code}' is not a recognized relative date option"))
+        Err(format!(
+            "'{code}' is not a recognized scheduled-date option"
+        ))
     }
 }
 
-/// Resolves a relative-date code to an absolute date relative to `today`.
-/// Returns `None` for a code outside [`RELATIVE_DATE_CODES`] — this should be
-/// unreachable for codes that passed [`validate_relative_date_code`] at
-/// write-time, but degrades gracefully (no default date applied) for a stale
-/// code left over from a future app version rather than panicking.
-pub fn resolve_relative_date(code: &str, today: chrono::NaiveDate) -> Option<chrono::NaiveDate> {
+/// Returns `Ok(())` if `code` is one of [`DUE_RELATIVE_DATE_CODES`], or an
+/// error naming the unrecognized code otherwise.
+pub fn validate_due_relative_date_code(code: &str) -> Result<(), String> {
+    if DUE_RELATIVE_DATE_CODES.contains(&code) {
+        Ok(())
+    } else {
+        Err(format!("'{code}' is not a recognized due-date option"))
+    }
+}
+
+/// Resolves a [`SCHEDULED_RELATIVE_DATE_CODES`] code to an absolute date
+/// relative to `today`. Returns `None` for a code outside that list — this
+/// should be unreachable for codes that passed
+/// [`validate_scheduled_relative_date_code`] at write-time, but degrades
+/// gracefully (no default date applied) for a stale code left over from a
+/// future app version rather than panicking.
+pub fn resolve_scheduled_relative_date(
+    code: &str,
+    today: chrono::NaiveDate,
+) -> Option<chrono::NaiveDate> {
     use chrono::{Days, Months};
     match code {
         "today" => Some(today),
@@ -256,6 +313,29 @@ pub fn resolve_relative_date(code: &str, today: chrono::NaiveDate) -> Option<chr
         "in_3_days" => today.checked_add_days(Days::new(3)),
         "in_1_week" => today.checked_add_days(Days::new(7)),
         "in_1_month" => today.checked_add_months(Months::new(1)),
+        _ => None,
+    }
+}
+
+/// Resolves a [`DUE_RELATIVE_DATE_CODES`] code to an absolute date relative to
+/// `scheduled`. `"none"` always resolves to `None` (never due). Returns
+/// `None` for any other code outside that list — this should be unreachable
+/// for codes that passed [`validate_due_relative_date_code`] at write-time,
+/// but degrades gracefully (no due date applied) for a stale code left over
+/// from a future app version rather than panicking.
+pub fn resolve_due_relative_date(
+    code: &str,
+    scheduled: chrono::NaiveDate,
+) -> Option<chrono::NaiveDate> {
+    use chrono::{Days, Months};
+    match code {
+        "none" => None,
+        "same_day" => Some(scheduled),
+        "next_day" => scheduled.checked_add_days(Days::new(1)),
+        "in_2_days" => scheduled.checked_add_days(Days::new(2)),
+        "in_3_days" => scheduled.checked_add_days(Days::new(3)),
+        "in_1_week" => scheduled.checked_add_days(Days::new(7)),
+        "in_1_month" => scheduled.checked_add_months(Months::new(1)),
         _ => None,
     }
 }
@@ -287,8 +367,9 @@ pub fn validate_status_id(settings: &Settings, id: &str) -> Result<(), String> {
 /// would make `validate_priority_id`/`validate_status_id` reject every task
 /// write, including the `resolve_default_priority`/`resolve_default_status`
 /// fallbacks), `defaults.priority`/`defaults.status`, if set, must reference
-/// one of those ids, `defaults.due`/`defaults.scheduled`, if set, must be
-/// a recognized relative-date code, `done_status` must be non-empty and
+/// one of those ids, `defaults.due`, if set, must be one of
+/// [`DUE_RELATIVE_DATE_CODES`], `defaults.scheduled`, if set, must be one of
+/// [`SCHEDULED_RELATIVE_DATE_CODES`], `done_status` must be non-empty and
 /// reference a defined status, `cancelled_status`, if set, must
 /// reference a defined status distinct from `done_status`, and
 /// `default_project` must be non-empty after trimming whitespace.
@@ -340,11 +421,11 @@ pub fn validate_settings(settings: &Settings) -> Result<(), String> {
     }
 
     if let Some(due) = &settings.defaults.due {
-        validate_relative_date_code(due)?;
+        validate_due_relative_date_code(due)?;
     }
 
     if let Some(scheduled) = &settings.defaults.scheduled {
-        validate_relative_date_code(scheduled)?;
+        validate_scheduled_relative_date_code(scheduled)?;
     }
 
     if settings.default_project.trim().is_empty() {
@@ -374,8 +455,8 @@ mod tests {
         assert_eq!(settings.defaults.priority, Some("medium".to_string()));
         assert_eq!(settings.defaults.status, Some("backlog".to_string()));
         assert!(settings.defaults.tags.is_empty());
-        assert_eq!(settings.defaults.due, None);
-        assert_eq!(settings.defaults.scheduled, None);
+        assert_eq!(settings.defaults.due, Some("none".to_string()));
+        assert_eq!(settings.defaults.scheduled, Some("today".to_string()));
     }
 
     #[test]
@@ -642,16 +723,16 @@ mod tests {
     #[test]
     fn validate_settings_accepts_a_valid_default_due() {
         let mut settings = Settings::default();
-        settings.defaults.due = Some("tomorrow".to_string());
+        settings.defaults.due = Some("next_day".to_string());
 
         assert!(validate_settings(&settings).is_ok());
     }
 
     #[test]
     fn validate_settings_accepts_a_missing_default_due() {
-        let settings = Settings::default();
+        let mut settings = Settings::default();
+        settings.defaults.due = None;
 
-        assert_eq!(settings.defaults.due, None);
         assert!(validate_settings(&settings).is_ok());
     }
 
@@ -674,9 +755,9 @@ mod tests {
 
     #[test]
     fn validate_settings_accepts_a_missing_default_scheduled() {
-        let settings = Settings::default();
+        let mut settings = Settings::default();
+        settings.defaults.scheduled = None;
 
-        assert_eq!(settings.defaults.scheduled, None);
         assert!(validate_settings(&settings).is_ok());
     }
 
@@ -712,93 +793,193 @@ mod tests {
     }
 
     #[test]
-    fn validate_relative_date_code_accepts_every_defined_code() {
-        for code in RELATIVE_DATE_CODES {
+    fn validate_scheduled_relative_date_code_accepts_every_defined_code() {
+        for code in SCHEDULED_RELATIVE_DATE_CODES {
             assert!(
-                validate_relative_date_code(code).is_ok(),
+                validate_scheduled_relative_date_code(code).is_ok(),
                 "{code} should be valid"
             );
         }
     }
 
     #[test]
-    fn validate_relative_date_code_rejects_an_unknown_code() {
-        let err = validate_relative_date_code("next_quarter").unwrap_err();
+    fn validate_scheduled_relative_date_code_rejects_an_unknown_code() {
+        let err = validate_scheduled_relative_date_code("next_quarter").unwrap_err();
         assert!(err.contains("next_quarter"));
     }
 
     #[test]
-    fn resolve_relative_date_resolves_today() {
-        let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 14).unwrap();
-
-        assert_eq!(resolve_relative_date("today", today), Some(today));
+    fn validate_due_relative_date_code_accepts_every_defined_code() {
+        for code in DUE_RELATIVE_DATE_CODES {
+            assert!(
+                validate_due_relative_date_code(code).is_ok(),
+                "{code} should be valid"
+            );
+        }
     }
 
     #[test]
-    fn resolve_relative_date_resolves_tomorrow() {
+    fn validate_due_relative_date_code_rejects_an_unknown_code() {
+        let err = validate_due_relative_date_code("next_quarter").unwrap_err();
+        assert!(err.contains("next_quarter"));
+    }
+
+    #[test]
+    fn resolve_scheduled_relative_date_resolves_today() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 14).unwrap();
+
+        assert_eq!(resolve_scheduled_relative_date("today", today), Some(today));
+    }
+
+    #[test]
+    fn resolve_scheduled_relative_date_resolves_tomorrow() {
         let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 14).unwrap();
 
         assert_eq!(
-            resolve_relative_date("tomorrow", today),
+            resolve_scheduled_relative_date("tomorrow", today),
             chrono::NaiveDate::from_ymd_opt(2026, 6, 15)
         );
     }
 
     #[test]
-    fn resolve_relative_date_resolves_in_2_days() {
+    fn resolve_scheduled_relative_date_resolves_in_2_days() {
         let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 14).unwrap();
 
         assert_eq!(
-            resolve_relative_date("in_2_days", today),
+            resolve_scheduled_relative_date("in_2_days", today),
             chrono::NaiveDate::from_ymd_opt(2026, 6, 16)
         );
     }
 
     #[test]
-    fn resolve_relative_date_resolves_in_3_days() {
+    fn resolve_scheduled_relative_date_resolves_in_3_days() {
         let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 14).unwrap();
 
         assert_eq!(
-            resolve_relative_date("in_3_days", today),
+            resolve_scheduled_relative_date("in_3_days", today),
             chrono::NaiveDate::from_ymd_opt(2026, 6, 17)
         );
     }
 
     #[test]
-    fn resolve_relative_date_resolves_in_1_week() {
+    fn resolve_scheduled_relative_date_resolves_in_1_week() {
         let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 14).unwrap();
 
         assert_eq!(
-            resolve_relative_date("in_1_week", today),
+            resolve_scheduled_relative_date("in_1_week", today),
             chrono::NaiveDate::from_ymd_opt(2026, 6, 21)
         );
     }
 
     #[test]
-    fn resolve_relative_date_resolves_in_1_month() {
+    fn resolve_scheduled_relative_date_resolves_in_1_month() {
         let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 14).unwrap();
 
         assert_eq!(
-            resolve_relative_date("in_1_month", today),
+            resolve_scheduled_relative_date("in_1_month", today),
             chrono::NaiveDate::from_ymd_opt(2026, 7, 14)
         );
     }
 
     #[test]
-    fn resolve_relative_date_clamps_in_1_month_to_the_shorter_target_month() {
+    fn resolve_scheduled_relative_date_clamps_in_1_month_to_the_shorter_target_month() {
         let today = chrono::NaiveDate::from_ymd_opt(2026, 1, 31).unwrap();
 
         assert_eq!(
-            resolve_relative_date("in_1_month", today),
+            resolve_scheduled_relative_date("in_1_month", today),
             chrono::NaiveDate::from_ymd_opt(2026, 2, 28)
         );
     }
 
     #[test]
-    fn resolve_relative_date_returns_none_for_an_unrecognized_code() {
+    fn resolve_scheduled_relative_date_returns_none_for_an_unrecognized_code() {
         let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 14).unwrap();
 
-        assert_eq!(resolve_relative_date("next_quarter", today), None);
+        assert_eq!(resolve_scheduled_relative_date("next_quarter", today), None);
+    }
+
+    #[test]
+    fn resolve_due_relative_date_resolves_none_as_never_due() {
+        let scheduled = chrono::NaiveDate::from_ymd_opt(2026, 6, 14).unwrap();
+
+        assert_eq!(resolve_due_relative_date("none", scheduled), None);
+    }
+
+    #[test]
+    fn resolve_due_relative_date_resolves_same_day() {
+        let scheduled = chrono::NaiveDate::from_ymd_opt(2026, 6, 14).unwrap();
+
+        assert_eq!(
+            resolve_due_relative_date("same_day", scheduled),
+            Some(scheduled)
+        );
+    }
+
+    #[test]
+    fn resolve_due_relative_date_resolves_next_day() {
+        let scheduled = chrono::NaiveDate::from_ymd_opt(2026, 6, 14).unwrap();
+
+        assert_eq!(
+            resolve_due_relative_date("next_day", scheduled),
+            chrono::NaiveDate::from_ymd_opt(2026, 6, 15)
+        );
+    }
+
+    #[test]
+    fn resolve_due_relative_date_resolves_in_2_days() {
+        let scheduled = chrono::NaiveDate::from_ymd_opt(2026, 6, 14).unwrap();
+
+        assert_eq!(
+            resolve_due_relative_date("in_2_days", scheduled),
+            chrono::NaiveDate::from_ymd_opt(2026, 6, 16)
+        );
+    }
+
+    #[test]
+    fn resolve_due_relative_date_resolves_in_3_days() {
+        let scheduled = chrono::NaiveDate::from_ymd_opt(2026, 6, 14).unwrap();
+
+        assert_eq!(
+            resolve_due_relative_date("in_3_days", scheduled),
+            chrono::NaiveDate::from_ymd_opt(2026, 6, 17)
+        );
+    }
+
+    #[test]
+    fn resolve_due_relative_date_resolves_in_1_week() {
+        let scheduled = chrono::NaiveDate::from_ymd_opt(2026, 6, 14).unwrap();
+
+        assert_eq!(
+            resolve_due_relative_date("in_1_week", scheduled),
+            chrono::NaiveDate::from_ymd_opt(2026, 6, 21)
+        );
+    }
+
+    #[test]
+    fn resolve_due_relative_date_resolves_in_1_month() {
+        let scheduled = chrono::NaiveDate::from_ymd_opt(2026, 6, 14).unwrap();
+
+        assert_eq!(
+            resolve_due_relative_date("in_1_month", scheduled),
+            chrono::NaiveDate::from_ymd_opt(2026, 7, 14)
+        );
+    }
+
+    #[test]
+    fn resolve_due_relative_date_clamps_in_1_month_to_the_shorter_target_month() {
+        let scheduled = chrono::NaiveDate::from_ymd_opt(2026, 1, 31).unwrap();
+
+        assert_eq!(
+            resolve_due_relative_date("in_1_month", scheduled),
+            chrono::NaiveDate::from_ymd_opt(2026, 2, 28)
+        );
+    }
+
+    #[test]
+    fn resolve_due_relative_date_returns_none_for_an_unrecognized_code() {
+        let scheduled = chrono::NaiveDate::from_ymd_opt(2026, 6, 14).unwrap();
+
+        assert_eq!(resolve_due_relative_date("next_quarter", scheduled), None);
     }
 
     #[test]
@@ -1000,6 +1181,7 @@ mod tests {
             done_status: String::new(),
             cancelled_status: None,
             default_project: default_project_name(),
+            ..Default::default()
         };
 
         let normalized = settings.normalize();

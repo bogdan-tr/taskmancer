@@ -1,24 +1,39 @@
 <script lang="ts">
+  import { onMount } from "svelte";
+  import { dndzone, type DndEvent } from "svelte-dnd-action";
   import { displayState } from "$lib/displaySettings.svelte";
-  import { FALLBACK_PRIORITIES, priorityColor, priorityLabel } from "$lib/priorities.svelte";
-  import { projectsState } from "$lib/projects.svelte";
+  import { FALLBACK_PRIORITIES } from "$lib/priorities.svelte";
   import { settingsState } from "$lib/settings.svelte";
-  import { FALLBACK_STATUSES, sortedStatuses, statusLabel } from "$lib/statuses.svelte";
-  import { DEFAULT_PROJECT_COLOR, type Task } from "$lib/types";
+  import { FALLBACK_STATUSES, sortedStatuses } from "$lib/statuses.svelte";
+  import type { Task } from "$lib/types";
   import { addDays, addWeeks, formatDateISO, startOfWeek, weekDates } from "$lib/weekRange";
-  import { groupTasksByWeek } from "$lib/weekGrouping";
+  import { countTasksBeforeWeek, groupPreviousWeeksBars, groupTasksByWeek, type WeekBar } from "$lib/weekGrouping";
   import TaskEditDialog from "./TaskEditDialog.svelte";
+  import WeekBarItem from "./WeekBarItem.svelte";
+
+  const FLIP_DURATION_MS = 150;
+
+  /** `WeekBar` plus an `id` — `svelte-dnd-action` requires every dndzone item to have one. */
+  type DraggableWeekBar = WeekBar & { id: string };
+
+  function toDraggable(weekBar: WeekBar): DraggableWeekBar {
+    return { ...weekBar, id: barKey(weekBar) };
+  }
 
   interface Props {
     /** Tasks to place on the week grid (project-filtered, but not Kanban-visibility-filtered). */
     tasks: Task[];
     onUpdate: (task: Task) => void | Promise<void>;
+    /** Whether to show the leading "Previous" column of unfinished tasks scheduled/due before this week. */
+    showPreviousWeeksColumn: boolean;
   }
 
-  let { tasks, onUpdate }: Props = $props();
+  let { tasks, onUpdate, showPreviousWeeksColumn }: Props = $props();
 
   const priorities = $derived(settingsState.current?.priorities ?? FALLBACK_PRIORITIES);
   const statuses = $derived(sortedStatuses(settingsState.current?.statuses ?? FALLBACK_STATUSES));
+  const doneStatus = $derived(settingsState.current?.done_status ?? "done");
+  const cancelledStatus = $derived(settingsState.current?.cancelled_status);
 
   let weekStart = $state(startOfWeek(new Date(), displayState.weekStartsOn));
 
@@ -38,8 +53,29 @@
   let weekEnd = $derived(addDays(weekStart, 6));
   let dates = $derived(weekDates(weekStart));
   let dateStrings = $derived(dates.map(formatDateISO));
-  let bars = $derived(groupTasksByWeek(tasks, dateStrings));
   let todayString = $derived(formatDateISO(new Date()));
+
+  /**
+   * Mutable per-day mirror of `groupTasksByWeek`, kept in sync with `tasks`
+   * via the effect below. Mutable (rather than plain `$derived`) so drag
+   * handlers can write live preview state into it during a drag, the same
+   * pattern `KanbanBoard.svelte` uses for `buckets`.
+   */
+  let weekColumns: DraggableWeekBar[][] = $state([]);
+
+  $effect(() => {
+    weekColumns = groupTasksByWeek(tasks, dateStrings, priorities).map((dayBars) => dayBars.map(toDraggable));
+  });
+
+  /** Unfinished tasks scheduled/due before this week, for the optional leading column. Not draggable. */
+  let previousBars = $derived(
+    groupPreviousWeeksBars(tasks, dateStrings[0] ?? formatDateISO(weekStart), priorities, doneStatus, cancelledStatus),
+  );
+
+  /** Count for the header's "N tasks behind this week" indicator — always shown, regardless of the column toggle. */
+  let behindCount = $derived(
+    countTasksBeforeWeek(tasks, dateStrings[0] ?? formatDateISO(weekStart), doneStatus, cancelledStatus),
+  );
 
   function goToPreviousWeek() {
     weekStart = addWeeks(weekStart, -1);
@@ -69,18 +105,56 @@
 
   let weekRangeLabel = $derived(formatWeekRangeLabel(weekStart, weekEnd));
 
-  /** The project's color, or `DEFAULT_PROJECT_COLOR` for tasks with no project or an unknown one. */
-  function projectColor(projectName: string | undefined): string {
-    if (!projectName) return DEFAULT_PROJECT_COLOR;
-    return projectsState.items.find((p) => p.name === projectName)?.color ?? DEFAULT_PROJECT_COLOR;
+  const isColorCoded = $derived(displayState.cardColorMode === "color_code");
+
+  function barKey(bar: WeekBar): string {
+    return `${bar.task.id}:${bar.type}`;
+  }
+
+  /** Live drag preview: mirrors the dropped-into column's items, exactly like `KanbanBoard.svelte`'s `handleConsider`. */
+  function handleConsider(dayIndex: number, event: CustomEvent<DndEvent<DraggableWeekBar>>) {
+    weekColumns[dayIndex] = event.detail.items;
+  }
+
+  /**
+   * On drop, any bar in the target day whose own `date` doesn't match that
+   * day's date string just moved there from elsewhere — update its task's
+   * `scheduled` (for a "scheduled" bar) or `due` (for a "due" bar) to the
+   * new day and persist. There's no "order" field to renumber (bars are
+   * always auto-sorted by priority/title within a day), so this is simpler
+   * than the Kanban board's equivalent.
+   */
+  async function handleFinalize(dayIndex: number, event: CustomEvent<DndEvent<DraggableWeekBar>>) {
+    const items = event.detail.items;
+    weekColumns[dayIndex] = items;
+
+    const targetDate = dateStrings[dayIndex];
+    const moved = items.filter((bar) => bar.date !== targetDate);
+    if (moved.length === 0) return;
+
+    for (const bar of moved) {
+      const updated: Task =
+        bar.type === "scheduled" ? { ...bar.task, scheduled: targetDate } : { ...bar.task, due: targetDate };
+      await onUpdate(updated);
+    }
   }
 
   let editingTask: Task | undefined = $state(undefined);
   let editDialogOpen = $state(false);
 
-  /** Opens the edit dialog for `task`, closing the bar's `<details>` popover it was triggered from. */
-  function openEdit(task: Task, event: MouseEvent) {
-    (event.currentTarget as HTMLElement).closest("details")?.removeAttribute("open");
+  /** The key (see `barKey`) of the bar whose popover is currently open, or `undefined` if none is. */
+  let openBarKey: string | undefined = $state(undefined);
+
+  function toggleBar(key: string) {
+    openBarKey = openBarKey === key ? undefined : key;
+  }
+
+  function closePopover() {
+    openBarKey = undefined;
+  }
+
+  function openEdit(task: Task) {
+    closePopover();
     editingTask = task;
     editDialogOpen = true;
   }
@@ -94,6 +168,28 @@
     await onUpdate(task);
     closeEdit();
   }
+
+  /** Closes the open popover on a click outside any bar — in-bar clicks are handled by the bar's own button. */
+  function handleWindowClick(event: MouseEvent) {
+    if (openBarKey === undefined) return;
+    if ((event.target as HTMLElement).closest(".bar")) return;
+    closePopover();
+  }
+
+  function handleWindowKeydown(event: KeyboardEvent) {
+    if (event.key === "Escape" && openBarKey !== undefined) {
+      closePopover();
+    }
+  }
+
+  onMount(() => {
+    window.addEventListener("click", handleWindowClick);
+    window.addEventListener("keydown", handleWindowKeydown);
+    return () => {
+      window.removeEventListener("click", handleWindowClick);
+      window.removeEventListener("keydown", handleWindowKeydown);
+    };
+  });
 </script>
 
 <div class="week-view">
@@ -134,81 +230,70 @@
       </button>
     </div>
     <p class="week-range-label">{weekRangeLabel}</p>
+    {#if behindCount > 0}
+      <p class="behind-indicator" title="Unfinished tasks scheduled or due before this week">
+        {behindCount} {behindCount === 1 ? "task" : "tasks"} behind this week
+      </p>
+    {/if}
   </div>
 
   <div class="week-grid">
+    {#if showPreviousWeeksColumn}
+      <div class="day-column previous-column">
+        <div class="day-header">
+          <span class="day-name">Previous</span>
+        </div>
+        <div class="day-bars">
+          {#each previousBars as weekBar (barKey(weekBar))}
+            <WeekBarItem
+              {weekBar}
+              colorCoded={isColorCoded}
+              rightAlignPopover={false}
+              {priorities}
+              {statuses}
+              {doneStatus}
+              {cancelledStatus}
+              isOpen={openBarKey === barKey(weekBar)}
+              onToggle={() => toggleBar(barKey(weekBar))}
+              onClosePopover={closePopover}
+              onEdit={openEdit}
+            />
+          {/each}
+        </div>
+      </div>
+    {/if}
     {#each dates as date, index (dateStrings[index])}
+      {@const dayItems = weekColumns[index] ?? []}
       <div class="day-column" class:is-today={dateStrings[index] === todayString}>
         <div class="day-header">
           <span class="day-name">{dayName(date)}</span>
           <span class="day-number">{date.getDate()}</span>
         </div>
-        <div class="day-bars">
-          {#each bars[index] as bar (bar.task.id + ":" + bar.type)}
-            <details class="bar" style="--bar-color: {projectColor(bar.task.project)}">
-              <summary
-                class="bar-summary"
-                aria-label="{bar.type === 'scheduled' ? 'Scheduled' : 'Due'} – {bar.task.title}"
-              >
-                <span class="bar-icon" aria-hidden="true">
-                  {#if bar.type === "scheduled"}
-                    <svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true">
-                      <circle cx="8" cy="8" r="6" fill="currentColor" />
-                    </svg>
-                  {:else}
-                    <svg
-                      viewBox="0 0 16 16"
-                      width="10"
-                      height="10"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="1.5"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                      aria-hidden="true"
-                    >
-                      <path d="M3 1.5v13" />
-                      <path d="M3 2h8l-1.5 3L11 8H3" />
-                    </svg>
-                  {/if}
-                </span>
-                <span class="bar-title">{bar.task.title}</span>
-              </summary>
-              <div class="bar-popover">
-                <p class="popover-title">{bar.task.title}</p>
-                <div class="popover-meta">
-                  {#if bar.task.project}
-                    <span class="chip project" style="--chip-color: {projectColor(bar.task.project)}">
-                      {bar.task.project}
-                    </span>
-                  {/if}
-                  <span class="chip priority" style="--chip-color: {priorityColor(priorities, bar.task.priority)}">
-                    <span class="priority-dot" aria-hidden="true"></span>
-                    {priorityLabel(priorities, bar.task.priority)}
-                  </span>
-                  <span class="chip status">{statusLabel(statuses, bar.task.status)}</span>
-                </div>
-                {#if bar.task.scheduled || bar.task.due}
-                  <dl class="popover-dates">
-                    {#if bar.task.scheduled}
-                      <div class="date-row">
-                        <dt>Scheduled</dt>
-                        <dd>{bar.task.scheduled}</dd>
-                      </div>
-                    {/if}
-                    {#if bar.task.due}
-                      <div class="date-row">
-                        <dt>Due</dt>
-                        <dd>{bar.task.due}</dd>
-                      </div>
-                    {/if}
-                  </dl>
-                {/if}
-                <button type="button" class="edit-button" onclick={(event) => openEdit(bar.task, event)}>
-                  Edit
-                </button>
-              </div>
-            </details>
+        <div
+          class="day-bars"
+          use:dndzone={{
+            items: dayItems,
+            flipDurationMs: FLIP_DURATION_MS,
+            zoneItemTabIndex: -1,
+            dropTargetStyle: {},
+          }}
+          onconsider={(event) => handleConsider(index, event)}
+          onfinalize={(event) => handleFinalize(index, event)}
+        >
+          {#each dayItems as weekBar (weekBar.id)}
+            <WeekBarItem
+              {weekBar}
+              colorCoded={isColorCoded}
+              rightAlignPopover={index >= 5}
+              {priorities}
+              {statuses}
+              {doneStatus}
+              {cancelledStatus}
+              isOpen={openBarKey === barKey(weekBar)}
+              onToggle={() => toggleBar(barKey(weekBar))}
+              onClosePopover={closePopover}
+              onEdit={openEdit}
+            />
           {/each}
         </div>
       </div>
@@ -280,15 +365,30 @@
     font-variant-numeric: tabular-nums;
   }
 
+  .behind-indicator {
+    margin: 0;
+    padding: var(--space-3xs) var(--space-sm);
+    border-radius: var(--radius-pill);
+    background: var(--color-urgent-soft);
+    color: var(--color-urgent);
+    font-size: var(--text-xs);
+    font-weight: 700;
+  }
+
   .week-grid {
     display: flex;
     align-items: flex-start;
     gap: var(--space-sm);
+    overflow-x: auto;
   }
 
   .day-column {
-    flex: 1 1 0;
-    min-width: 0;
+    /* A fixed min-width (rather than 0) so adding the optional "Previous"
+       column never squeezes the 7 real day columns into unreadable,
+       character-per-line text — `.week-grid`'s overflow-x: auto scrolls
+       horizontally instead once columns can't all fit. */
+    flex: 1 1 9rem;
+    min-width: 9rem;
     display: flex;
     flex-direction: column;
     gap: var(--space-2xs);
@@ -296,6 +396,12 @@
     border: 1px solid var(--color-border);
     border-radius: var(--radius-lg);
     padding: var(--space-sm);
+  }
+
+  .previous-column {
+    flex: 0 0 12rem;
+    background: var(--color-canvas);
+    border-style: dashed;
   }
 
   .day-column.is-today {
@@ -339,188 +445,9 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-3xs);
-    min-height: 1.5rem;
-  }
-
-  .bar {
-    position: relative;
-  }
-
-  .bar-summary {
-    display: flex;
-    align-items: center;
-    gap: var(--space-3xs);
-    padding: var(--space-3xs) var(--space-2xs);
-    border-radius: var(--radius-sm);
-    border-left: 3px solid var(--bar-color, var(--color-border-strong));
-    background: color-mix(in oklch, var(--bar-color, var(--color-border-strong)) 14%, var(--color-surface));
-    font-size: var(--text-xs);
-    line-height: var(--leading-tight);
-    color: var(--color-ink);
-    cursor: pointer;
+    min-height: 2.5rem;
     list-style: none;
-    transition:
-      box-shadow var(--duration-fast) var(--ease-out-expo),
-      transform var(--duration-fast) var(--ease-out-expo);
-  }
-
-  .bar-summary::-webkit-details-marker {
-    display: none;
-  }
-
-  .bar-summary::marker {
-    content: "";
-  }
-
-  .bar-summary:hover {
-    box-shadow: var(--shadow-sm);
-    transform: translateY(-1px);
-  }
-
-  .bar-summary:focus-visible {
-    outline: 2px solid var(--color-accent);
-    outline-offset: 2px;
-  }
-
-  .bar[open] > .bar-summary {
-    box-shadow: 0 0 0 2px var(--bar-color, var(--color-accent));
-  }
-
-  .bar-icon {
-    display: flex;
-    align-items: center;
-    color: var(--bar-color, var(--color-ink-muted));
-    flex-shrink: 0;
-  }
-
-  .bar-title {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .bar-popover {
-    position: absolute;
-    top: calc(100% + var(--space-3xs));
-    left: 0;
-    z-index: 20;
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-xs);
-    width: 14rem;
-    padding: var(--space-sm);
-    border-radius: var(--radius-md);
-    border: 1px solid var(--color-border);
-    background: var(--color-surface-raised);
-    box-shadow: var(--shadow-lg);
-  }
-
-  .day-column:nth-last-child(-n + 2) .bar-popover {
-    left: auto;
-    right: 0;
-  }
-
-  .popover-title {
     margin: 0;
-    font-size: var(--text-sm);
-    font-weight: 600;
-    line-height: var(--leading-tight);
-    word-break: break-word;
-  }
-
-  .popover-meta {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-4xs);
-  }
-
-  .chip {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-3xs);
-    font-size: var(--text-xs);
-    line-height: var(--leading-tight);
-    padding: var(--space-4xs) var(--space-2xs);
-    border-radius: var(--radius-pill);
-    background: var(--color-canvas);
-    border: 1px solid var(--color-border);
-    color: var(--color-ink-muted);
-  }
-
-  .chip.project {
-    background: color-mix(in oklch, var(--chip-color, var(--color-accent)) 18%, var(--color-surface-raised));
-    border-color: var(--chip-color, var(--color-accent));
-    color: var(--color-ink);
-    font-weight: 600;
-  }
-
-  .chip.priority {
-    text-transform: uppercase;
-    letter-spacing: var(--tracking-wide);
-    font-weight: 600;
-  }
-
-  .chip.status {
-    font-weight: 600;
-  }
-
-  .priority-dot {
-    width: 0.5rem;
-    height: 0.5rem;
-    border-radius: var(--radius-pill);
-    background: var(--chip-color, var(--color-border-strong));
-    flex-shrink: 0;
-  }
-
-  .popover-dates {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-3xs);
-    margin: 0;
-    font-size: var(--text-xs);
-  }
-
-  .date-row {
-    display: flex;
-    justify-content: space-between;
-    gap: var(--space-sm);
-  }
-
-  .date-row dt {
-    color: var(--color-ink-muted);
-  }
-
-  .date-row dd {
-    margin: 0;
-    font-weight: 600;
-    font-variant-numeric: tabular-nums;
-  }
-
-  .edit-button {
-    align-self: flex-end;
-    padding: var(--space-3xs) var(--space-md);
-    border: none;
-    border-radius: var(--radius-md);
-    background: var(--color-accent);
-    color: var(--color-accent-ink);
-    font-weight: 600;
-    font-size: var(--text-xs);
-    cursor: pointer;
-    box-shadow: var(--shadow-sm);
-    transition:
-      background var(--duration-fast) var(--ease-out-expo),
-      box-shadow var(--duration-fast) var(--ease-out-expo),
-      transform var(--duration-fast) var(--ease-out-expo);
-  }
-
-  .edit-button:hover {
-    background: var(--color-accent-hover);
-    box-shadow: var(--shadow-md);
-    transform: translateY(-1px);
-  }
-
-  .edit-button:focus-visible {
-    outline: 2px solid var(--color-accent);
-    outline-offset: 2px;
+    padding: 0;
   }
 </style>

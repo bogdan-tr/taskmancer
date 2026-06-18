@@ -17,9 +17,14 @@
 
   let baselineStatuses = $derived(effectiveBoardStatuses(project.board, allStatusIds));
   let baselineDefault = $derived(project.board.default_status ?? "");
+  /** "" = inherit the global default, "true"/"false" = explicit override. */
+  let baselineShowPreviousWeeks = $derived(
+    project.board.show_previous_weeks === undefined ? "" : String(project.board.show_previous_weeks),
+  );
 
   let draftStatuses = $state<string[]>([]);
   let draftDefault = $state("");
+  let draftShowPreviousWeeks = $state("");
   let initialized = $state(false);
   let errorMessage = $state("");
   let isSaving = $state(false);
@@ -29,6 +34,7 @@
     if (settingsState.current && !initialized) {
       draftStatuses = [...baselineStatuses];
       draftDefault = baselineDefault;
+      draftShowPreviousWeeks = baselineShowPreviousWeeks;
       initialized = true;
     }
   });
@@ -37,7 +43,7 @@
     !boardsEqual(
       { statuses: draftStatuses, default_status: draftDefault || undefined },
       { statuses: baselineStatuses, default_status: project.board.default_status },
-    ),
+    ) || draftShowPreviousWeeks !== baselineShowPreviousWeeks,
   );
 
   let availableStatusIds = $derived(allStatusIds.filter((id) => !draftStatuses.includes(id)));
@@ -67,6 +73,7 @@
   function discardChanges() {
     draftStatuses = [...baselineStatuses];
     draftDefault = baselineDefault;
+    draftShowPreviousWeeks = baselineShowPreviousWeeks;
     errorMessage = "";
   }
 
@@ -75,7 +82,11 @@
     try {
       await updateProject({
         ...project,
-        board: { statuses: draftStatuses, default_status: draftDefault || undefined },
+        board: {
+          statuses: draftStatuses,
+          default_status: draftDefault || undefined,
+          show_previous_weeks: draftShowPreviousWeeks === "" ? undefined : draftShowPreviousWeeks === "true",
+        },
       });
       await refreshProjects();
       errorMessage = "";
@@ -167,6 +178,18 @@
         <option value={id}>{statusLabel(statuses, id)}</option>
       {/each}
     </select>
+  </div>
+
+  <div class="field">
+    <label for="show-previous-weeks">Week view "Previous" column</label>
+    <select id="show-previous-weeks" bind:value={draftShowPreviousWeeks}>
+      <option value="">Use global default</option>
+      <option value="true">Always show</option>
+      <option value="false">Always hide</option>
+    </select>
+    <p class="hint">
+      Overrides the global Display setting for this project's Week view only.
+    </p>
   </div>
 
   {#if errorMessage}
@@ -336,6 +359,12 @@
     border-color: var(--color-accent);
     box-shadow: 0 0 0 3px var(--color-accent-soft);
     outline: none;
+  }
+
+  .hint {
+    margin: 0;
+    font-size: var(--text-xs);
+    color: var(--color-ink-faint);
   }
 
   .error {

@@ -77,6 +77,11 @@
       : statuses.map((status) => status.id),
   );
 
+  /** This project's `board.show_previous_weeks` override if set, else the global default. */
+  let showPreviousWeeksColumn = $derived(
+    project?.board.show_previous_weeks ?? settingsState.current?.show_previous_weeks_column ?? false,
+  );
+
   let buckets: StatusBuckets = $state(
     groupByStatusAndPriority(
       [],
@@ -472,7 +477,7 @@
   {#if isLoading}
     <p class="loading">Loading tasks…</p>
   {:else if activeView === "week"}
-    <WeekView tasks={visibleTasks} onUpdate={handleUpdate} />
+    <WeekView tasks={visibleTasks} onUpdate={handleUpdate} {showPreviousWeeksColumn} />
   {:else}
     <KanbanGrid
       {boardColumns}

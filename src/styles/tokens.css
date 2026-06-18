@@ -9,7 +9,12 @@
      that indirection. */
   --color-canvas: oklch(96.5% 0.012 78);
   --color-surface: oklch(99% 0.004 80);
-  --color-surface-raised: oklch(100% 0 0);
+  /* hue: none (not 0) — an explicit 0deg hue at zero chroma is still taken
+     literally by color-mix() as "red-ish", which rotates the result toward
+     magenta/pink when mixing in a saturated color (e.g. a project's blue)
+     at a high percentage. "none" marks the hue as truly powerless, so
+     color-mix() carries over the other color's hue instead. */
+  --color-surface-raised: oklch(100% 0 none);
 
   --color-ink: oklch(21% 0.014 50);
   --color-ink-muted: oklch(48% 0.012 50);
@@ -31,6 +36,18 @@
   --color-danger-soft: oklch(95% 0.045 350);
   --color-danger: var(--color-neon-pink);
   --color-danger-hover: oklch(48% 0.21 350);
+
+  /* Due-date urgency accents. Deliberately a different hue family from
+     --color-danger (destructive actions/validation errors) so a red
+     "Delete" button and an "overdue" badge never read as the same kind of
+     alert. "Overdue" and "due today" share one hue (--color-urgent) and are
+     told apart by fill weight (solid vs soft) rather than a second color;
+     "due tomorrow" gets its own amber hue (--color-soon). */
+  --color-urgent: oklch(53% 0.21 24);
+  --color-urgent-soft: oklch(95% 0.045 24);
+  --color-urgent-ink: oklch(99% 0.005 24);
+  --color-soon: oklch(56% 0.15 70);
+  --color-soon-soft: oklch(95% 0.05 75);
 
   /* Spacing */
   --space-4xs: 0.125rem;

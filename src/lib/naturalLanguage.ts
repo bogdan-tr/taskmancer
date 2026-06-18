@@ -4,12 +4,25 @@ export interface ParsedTaskInput {
   project?: string;
   /** The id of a `PriorityLevel` (see `Settings.priorities`). */
   priority?: string;
+  /** The id of a `StatusDefinition` (see `Settings.statuses`), from an `@status` quick-add token. */
+  status?: string;
+  /**
+   * An absolute `YYYY-MM-DD` date from a `due:`/`due` quick-add token, or the
+   * `"none"` sentinel from `due:na`/`due na` meaning "never due". `undefined`
+   * if no due-date token was present.
+   */
   due?: string;
   scheduled?: string;
 }
 
 /** The subset of `PriorityLevel` needed to match quick-add priority tokens. */
 export interface KnownPriority {
+  id: string;
+  label: string;
+}
+
+/** The subset of `StatusDefinition` needed to match `@status` quick-add tokens. */
+export interface KnownStatus {
   id: string;
   label: string;
 }
@@ -37,6 +50,20 @@ const BARE_PRIORITY_WORDS: Record<string, string> = {
 function matchKnownPriority(word: string, knownPriorities?: KnownPriority[]): string | undefined {
   return knownPriorities?.find(
     (level) => level.id.toLowerCase() === word || level.label.toLowerCase() === word,
+  )?.id;
+}
+
+/**
+ * Looks up `word` (already lowercased) against `knownStatuses` by `id` or
+ * `label`, case-insensitively. Returns the matching status's `id`, or
+ * `undefined` if `knownStatuses` is omitted or no status matches. Unlike
+ * priority, there's no built-in word list to fall back to — statuses are
+ * fully user-defined (see Phase 4), so `@status` only ever resolves through
+ * the caller's current `Settings.statuses`.
+ */
+function matchKnownStatus(word: string, knownStatuses?: KnownStatus[]): string | undefined {
+  return knownStatuses?.find(
+    (status) => status.id.toLowerCase() === word || status.label.toLowerCase() === word,
   )?.id;
 }
 
@@ -275,6 +302,13 @@ function tryResolveDatePhrase(
  *   upcoming occurrence, resolving one week later than bare `<weekday>`)
  *   and absolute `<month> <day>` / `<day> <month>` dates, optionally
  *   followed by a 4-digit year (e.g. `due june 11`, `due 11th june 2027`)
+ * - `due:na` or `due na` sets the due date to the `"none"` sentinel, meaning
+ *   the task is never due.
+ * - `@status` sets the status (last one wins), matching (case-insensitively)
+ *   any currently-defined status's `id` or `label` from `knownStatuses`. An
+ *   `@word` that doesn't match a known status is left in the title, since
+ *   status ids are fully user-defined — there's no built-in fallback set to
+ *   guess against (unlike priority's high/medium/low).
  *
  * Tokens that don't match a recognized pattern are left in the title
  * unchanged. The remaining words become the task title, with extra
@@ -284,10 +318,12 @@ export function parseTaskInput(
   input: string,
   now: Date = new Date(),
   knownPriorities?: KnownPriority[],
+  knownStatuses?: KnownStatus[],
 ): ParsedTaskInput {
   const tags: string[] = [];
   let project: string | undefined;
   let priority: string | undefined;
+  let status: string | undefined;
   let due: string | undefined;
   let scheduled: string | undefined;
 
@@ -308,6 +344,14 @@ export function parseTaskInput(
       continue;
     }
 
+    if (token.startsWith("@") && token.length > 1) {
+      const candidate = matchKnownStatus(lowerToken.slice(1), knownStatuses);
+      if (candidate) {
+        status = candidate;
+        continue;
+      }
+    }
+
     if (token.startsWith("!") && token.length > 1) {
       const word = lowerToken.slice(1);
       const candidate = matchKnownPriority(word, knownPriorities) ?? PRIORITY_TOKENS[word];
@@ -325,7 +369,12 @@ export function parseTaskInput(
     }
 
     if (lowerToken.startsWith("due:") && token.length > 4) {
-      const resolved = resolveDateExpression(token.slice(4), now);
+      const value = token.slice(4);
+      if (value.toLowerCase() === "na") {
+        due = "none";
+        continue;
+      }
+      const resolved = resolveDateExpression(value, now);
       if (resolved) {
         due = resolved;
         continue;
@@ -341,6 +390,11 @@ export function parseTaskInput(
     }
 
     if (lowerToken === "due") {
+      if (tokens[i + 1]?.toLowerCase() === "na") {
+        due = "none";
+        i += 1;
+        continue;
+      }
       const phrase = tryResolveDatePhrase(tokens, i + 1, now);
       if (phrase) {
         due = phrase.resolved;
@@ -366,6 +420,7 @@ export function parseTaskInput(
     tags: [...new Set(tags)],
     project,
     priority,
+    status,
     due,
     scheduled,
   };

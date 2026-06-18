@@ -1,7 +1,7 @@
 <script lang="ts">
   import { updateProject } from "$lib/api";
   import { refreshProjects } from "$lib/projects.svelte";
-  import { RELATIVE_DATE_OPTIONS } from "$lib/relativeDates";
+  import { DUE_RELATIVE_DATE_OPTIONS, SCHEDULED_RELATIVE_DATE_OPTIONS } from "$lib/relativeDates";
   import { formatTags, parseTags } from "$lib/taskFields";
   import type { Project, TaskDefaults } from "$lib/types";
 
@@ -89,23 +89,24 @@
   </div>
 
   <div class="field">
-    <label for="project-default-due">Default due date</label>
-    <select id="project-default-due" bind:value={draftDue}>
+    <label for="project-default-scheduled">Default scheduled date</label>
+    <select id="project-default-scheduled" bind:value={draftScheduled}>
       <option value="">Inherit global default</option>
-      {#each RELATIVE_DATE_OPTIONS as option (option.id)}
+      {#each SCHEDULED_RELATIVE_DATE_OPTIONS as option (option.id)}
         <option value={option.id}>{option.label}</option>
       {/each}
     </select>
   </div>
 
   <div class="field">
-    <label for="project-default-scheduled">Default scheduled date</label>
-    <select id="project-default-scheduled" bind:value={draftScheduled}>
+    <label for="project-default-due">Default due date</label>
+    <select id="project-default-due" bind:value={draftDue}>
       <option value="">Inherit global default</option>
-      {#each RELATIVE_DATE_OPTIONS as option (option.id)}
+      {#each DUE_RELATIVE_DATE_OPTIONS as option (option.id)}
         <option value={option.id}>{option.label}</option>
       {/each}
     </select>
+    <p class="hint">Relative to the task's scheduled date, not today.</p>
   </div>
 
   {#if errorMessage}

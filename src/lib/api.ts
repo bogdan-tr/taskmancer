@@ -19,6 +19,7 @@ export async function createTask(input: ParsedTaskInput): Promise<Task> {
     project: input.project,
     tags: input.tags.length > 0 ? input.tags : undefined,
     priority: input.priority,
+    status: input.status,
     due: input.due,
     scheduled: input.scheduled,
   });

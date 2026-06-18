@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { parseTaskInput, type KnownPriority } from "./naturalLanguage";
+import { parseTaskInput, type KnownPriority, type KnownStatus } from "./naturalLanguage";
 
 /** A fixed reference "now" so date-relative parsing is deterministic. Wednesday. */
 const NOW = new Date(2026, 5, 10); // 2026-06-10 (June 10, 2026 is a Wednesday)
@@ -131,6 +131,28 @@ describe("parseTaskInput", () => {
 
     expect(result.title).toBe("Submit report");
     expect(result.due).toBe("2026-13-99");
+  });
+
+  test("extracts due:na as the never-due sentinel", () => {
+    const result = parseTaskInput("Pay rent due:na", NOW);
+
+    expect(result.title).toBe("Pay rent");
+    expect(result.due).toBe("none");
+  });
+
+  test("extracts a 'due na' phrase as the never-due sentinel", () => {
+    const result = parseTaskInput("Pay rent due na", NOW);
+
+    expect(result.title).toBe("Pay rent");
+    expect(result.due).toBe("none");
+  });
+
+  test("'due na'/'due:na' are case-insensitive", () => {
+    const colon = parseTaskInput("Pay rent due:NA", NOW);
+    const phrase = parseTaskInput("Pay rent due NA", NOW);
+
+    expect(colon.due).toBe("none");
+    expect(phrase.due).toBe("none");
   });
 
   test("parses a combination of tags, project, priority, and due date", () => {
@@ -361,5 +383,73 @@ describe("parseTaskInput with knownPriorities", () => {
 
     expect(result.title).toBe("Buy whenever filament");
     expect(result.priority).toBeUndefined();
+  });
+});
+
+describe("parseTaskInput with knownStatuses", () => {
+  const KNOWN_STATUSES: KnownStatus[] = [
+    { id: "backlog", label: "Backlog" },
+    { id: "do", label: "Do" },
+    { id: "in-progress", label: "In Progress" },
+  ];
+
+  test("matches @<id> against a known status, case-insensitively", () => {
+    const result = parseTaskInput("Fix bug @do", NOW, undefined, KNOWN_STATUSES);
+
+    expect(result.title).toBe("Fix bug");
+    expect(result.status).toBe("do");
+  });
+
+  test("matches @<id> uppercased against a known status", () => {
+    const result = parseTaskInput("Fix bug @DO", NOW, undefined, KNOWN_STATUSES);
+
+    expect(result.status).toBe("do");
+  });
+
+  test("matches @<label> against a known status's single-word label, case-insensitively", () => {
+    const result = parseTaskInput("Fix bug @Backlog", NOW, undefined, KNOWN_STATUSES);
+
+    expect(result.title).toBe("Fix bug");
+    expect(result.status).toBe("backlog");
+  });
+
+  test("matches a hyphenated status id", () => {
+    const result = parseTaskInput("Fix bug @in-progress", NOW, undefined, KNOWN_STATUSES);
+
+    expect(result.status).toBe("in-progress");
+  });
+
+  test("last @status token wins when multiple are present", () => {
+    const result = parseTaskInput("Fix bug @do @backlog", NOW, undefined, KNOWN_STATUSES);
+
+    expect(result.status).toBe("backlog");
+  });
+
+  test("leaves an unrecognized @word in the title when knownStatuses has no match", () => {
+    const result = parseTaskInput("Email @acme about renewal", NOW, undefined, KNOWN_STATUSES);
+
+    expect(result.title).toBe("Email @acme about renewal");
+    expect(result.status).toBeUndefined();
+  });
+
+  test("leaves @word in the title when knownStatuses is omitted entirely", () => {
+    const result = parseTaskInput("Fix bug @do", NOW);
+
+    expect(result.title).toBe("Fix bug @do");
+    expect(result.status).toBeUndefined();
+  });
+
+  test("an empty knownStatuses array behaves the same as omitting it", () => {
+    const result = parseTaskInput("Fix bug @do", NOW, undefined, []);
+
+    expect(result.title).toBe("Fix bug @do");
+    expect(result.status).toBeUndefined();
+  });
+
+  test("a bare '@' with nothing after it is left in the title", () => {
+    const result = parseTaskInput("Fix bug @", NOW, undefined, KNOWN_STATUSES);
+
+    expect(result.title).toBe("Fix bug @");
+    expect(result.status).toBeUndefined();
   });
 });

@@ -32,23 +32,33 @@ task entry, and (eventually) time tracking and analytics — built with
   arrives (they remain visible in the Week view).
 - **Week view** — a "Board" / "Week" switcher (on both the global and
   per-project boards) shows a 7-day calendar grid with project-colored bars
-  for tasks scheduled or due that day. Navigate with prev/next/Today; click a
-  bar to see task details and jump into editing. See
-  [Week view](#week-view) for details.
+  for tasks scheduled or due that day. Bars are **draggable** to reschedule a
+  task to a different day, navigate with prev/next/Today, and click a bar to
+  see task details and jump into editing. An optional leading "Previous"
+  column lists unfinished tasks scheduled or due before the visible week, and
+  a "tasks behind this week" indicator always shows the count even when that
+  column is hidden. See [Week view](#week-view) for details.
 - **Compact task cards** — the title sits on one line, with a wrapping row
   of chips below it (priority badge, project, tags, due date) that only
-  grows onto extra lines when needed.
+  grows onto extra lines when needed. Done tasks show a strikethrough title
+  and a tint toward the done status's color; cancelled tasks get the same
+  tint plus an "×" overlay — on both Kanban cards and week-view bars.
 - **Projects** as first-class entities: a collapsible sidebar lists every
   project (with its own color), and each project has its own filtered board.
 - **Natural-language quick add** (`Ctrl+T` or the `+` button) — recognizes
-  `#tag`, `+Project`, bare `high`/`medium`/`low` priority words, and
-  `due <phrase>` / `sch <phrase>` (e.g. `due next friday`, `sch tomorrow`).
-  A "?" button next to the title field opens a syntax cheat-sheet popover.
-- **Tag & project autocomplete** in the Add Task modal and on task cards.
+  `#tag`, `+Project`, bare `high`/`medium`/`low` priority words, `@status`,
+  and `due <phrase>` / `sch <phrase>` (e.g. `due next friday`, `sch tomorrow`).
+  Typing a bare `#`/`+`/`!`/`@` lists every available tag/project/priority/
+  status. A "?" button next to the title field opens a syntax cheat-sheet
+  popover.
+- **Tag, project, priority & status autocomplete** in the Add Task modal and
+  on task cards.
 - **Themes & display settings** — Light, Dark, and Dark Blue themes (shared
   OKLCH design-token system), plus app-wide font size and Kanban column width
-  sliders and a priority-grouping toggle — all switchable and persisted from
-  the Settings page.
+  sliders, a priority-grouping toggle, a card color mode (project-tag chip vs.
+  a fully color-coded card), an optional due-date glow, and an optional
+  natural-language due-date phrasing — all switchable and persisted from the
+  Settings page.
 - **Subtasks, dependencies, notes** — every task supports a markdown notes
   body and a `depends_on` list of other task IDs.
 
@@ -166,10 +176,14 @@ the field list:
 | `#tag`             | Adds a tag                       | `#personal` |
 | `+Project`         | Assigns a project                | `+Errands` |
 | `high` / `medium` / `low` | Sets priority (bare word)  | `high` |
+| `@status`          | Sets the status (exact match against configured statuses) | `@do` |
 | `due <phrase>` / `due:<token>` | Sets the due date    | `due next friday`, `due:tomorrow` |
 | `sch <phrase>` / `sch:<token>` | Sets the scheduled date | `sch next monday` |
 
-Anything left over becomes the task title.
+Anything left over becomes the task title. Typing a bare `#`, `+`, `!`, or
+`@` with nothing after it lists every available tag, project, priority, or
+status to pick from (tag listing is disabled once you have more than 10
+distinct tags — spell it out instead).
 
 #### Date phrases
 
@@ -191,13 +205,23 @@ Anything left over becomes the task title.
 Switch from "Board" to "Week" using the view tabs at the top of the global
 board or any project board. The week view shows a 7-day grid (Monday- or
 Sunday-start, per [Display settings](#display-settings)) with prev/next/Today
-navigation.
+navigation. A "tasks behind this week" pill appears next to the week range
+whenever there are unfinished tasks scheduled or due before the visible week.
 
 Each day column lists a small bar for every task that's **scheduled** for
 that day or **due** that day (a task with both gets one bar per date),
-tinted with its project's color and marked with a scheduled/due icon.
-Clicking a bar opens a popover with the task's details and an **Edit**
-button that opens the full task editor.
+tinted with its project's color and marked with a scheduled/due icon. **Drag
+a bar to a different day** to reschedule it — a scheduled-type bar updates
+the task's `scheduled` date, a due-type bar updates its `due` date. Clicking
+a bar opens a popover with the task's details (project/priority/status chips
+and both dates) and an **Edit** button that opens the full task editor; close
+the popover by clicking elsewhere, pressing Escape, or its "×" button.
+
+An optional leading **"Previous"** column lists unfinished tasks scheduled or
+due before the visible week (read-only, not draggable). Toggle it from
+Settings → Display ("Week view" section) for a global default, or override it
+per-project from that project's settings page (Use global default / Always
+show / Always hide).
 
 ### Keyboard shortcuts
 
@@ -220,9 +244,15 @@ Also on the **Settings** page, under "Display":
 | Status column width | 200px–400px (10px steps) | Width of each Kanban status column. Columns scroll horizontally as a single row instead of wrapping. |
 | Group tasks by priority | on/off | When on, each status column is divided into labeled priority sections. When off, tasks stay sorted by priority but the column isn't visually divided — a small priority badge on each card still shows its level. |
 | Week starts on | Monday / Sunday | Controls which day is the first column in the [Week view](#week-view). |
+| Card color mode | Project tag / Color code | "Project tag" shows a colored project chip on each card (default). "Color code" hides the chip and tints the whole card/bar in the project's color instead, at a fixed lightness chosen for readable text regardless of the source color. |
+| Due-date glow | on/off | Adds a soft red halo around cards/bars that are overdue or due today. |
+| Natural language due dates | on/off | Shows due dates as relative phrases ("due this Wednesday", "due next Saturday") instead of `due YYYY-MM-DD`, falling back to the absolute date outside a ~2-week window. |
 
-All settings apply instantly and are saved in `localStorage`, so they persist
-across restarts.
+All settings above apply instantly and are saved in `localStorage`. The
+"Previous" week-view column toggle (see [Week view](#week-view)) is the one
+exception — it's saved to the backend `settings.json` (with an optional
+per-project override), since the per-project value needs to be readable by
+the Rust backend too.
 
 ## Testing
 

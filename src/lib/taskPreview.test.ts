@@ -1,12 +1,24 @@
 import { describe, expect, test } from "vitest";
 import type { ParsedTaskInput } from "./naturalLanguage";
-import { effectiveDefaultCode, effectiveDefaultTags, mergeTags, resolveTaskPreview } from "./taskPreview";
-import type { PriorityLevel, TaskDefaults } from "./types";
+import {
+  effectiveDefaultCode,
+  effectiveDefaultStatus,
+  effectiveDefaultTags,
+  mergeTags,
+  resolveTaskPreview,
+} from "./taskPreview";
+import type { PriorityLevel, StatusDefinition, TaskDefaults } from "./types";
 
 const PRIORITIES: PriorityLevel[] = [
   { id: "high", label: "High", color: "#bc267f", rank: 1 },
   { id: "medium", label: "Medium", color: "#aa6a00", rank: 2 },
   { id: "low", label: "Low", color: "#0e9254", rank: 3 },
+];
+
+const STATUSES: StatusDefinition[] = [
+  { id: "backlog", label: "Backlog", order: 1, color: "#6f7178" },
+  { id: "do", label: "Do", order: 2, color: "#0073b6" },
+  { id: "done", label: "Done", order: 3, color: "#0e9254" },
 ];
 
 const EMPTY_DEFAULTS: TaskDefaults = { tags: [] };
@@ -43,6 +55,24 @@ describe("effectiveDefaultCode", () => {
   });
 });
 
+describe("effectiveDefaultStatus", () => {
+  test("uses the project board default when it names a defined status", () => {
+    expect(effectiveDefaultStatus(STATUSES, "done", "do")).toBe("done");
+  });
+
+  test("falls back to the global default when the board default is invalid", () => {
+    expect(effectiveDefaultStatus(STATUSES, "nonexistent", "do")).toBe("do");
+  });
+
+  test("falls back to the global default when the board default is undefined", () => {
+    expect(effectiveDefaultStatus(STATUSES, undefined, "do")).toBe("do");
+  });
+
+  test("falls back to the lowest-order status when neither default is valid", () => {
+    expect(effectiveDefaultStatus(STATUSES, undefined, undefined)).toBe("backlog");
+  });
+});
+
 describe("mergeTags", () => {
   test("appends default tags after explicit tags", () => {
     expect(mergeTags(["urgent"], ["work"])).toEqual(["urgent", "work"]);
@@ -62,34 +92,38 @@ describe("mergeTags", () => {
 });
 
 describe("resolveTaskPreview", () => {
-  test("uses the default project, configured default priority, and global defaults when nothing is overridden", () => {
+  test("uses the default project, configured default priority/status, and global defaults when nothing is overridden", () => {
     const preview = resolveTaskPreview({
       parsed: parsed(),
       defaultProjectName: "General",
-      globalDefaults: { tags: ["chore"], priority: "low", due: "tomorrow", scheduled: "today" },
+      globalDefaults: { tags: ["chore"], priority: "low", status: "do", due: "next_day", scheduled: "today" },
       priorities: PRIORITIES,
+      statuses: STATUSES,
     });
 
     expect(preview).toEqual({
       project: "General",
       priorityId: "low",
+      statusId: "do",
       tags: ["chore"],
-      due: "Tomorrow",
+      due: "Next day",
       scheduled: "Today",
     });
   });
 
-  test("falls back to the lowest-rank priority and leaves due/scheduled unset when no defaults are configured", () => {
+  test("falls back to the lowest-rank priority/order status and leaves due/scheduled unset when no defaults are configured", () => {
     const preview = resolveTaskPreview({
       parsed: parsed(),
       defaultProjectName: "General",
       globalDefaults: EMPTY_DEFAULTS,
       priorities: PRIORITIES,
+      statuses: STATUSES,
     });
 
     expect(preview).toEqual({
       project: "General",
       priorityId: "high",
+      statusId: "backlog",
       tags: [],
       due: undefined,
       scheduled: undefined,
@@ -103,6 +137,7 @@ describe("resolveTaskPreview", () => {
       defaultProjectName: "General",
       globalDefaults: EMPTY_DEFAULTS,
       priorities: PRIORITIES,
+      statuses: STATUSES,
     });
 
     expect(preview.project).toBe("Homework");
@@ -115,6 +150,7 @@ describe("resolveTaskPreview", () => {
       defaultProjectName: "General",
       globalDefaults: EMPTY_DEFAULTS,
       priorities: PRIORITIES,
+      statuses: STATUSES,
     });
 
     expect(preview.project).toBe("Errands");
@@ -127,6 +163,7 @@ describe("resolveTaskPreview", () => {
       globalDefaults: EMPTY_DEFAULTS,
       matchedProjectName: "Errands",
       priorities: PRIORITIES,
+      statuses: STATUSES,
     });
 
     expect(preview.project).toBe("Errands");
@@ -138,9 +175,48 @@ describe("resolveTaskPreview", () => {
       defaultProjectName: "General",
       globalDefaults: { tags: [], priority: "high" },
       priorities: PRIORITIES,
+      statuses: STATUSES,
     });
 
     expect(preview.priorityId).toBe("low");
+  });
+
+  test("an @status quick-add token overrides the resolved default status", () => {
+    const preview = resolveTaskPreview({
+      parsed: parsed({ status: "done" }),
+      defaultProjectName: "General",
+      globalDefaults: { tags: [], status: "do" },
+      priorities: PRIORITIES,
+      statuses: STATUSES,
+    });
+
+    expect(preview.statusId).toBe("done");
+  });
+
+  test("the matched project's board default status is used when no @status token is given", () => {
+    const preview = resolveTaskPreview({
+      parsed: parsed(),
+      defaultProjectName: "General",
+      globalDefaults: { tags: [], status: "do" },
+      priorities: PRIORITIES,
+      statuses: STATUSES,
+      projectBoardDefaultStatus: "done",
+    });
+
+    expect(preview.statusId).toBe("done");
+  });
+
+  test("an @status quick-add token overrides the project board default status", () => {
+    const preview = resolveTaskPreview({
+      parsed: parsed({ status: "backlog" }),
+      defaultProjectName: "General",
+      globalDefaults: { tags: [], status: "do" },
+      priorities: PRIORITIES,
+      statuses: STATUSES,
+      projectBoardDefaultStatus: "done",
+    });
+
+    expect(preview.statusId).toBe("backlog");
   });
 
   test("merges quick-add tags with the effective default tags", () => {
@@ -149,6 +225,7 @@ describe("resolveTaskPreview", () => {
       defaultProjectName: "General",
       globalDefaults: { tags: ["chore"] },
       priorities: PRIORITIES,
+      statuses: STATUSES,
     });
 
     expect(preview.tags).toEqual(["urgent", "chore"]);
@@ -161,6 +238,7 @@ describe("resolveTaskPreview", () => {
       globalDefaults: { tags: ["chore"] },
       projectDefaults: { tags: ["school"] },
       priorities: PRIORITIES,
+      statuses: STATUSES,
     });
 
     expect(preview.tags).toEqual(["school"]);
@@ -170,12 +248,13 @@ describe("resolveTaskPreview", () => {
     const preview = resolveTaskPreview({
       parsed: parsed(),
       defaultProjectName: "General",
-      globalDefaults: { tags: [], due: "today", scheduled: "today" },
+      globalDefaults: { tags: [], due: "same_day", scheduled: "today" },
       projectDefaults: { tags: [], due: "in_1_week", scheduled: "in_1_month" },
       priorities: PRIORITIES,
+      statuses: STATUSES,
     });
 
-    expect(preview.due).toBe("In 1 week");
+    expect(preview.due).toBe("1 week later");
     expect(preview.scheduled).toBe("In 1 month");
   });
 
@@ -183,11 +262,36 @@ describe("resolveTaskPreview", () => {
     const preview = resolveTaskPreview({
       parsed: parsed({ due: "2026-07-01", scheduled: "2026-07-02" }),
       defaultProjectName: "General",
-      globalDefaults: { tags: [], due: "today", scheduled: "today" },
+      globalDefaults: { tags: [], due: "same_day", scheduled: "today" },
       priorities: PRIORITIES,
+      statuses: STATUSES,
     });
 
     expect(preview.due).toBe("2026-07-01");
     expect(preview.scheduled).toBe("2026-07-02");
+  });
+
+  test("a due:na/due na quick-add token shows 'Never' regardless of the default due code", () => {
+    const preview = resolveTaskPreview({
+      parsed: parsed({ due: "none" }),
+      defaultProjectName: "General",
+      globalDefaults: { tags: [], due: "same_day", scheduled: "today" },
+      priorities: PRIORITIES,
+      statuses: STATUSES,
+    });
+
+    expect(preview.due).toBe("Never");
+  });
+
+  test("falls back to 'Never' when the effective default due code is the 'none' sentinel", () => {
+    const preview = resolveTaskPreview({
+      parsed: parsed(),
+      defaultProjectName: "General",
+      globalDefaults: { tags: [], due: "none", scheduled: "today" },
+      priorities: PRIORITIES,
+      statuses: STATUSES,
+    });
+
+    expect(preview.due).toBe("Never");
   });
 });

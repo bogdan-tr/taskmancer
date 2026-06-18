@@ -33,6 +33,11 @@
   --color-danger-soft: oklch(28% 0.07 350);
   --color-danger-hover: oklch(82% 0.22 350);
 
+  --color-urgent: oklch(72% 0.2 24);
+  --color-urgent-soft: oklch(28% 0.08 24);
+  --color-soon: oklch(78% 0.16 70);
+  --color-soon-soft: oklch(28% 0.06 75);
+
   --shadow-sm: 0 1px 2px oklch(0% 0 0 / 0.4);
   --shadow-md:
     0 6px 16px oklch(0% 0 0 / 0.5),
@@ -67,6 +72,11 @@
 
   --color-danger-soft: oklch(30% 0.08 335);
   --color-danger-hover: oklch(83% 0.21 335);
+
+  --color-urgent: oklch(73% 0.19 24);
+  --color-urgent-soft: oklch(30% 0.09 24);
+  --color-soon: oklch(79% 0.15 72);
+  --color-soon-soft: oklch(30% 0.07 75);
 
   --shadow-sm: 0 1px 2px oklch(5% 0.03 270 / 0.45);
   --shadow-md:

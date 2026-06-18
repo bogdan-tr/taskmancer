@@ -1,5 +1,7 @@
 <script lang="ts">
   import { applyTagsSuggestion, filterSuggestions, splitTagsInput } from "$lib/autocomplete";
+  import { displayState } from "$lib/displaySettings.svelte";
+  import { formatDueDateDisplay } from "$lib/dueDateDisplay";
   import { FALLBACK_PRIORITIES, sortedPriorities } from "$lib/priorities.svelte";
   import { projectsState } from "$lib/projects.svelte";
   import { settingsState } from "$lib/settings.svelte";
@@ -263,6 +265,12 @@
         <label>
           Due
           <input type="text" bind:value={draftDue} placeholder="YYYY-MM-DD" />
+          {#if draftDue}
+            {@const dueHint = formatDueDateDisplay(draftDue, new Date(), displayState.nlDueDates)}
+            {#if dueHint}
+              <span class="due-hint" class:due-today={dueHint.variant === "today"} class:due-tomorrow={dueHint.variant === "tomorrow"} class:due-overdue={dueHint.variant === "overdue"}>{dueHint.label}</span>
+            {/if}
+          {/if}
         </label>
         <label>
           Scheduled
@@ -369,6 +377,23 @@
     border-color: var(--color-accent);
     box-shadow: 0 0 0 3px var(--color-accent-soft);
     outline: none;
+  }
+
+  .due-hint {
+    font-size: var(--text-xs);
+    font-weight: 600;
+    text-transform: none;
+    letter-spacing: normal;
+    color: var(--color-ink-muted);
+  }
+
+  .due-hint.due-today,
+  .due-hint.due-overdue {
+    color: var(--color-urgent);
+  }
+
+  .due-hint.due-tomorrow {
+    color: var(--color-soon);
   }
 
   .edit-error {

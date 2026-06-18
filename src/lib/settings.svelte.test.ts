@@ -18,6 +18,7 @@ const sampleSettings: Settings = {
   done_status: "done",
   cancelled_status: undefined,
   default_project: "General",
+  show_previous_weeks_column: false,
 };
 
 vi.mock("./api", () => ({
