@@ -1,8 +1,13 @@
 import type { ParsedTaskInput } from "./naturalLanguage";
 import { defaultPriorityId } from "./priorities.svelte";
-import { dueRelativeDateLabel, scheduledRelativeDateLabel } from "./relativeDates";
+import {
+  resolveDueRelativeDate,
+  resolveScheduledRelativeDate,
+  scheduledRelativeDateLabel,
+} from "./relativeDates";
 import { defaultStatusId } from "./statuses.svelte";
 import type { PriorityLevel, StatusDefinition, TaskDefaults } from "./types";
+import { formatDateISO } from "./weekRange";
 
 /**
  * Resolves the default tags a new task should get, mirroring
@@ -62,11 +67,19 @@ export function effectiveDefaultStatus(
  * The effective project, priority, tags, due, and scheduled a new task will
  * be created with, for display in `AddTaskModal` before the task is saved.
  *
- * `due`/`scheduled` are display labels: either the absolute date typed via a
- * `due:`/`sch:` quick-add token, "Never" for the `due:na`/`due na`
- * never-due token, or the human-readable label for a resolved relative-date
- * default (e.g. "Tomorrow"). The backend resolves relative-date defaults to
- * an absolute date (or no date, for "none") at save time.
+ * `scheduled` is a display label: either the absolute date typed via a
+ * `sch:` quick-add token, or the human-readable label for a resolved
+ * relative-date default (e.g. "Tomorrow").
+ *
+ * `due` is always an absolute `YYYY-MM-DD` date (or "Never"), never a
+ * generic label: either the date typed via a `due:` quick-add token, or a
+ * default due code *actually resolved* relative to the effective scheduled
+ * date above (mirroring `resolve_creation_defaults` in the Rust command
+ * layer) — not just the code's static label, which previously caused the
+ * preview to mis-render any default-resolved due date as "Due today"
+ * (`formatDueDateDisplay` silently treats an unparseable label as "0 days
+ * away"). "Never" covers both the `due:na`/`due na` token and a default due
+ * code of `"none"`.
  */
 export interface TaskPreview {
   project: string;
@@ -96,6 +109,8 @@ export interface ResolveTaskPreviewOptions {
   statuses: StatusDefinition[];
   /** The matched project's `board.default_status`, if any. */
   projectBoardDefaultStatus?: string;
+  /** "Now", for resolving relative-date defaults. Defaults to `new Date()`. */
+  now?: Date;
 }
 
 /**
@@ -113,9 +128,12 @@ export interface ResolveTaskPreviewOptions {
  *   status (project board default, else global default, else lowest order).
  * - `tags`: quick-add `#tag` tokens merged with the effective default tags
  *   (project defaults override global defaults when non-empty).
- * - `due`/`scheduled`: the quick-add `due:`/`sch:` token (`"Never"` for the
- *   `due:na`/`due na` never-due token), else the label for the effective
- *   default relative-date code (project overrides global).
+ * - `scheduled`: the quick-add `sch:` token, else the label for the
+ *   effective default relative-date code (project overrides global).
+ * - `due`: the quick-add `due:` token, `"Never"` for the `due:na`/`due na`
+ *   never-due token or a default due code of `"none"`, else the effective
+ *   default due code resolved to an absolute date relative to the
+ *   *effective scheduled date* above (not "today" — see [`TaskPreview`]).
  */
 export function resolveTaskPreview(options: ResolveTaskPreviewOptions): TaskPreview {
   const {
@@ -128,6 +146,7 @@ export function resolveTaskPreview(options: ResolveTaskPreviewOptions): TaskPrev
     priorities,
     statuses,
     projectBoardDefaultStatus,
+    now = new Date(),
   } = options;
 
   const project = matchedProjectName ?? parsed.project ?? projectFilter ?? defaultProjectName;
@@ -139,8 +158,20 @@ export function resolveTaskPreview(options: ResolveTaskPreviewOptions): TaskPrev
   const dueCode = effectiveDefaultCode(globalDefaults.due, projectDefaults?.due);
   const scheduledCode = effectiveDefaultCode(globalDefaults.scheduled, projectDefaults?.scheduled);
 
+  // The scheduled date this task would actually get, mirroring
+  // `resolve_creation_defaults`'s `resolved_scheduled` — needed as the
+  // anchor for resolving a default due code below, since due defaults
+  // resolve relative to scheduled, not to `now`.
+  const resolvedScheduledDate =
+    parsed.scheduled ??
+    (scheduledCode ? resolveScheduledRelativeDate(scheduledCode, now) : undefined) ??
+    formatDateISO(now);
+
   const due =
-    parsed.due === "none" ? "Never" : parsed.due ?? (dueCode ? dueRelativeDateLabel(dueCode) : undefined);
+    parsed.due === "none"
+      ? "Never"
+      : parsed.due ??
+        (dueCode === "none" ? "Never" : dueCode ? resolveDueRelativeDate(dueCode, resolvedScheduledDate) : undefined);
 
   return {
     project,

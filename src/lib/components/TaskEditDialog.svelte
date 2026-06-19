@@ -387,9 +387,12 @@
     color: var(--color-ink-muted);
   }
 
-  .due-hint.due-today,
-  .due-hint.due-overdue {
+  .due-hint.due-today {
     color: var(--color-urgent);
+  }
+
+  .due-hint.due-overdue {
+    color: var(--color-overdue);
   }
 
   .due-hint.due-tomorrow {

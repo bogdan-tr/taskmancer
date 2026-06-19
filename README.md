@@ -30,14 +30,20 @@ task entry, and (eventually) time tracking and analytics — built with
   (toggleable — see [Display settings](#display-settings)). Tasks with a
   `scheduled` date in the future are hidden from the board until that day
   arrives (they remain visible in the Week view).
-- **Week view** — a "Board" / "Week" switcher (on both the global and
-  per-project boards) shows a 7-day calendar grid with project-colored bars
-  for tasks scheduled or due that day. Bars are **draggable** to reschedule a
-  task to a different day, navigate with prev/next/Today, and click a bar to
-  see task details and jump into editing. An optional leading "Previous"
-  column lists unfinished tasks scheduled or due before the visible week, and
-  a "tasks behind this week" indicator always shows the count even when that
-  column is hidden. See [Week view](#week-view) for details.
+- **Week view** — a "Board" / "Week" / "Calendar" switcher (on both the
+  global and per-project boards) shows a 7-day calendar grid with
+  project-colored bars for tasks scheduled or due that day. Bars are
+  **draggable** to reschedule a task to a different day, navigate with
+  prev/next/Today, and click a bar to see task details and jump into editing.
+  An optional leading "Previous" column lists unfinished tasks scheduled or
+  due before the visible week, and a "tasks behind this week" indicator
+  always shows the count even when that column is hidden. See
+  [Week view](#week-view) for details.
+- **Calendar view** — the same switcher's "Calendar" tab shows a full month
+  grid (rows grow taller, rather than truncating, on days with many tasks),
+  with the same project-colored, draggable bars, done/cancelled styling, and
+  popovers as the Week view. Weeks start on the day configured in
+  [Display settings](#display-settings). See [Calendar view](#calendar-view).
 - **Compact task cards** — the title sits on one line, with a wrapping row
   of chips below it (priority badge, project, tags, due date) that only
   grows onto extra lines when needed. Done tasks show a strikethrough title,
@@ -66,10 +72,9 @@ task entry, and (eventually) time tracking and analytics — built with
 
 ### Planned
 
-Time tracking, Pomodoro/focus mode, idle detection, calendar/month view (in
-addition to the existing Week view), recurring tasks, habit tracking,
-analytics dashboards, plugin system, calendar sync, and import/export. See
-the in-app roadmap for current priorities.
+Time tracking, Pomodoro/focus mode, idle detection, recurring tasks, habit
+tracking, analytics dashboards, plugin system, calendar sync, and
+import/export. See the in-app roadmap for current priorities.
 
 ## Tech stack
 
@@ -230,6 +235,19 @@ visible week normally gets two bars, one per date. Turn on "Deduplicate
 completed/cancelled tasks" (Settings → Display) to keep only one — pick
 whether the due-date or scheduled-date bar wins when both exist.
 
+### Calendar view
+
+Switch to "Calendar" (alongside "Board" and "Week") for a full month grid —
+the same look and interaction model as the [Week view](#week-view): bars are
+tinted by project color, draggable to reschedule, clickable for a details
+popover, and follow the same done/cancelled styling, priority sort, and
+dedup setting. Weeks start per [Display settings](#display-settings)'s
+"Week starts on" control. Days outside the current month (the leading/
+trailing days needed to fill complete weeks) are shown dimmed but remain
+fully interactive. A day's row grows taller to fit all of its bars rather
+than truncating or scrolling within the cell — the page itself scrolls if
+a month runs tall. Navigate with prev/next/Today, same as the Week view.
+
 ### Keyboard shortcuts
 
 | Shortcut | Action |
@@ -251,16 +269,27 @@ Also on the **Settings** page, under "Display":
 | Status column width | 200px–400px (10px steps) | Width of each Kanban status column. Columns scroll horizontally as a single row instead of wrapping. |
 | Group tasks by priority | on/off | When on, each status column is divided into labeled priority sections. When off, tasks stay sorted by priority but the column isn't visually divided — a small priority badge on each card still shows its level. |
 | Week starts on | Monday / Sunday | Controls which day is the first column in the [Week view](#week-view). |
-| Card color mode | Project tag / Color code | "Project tag" shows a colored project chip on each card (default). "Color code" hides the chip and tints the whole card/bar in the project's color instead, at a fixed lightness chosen for readable text regardless of the source color. |
+| Card color mode | Project tag / Color code | "Project tag" shows a colored project chip on each card (default). "Color code" hides the chip and tints the whole card/bar in the project's color instead, at the lightness configured under "Card & bar appearance" (see below) — text color always adjusts automatically (real WCAG contrast against the resolved background, not a fixed assumption) to stay readable regardless of the source color or chosen lightness. |
 | Due-date glow | on/off | Adds a soft red halo around cards/bars that are overdue or due today. |
 | Natural language due dates | on/off | Shows due dates as relative phrases ("due this Wednesday", "due next Saturday") instead of `due YYYY-MM-DD`, falling back to the absolute date outside a ~2-week window. |
 | Deduplicate completed/cancelled tasks | on/off, + keep due/scheduled | In the Week view, keeps only one bar (instead of two) for a finished task that has both a scheduled and due date in the visible week. |
 
-All settings above apply instantly and are saved in `localStorage`. The
-"Previous" week-view column toggle (see [Week view](#week-view)) is the one
-exception — it's saved to the backend `settings.json` (with an optional
-per-project override), since the per-project value needs to be readable by
-the Rust backend too.
+All settings above apply instantly and are saved in `localStorage`. Two
+exceptions are saved to the backend `settings.json` instead, each with an
+optional per-project override, since the per-project value needs to be
+readable by the Rust backend too: the "Previous" week-view column toggle
+(see [Week view](#week-view)), and Kanban card / week-bar lightness — see
+"Card & bar appearance" below.
+
+#### Card & bar appearance
+
+Also on the Settings page: two sliders (0–100%) control how bright/dark the
+"Color code" card mode's background is — one for Kanban cards, one shared by
+week-view and calendar-view bars (bars default darker, by design). A live
+swatch previews the result, including the automatically-adjusted text color,
+before you save. Any project can override either value independently from
+its own settings page (a checkbox reveals that project's own slider); leaving
+it unchecked inherits the global default.
 
 ## Testing
 

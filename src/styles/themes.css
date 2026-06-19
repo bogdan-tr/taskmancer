@@ -34,6 +34,8 @@
   --color-danger-soft: oklch(28% 0.07 350);
   --color-danger-hover: oklch(82% 0.22 350);
 
+  --color-overdue: oklch(60% 0.19 20);
+  --color-overdue-soft: oklch(24% 0.08 20);
   --color-urgent: oklch(72% 0.2 24);
   --color-urgent-soft: oklch(28% 0.08 24);
   --color-soon: oklch(78% 0.16 70);
@@ -75,6 +77,8 @@
   --color-danger-soft: oklch(30% 0.08 335);
   --color-danger-hover: oklch(83% 0.21 335);
 
+  --color-overdue: oklch(61% 0.18 20);
+  --color-overdue-soft: oklch(25% 0.08 20);
   --color-urgent: oklch(73% 0.19 24);
   --color-urgent-soft: oklch(30% 0.09 24);
   --color-soon: oklch(79% 0.15 72);

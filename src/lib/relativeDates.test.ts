@@ -3,6 +3,8 @@ import {
   DUE_RELATIVE_DATE_OPTIONS,
   SCHEDULED_RELATIVE_DATE_OPTIONS,
   dueRelativeDateLabel,
+  resolveDueRelativeDate,
+  resolveScheduledRelativeDate,
   scheduledRelativeDateLabel,
 } from "./relativeDates";
 
@@ -62,5 +64,61 @@ describe("dueRelativeDateLabel", () => {
 
   test("returns the id itself for an unrecognized option id", () => {
     expect(dueRelativeDateLabel("next_quarter")).toBe("next_quarter");
+  });
+});
+
+describe("resolveScheduledRelativeDate", () => {
+  const today = new Date(2026, 5, 14); // 2026-06-14
+
+  test("resolves 'today' to today's date", () => {
+    expect(resolveScheduledRelativeDate("today", today)).toBe("2026-06-14");
+  });
+
+  test("resolves 'tomorrow' to one day after today", () => {
+    expect(resolveScheduledRelativeDate("tomorrow", today)).toBe("2026-06-15");
+  });
+
+  test("resolves 'in_2_days'/'in_3_days'/'in_1_week' as offsets from today", () => {
+    expect(resolveScheduledRelativeDate("in_2_days", today)).toBe("2026-06-16");
+    expect(resolveScheduledRelativeDate("in_3_days", today)).toBe("2026-06-17");
+    expect(resolveScheduledRelativeDate("in_1_week", today)).toBe("2026-06-21");
+  });
+
+  test("resolves 'in_1_month' to the same day next month", () => {
+    expect(resolveScheduledRelativeDate("in_1_month", today)).toBe("2026-07-14");
+  });
+
+  test("returns undefined for an unrecognized code", () => {
+    expect(resolveScheduledRelativeDate("next_quarter", today)).toBeUndefined();
+  });
+});
+
+describe("resolveDueRelativeDate", () => {
+  const scheduled = "2026-06-15";
+
+  test("returns undefined for the 'none' sentinel (never due)", () => {
+    expect(resolveDueRelativeDate("none", scheduled)).toBeUndefined();
+  });
+
+  test("resolves 'same_day' to the scheduled date itself", () => {
+    expect(resolveDueRelativeDate("same_day", scheduled)).toBe("2026-06-15");
+  });
+
+  test("resolves 'next_day' to one day after the scheduled date, not 'today'", () => {
+    expect(resolveDueRelativeDate("next_day", scheduled)).toBe("2026-06-16");
+  });
+
+  test("resolves 'in_2_days'/'in_3_days'/'in_1_week' as offsets from the scheduled date", () => {
+    expect(resolveDueRelativeDate("in_2_days", scheduled)).toBe("2026-06-17");
+    expect(resolveDueRelativeDate("in_3_days", scheduled)).toBe("2026-06-18");
+    expect(resolveDueRelativeDate("in_1_week", scheduled)).toBe("2026-06-22");
+  });
+
+  test("resolves 'in_1_month' to the same day next month, relative to scheduled", () => {
+    expect(resolveDueRelativeDate("in_1_month", scheduled)).toBe("2026-07-15");
+  });
+
+  test("returns undefined for an unrecognized code", () => {
+    expect(resolveDueRelativeDate("next_quarter", scheduled)).toBeUndefined();
   });
 });

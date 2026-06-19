@@ -1,6 +1,12 @@
 <script lang="ts">
   import { applyTagsSuggestion, filterSuggestions, splitTagsInput } from "$lib/autocomplete";
-  import { isLightColor, NEON_CARD_CHROMA_BOOST, NEON_CARD_LIGHTNESS, neonCardColor } from "$lib/colorPresets";
+  import {
+    isLightColor,
+    legibleInkColor,
+    NEON_CARD_CHROMA_BOOST,
+    NEON_CARD_LIGHTNESS,
+    neonCardColor,
+  } from "$lib/colorPresets";
   import { displayState } from "$lib/displaySettings.svelte";
   import { formatDueDateDisplay } from "$lib/dueDateDisplay";
   import { generalState } from "$lib/generalSettings.svelte";
@@ -10,7 +16,7 @@
     priorityLabel,
     sortedPriorities,
   } from "$lib/priorities.svelte";
-  import { resolveProjectColor } from "$lib/projectColor";
+  import { resolveCardLightness, resolveProjectColor } from "$lib/projectColor";
   import { projectsState } from "$lib/projects.svelte";
   import { settingsState } from "$lib/settings.svelte";
   import { FALLBACK_STATUSES, statusColor } from "$lib/statuses.svelte";
@@ -31,13 +37,27 @@
   const priorities = $derived(settingsState.current?.priorities ?? FALLBACK_PRIORITIES);
   const projectColor = $derived(resolveProjectColor(task.project, projectsState.items));
   const isColorCoded = $derived(displayState.cardColorMode === "color_code");
-  // A vivid, fixed-lightness rendering of the project's hue/chroma — not a
-  // color-mix dilution toward the surface color — so the background always
-  // stays bright enough for dark title text, regardless of the project's
-  // own color, and reads as "neon"/saturated rather than washed-out pastel.
-  const colorCodeBackground = $derived(
-    isColorCoded ? neonCardColor(projectColor, NEON_CARD_LIGHTNESS, NEON_CARD_CHROMA_BOOST) : undefined,
+  // The project's own override (Project.board.card_lightness) takes
+  // precedence over the global default (Settings.card_lightness); falls
+  // back further to the original hardcoded constant while settings are
+  // still loading.
+  const cardLightness = $derived(
+    resolveCardLightness(
+      task.project,
+      projectsState.items,
+      settingsState.current?.card_lightness ?? NEON_CARD_LIGHTNESS,
+    ),
   );
+  // A vivid rendering of the project's hue/chroma at the resolved lightness
+  // above — not a color-mix dilution toward the surface color — so the
+  // background reads as "neon"/saturated rather than washed-out pastel.
+  // Text color adapts to the resolved lightness (see `colorCodeTextColor`)
+  // since that lightness is now user-configurable across its full range,
+  // not fixed at a value chosen to always be safe for one fixed ink color.
+  const colorCodeBackground = $derived(
+    isColorCoded ? neonCardColor(projectColor, cardLightness, NEON_CARD_CHROMA_BOOST) : undefined,
+  );
+  const colorCodeTextColor = $derived(colorCodeBackground ? legibleInkColor(colorCodeBackground) : undefined);
   // The urgency category (overdue/today/tomorrow/normal) doesn't depend on
   // the natural-language-phrasing setting, so `nlEnabled` is irrelevant here.
   const dueUrgency = $derived(formatDueDateDisplay(task.due, new Date(), false)?.variant);
@@ -215,7 +235,7 @@
   class:due-glow={showDueGlow}
   class:task-done={isDone}
   class:task-cancelled={isCancelled}
-  style="--task-priority-color: {priorityColor(priorities, task.priority)}; --task-project-color: {projectColor}; --task-color-code-bg: {colorCodeBackground}; --task-status-color: {taskStatusColor}"
+  style="--task-priority-color: {priorityColor(priorities, task.priority)}; --task-project-color: {projectColor}; --task-color-code-bg: {colorCodeBackground}; --task-color-code-text: {colorCodeTextColor}; --task-status-color: {taskStatusColor}"
 >
   {#if isEditing}
     <form class="edit-form" onsubmit={saveEdit}>
@@ -455,13 +475,13 @@
   }
 
   /* "Color code" card display mode: the whole card is tinted by the
-     project's color (rendered via `neonCardColor` at a fixed, bright
+     project's color (rendered via `neonCardColor` at a configurable
      lightness — see TaskCard.svelte's script) instead of showing a project
-     chip. Title text is always dark ink: the fixed lightness target makes
-     that safe for every project color, with no per-color contrast check
-     needed. Other chips get an explicit opaque background + border here so
-     they stay clearly legible against a more saturated card than the
-     default neutral surface. */
+     chip. Title text color adapts to that lightness (`legibleInkColor`,
+     also computed in the script) so it stays legible across the lightness
+     slider's full range, not just at one fixed value. Other chips get an
+     explicit opaque background + border here so they stay clearly legible
+     against a more saturated card than the default neutral surface. */
   .task.color-coded {
     background: var(--task-color-code-bg);
     /* Only the non-priority sides — `border-color` is a shorthand that would
@@ -475,7 +495,7 @@
   }
 
   .task.color-coded .task-title {
-    color: var(--color-ink);
+    color: var(--task-color-code-text);
   }
 
   /* Tag/priority chips use the generic muted-gray chip styling, which can
@@ -575,13 +595,14 @@
     font-variant-numeric: tabular-nums;
   }
 
-  /* "Overdue" is the most urgent signal a card can show, so it gets a
-     solid fill rather than the soft-tint treatment every other chip uses —
-     it should visually outrank the priority/project/tag chips next to it. */
+  /* Dark red, distinct from "due today" (--color-urgent) — same soft-tint
+     treatment every other chip uses (tinted background, colored text), not
+     a solid fill, for visual consistency with the priority/project/tag
+     chips next to it. */
   .chip.due-overdue {
-    background: var(--color-urgent);
-    border-color: var(--color-urgent);
-    color: var(--color-urgent-ink);
+    background: var(--color-overdue-soft);
+    border-color: color-mix(in oklch, var(--color-overdue) 40%, transparent);
+    color: var(--color-overdue);
     font-weight: 700;
   }
 
@@ -605,10 +626,6 @@
     border-radius: var(--radius-pill);
     background: currentColor;
     flex-shrink: 0;
-  }
-
-  .chip.due-overdue .due-dot {
-    background: var(--color-urgent-ink);
   }
 
   /* Plain sentence case, matching the due chip's style — uppercase + tracked
@@ -686,9 +703,12 @@
     color: var(--color-ink-muted);
   }
 
-  .due-hint.due-today,
-  .due-hint.due-overdue {
+  .due-hint.due-today {
     color: var(--color-urgent);
+  }
+
+  .due-hint.due-overdue {
+    color: var(--color-overdue);
   }
 
   .due-hint.due-tomorrow {

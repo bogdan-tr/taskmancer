@@ -1,4 +1,5 @@
 <script lang="ts">
+  import CardAppearanceSettings from "$lib/components/CardAppearanceSettings.svelte";
   import DefaultsSettings from "$lib/components/DefaultsSettings.svelte";
   import DisplaySettings from "$lib/components/DisplaySettings.svelte";
   import GeneralSettings from "$lib/components/GeneralSettings.svelte";
@@ -56,6 +57,7 @@
 
   <GeneralSettings />
   <DisplaySettings />
+  <CardAppearanceSettings />
   <WeekViewSettings />
   <PrioritySettings />
   <StatusSettings />

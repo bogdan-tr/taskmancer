@@ -25,6 +25,22 @@ fn default_project_name() -> String {
     "General".to_string()
 }
 
+/// Default OKLCH lightness for "color code" mode's Kanban card background.
+/// Matches the value this was hardcoded to before it became configurable
+/// (`NEON_CARD_LIGHTNESS` in the frontend's `colorPresets.ts`), so existing
+/// users see no visual change after upgrading.
+fn default_card_lightness() -> f64 {
+    0.5
+}
+
+/// Default OKLCH lightness for "color code" mode's week/calendar-view bar
+/// background — deliberately darker than the card default, matching the
+/// value this was hardcoded to before it became configurable
+/// (`WEEK_BAR_LIGHTNESS` in the frontend's `colorPresets.ts`).
+fn default_bar_lightness() -> f64 {
+    0.38
+}
+
 /// A user-defined priority level: an id stored in `Task.priority`, a display
 /// label, a `color` used to render that priority throughout the UI, and a
 /// `rank` used to sort tasks by priority (lower `rank` sorts first / is
@@ -97,6 +113,13 @@ pub struct TaskDefaults {
 /// view shows an extra leading column listing unfinished tasks scheduled or
 /// due before the visible week. A project's `ProjectBoard.show_previous_weeks`
 /// overrides this when set (see [`crate::project::ProjectBoard`]).
+///
+/// `card_lightness`/`bar_lightness` are the global OKLCH lightness (see
+/// [`validate_lightness`]) used for "color code" mode's Kanban card and
+/// week/calendar-view bar backgrounds, respectively — two separate values
+/// since the bar treatment is deliberately darker by default. A project's
+/// `ProjectBoard.card_lightness`/`.bar_lightness` overrides these
+/// individually when set.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Settings {
     #[serde(default)]
@@ -113,6 +136,10 @@ pub struct Settings {
     pub default_project: String,
     #[serde(default)]
     pub show_previous_weeks_column: bool,
+    #[serde(default = "default_card_lightness")]
+    pub card_lightness: f64,
+    #[serde(default = "default_bar_lightness")]
+    pub bar_lightness: f64,
 }
 
 impl Default for Settings {
@@ -187,6 +214,8 @@ impl Default for Settings {
             cancelled_status: None,
             default_project: default_project_name(),
             show_previous_weeks_column: false,
+            card_lightness: default_card_lightness(),
+            bar_lightness: default_bar_lightness(),
         }
     }
 }
@@ -362,6 +391,20 @@ pub fn validate_status_id(settings: &Settings, id: &str) -> Result<(), String> {
     }
 }
 
+/// Returns `Ok(())` if `value` is a valid OKLCH lightness (`0.0..=1.0`), or
+/// an error otherwise. Used for `Settings.card_lightness`/`.bar_lightness`
+/// and their per-project `ProjectBoard` overrides — see
+/// [`crate::project::ProjectBoard`].
+pub fn validate_lightness(value: f64) -> Result<(), String> {
+    if (0.0..=1.0).contains(&value) {
+        Ok(())
+    } else {
+        Err(format!(
+            "lightness must be between 0.0 and 1.0, got {value}"
+        ))
+    }
+}
+
 /// Validates settings before they're persisted: `priorities` and `statuses`
 /// must each be non-empty with unique ids (an empty or duplicate-id list
 /// would make `validate_priority_id`/`validate_status_id` reject every task
@@ -371,8 +414,10 @@ pub fn validate_status_id(settings: &Settings, id: &str) -> Result<(), String> {
 /// [`DUE_RELATIVE_DATE_CODES`], `defaults.scheduled`, if set, must be one of
 /// [`SCHEDULED_RELATIVE_DATE_CODES`], `done_status` must be non-empty and
 /// reference a defined status, `cancelled_status`, if set, must
-/// reference a defined status distinct from `done_status`, and
-/// `default_project` must be non-empty after trimming whitespace.
+/// reference a defined status distinct from `done_status`,
+/// `card_lightness`/`bar_lightness` must each be a valid OKLCH lightness
+/// (see [`validate_lightness`]), and `default_project` must be non-empty
+/// after trimming whitespace.
 pub fn validate_settings(settings: &Settings) -> Result<(), String> {
     if settings.priorities.is_empty() {
         return Err("at least one priority level must be defined".to_string());
@@ -431,6 +476,9 @@ pub fn validate_settings(settings: &Settings) -> Result<(), String> {
     if settings.default_project.trim().is_empty() {
         return Err("a default project name must be defined".to_string());
     }
+
+    validate_lightness(settings.card_lightness)?;
+    validate_lightness(settings.bar_lightness)?;
 
     Ok(())
 }
@@ -790,6 +838,53 @@ mod tests {
         };
 
         assert!(validate_settings(&settings).is_ok());
+    }
+
+    #[test]
+    fn validate_lightness_accepts_the_full_valid_range() {
+        assert!(validate_lightness(0.0).is_ok());
+        assert!(validate_lightness(0.5).is_ok());
+        assert!(validate_lightness(1.0).is_ok());
+    }
+
+    #[test]
+    fn validate_lightness_rejects_a_negative_value() {
+        assert!(validate_lightness(-0.01).is_err());
+    }
+
+    #[test]
+    fn validate_lightness_rejects_a_value_above_one() {
+        assert!(validate_lightness(1.01).is_err());
+    }
+
+    #[test]
+    fn validate_settings_rejects_an_out_of_range_card_lightness() {
+        let settings = Settings {
+            card_lightness: 1.5,
+            ..Default::default()
+        };
+
+        let err = validate_settings(&settings).unwrap_err();
+        assert!(err.contains("lightness"));
+    }
+
+    #[test]
+    fn validate_settings_rejects_an_out_of_range_bar_lightness() {
+        let settings = Settings {
+            bar_lightness: -0.5,
+            ..Default::default()
+        };
+
+        assert!(validate_settings(&settings).is_err());
+    }
+
+    #[test]
+    fn validate_settings_accepts_the_default_card_and_bar_lightness() {
+        let settings = Settings::default();
+
+        assert!(validate_settings(&settings).is_ok());
+        assert_eq!(settings.card_lightness, 0.5);
+        assert_eq!(settings.bar_lightness, 0.38);
     }
 
     #[test]

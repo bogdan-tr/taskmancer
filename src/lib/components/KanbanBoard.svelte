@@ -4,6 +4,7 @@
   import { createTask, deleteTask, finishDay, listTasks, reorderTask, updateTask } from "$lib/api";
   import { isVisibleOnBoard } from "$lib/boardVisibility";
   import AddTaskModal from "$lib/components/AddTaskModal.svelte";
+  import CalendarView from "$lib/components/CalendarView.svelte";
   import ConfirmDialog from "$lib/components/ConfirmDialog.svelte";
   import KanbanGrid from "$lib/components/KanbanGrid.svelte";
   import WeekView from "$lib/components/WeekView.svelte";
@@ -127,7 +128,7 @@
   let isFinishingDay = $state(false);
 
   /** Which view this board shows: the Kanban grid or the calendar week view. */
-  let activeView: "board" | "week" = $state("board");
+  let activeView: "board" | "week" | "calendar" = $state("board");
 
   /**
    * Every task visible on this board (project-filtered, but not subject to
@@ -385,6 +386,16 @@
       >
         Week
       </button>
+      <button
+        type="button"
+        class="view-tab"
+        class:active={activeView === "calendar"}
+        role="tab"
+        aria-selected={activeView === "calendar"}
+        onclick={() => (activeView = "calendar")}
+      >
+        Calendar
+      </button>
     </div>
     <div class="header-actions">
       {#if !projectFilter}
@@ -478,6 +489,8 @@
     <p class="loading">Loading tasks…</p>
   {:else if activeView === "week"}
     <WeekView tasks={visibleTasks} onUpdate={handleUpdate} {showPreviousWeeksColumn} />
+  {:else if activeView === "calendar"}
+    <CalendarView tasks={visibleTasks} onUpdate={handleUpdate} />
   {:else}
     <KanbanGrid
       {boardColumns}

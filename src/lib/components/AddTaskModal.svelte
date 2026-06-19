@@ -598,9 +598,12 @@
     font-weight: 600;
   }
 
-  .due-today,
-  .due-overdue {
+  .due-today {
     color: var(--color-urgent);
+  }
+
+  .due-overdue {
+    color: var(--color-overdue);
   }
 
   .due-tomorrow {

@@ -1,5 +1,11 @@
 <script lang="ts">
   import { updateProject } from "$lib/api";
+  import {
+    legibleInkColor,
+    NEON_CARD_CHROMA_BOOST,
+    WEEK_BAR_CHROMA_BOOST,
+    neonCardColor,
+  } from "$lib/colorPresets";
   import { boardsEqual, effectiveBoardStatuses } from "$lib/projectBoardSettings";
   import { refreshProjects } from "$lib/projects.svelte";
   import { settingsState } from "$lib/settings.svelte";
@@ -21,10 +27,22 @@
   let baselineShowPreviousWeeks = $derived(
     project.board.show_previous_weeks === undefined ? "" : String(project.board.show_previous_weeks),
   );
+  let baselineCardLightnessOverride = $derived(project.board.card_lightness !== undefined);
+  let baselineCardLightness = $derived(
+    Math.round((project.board.card_lightness ?? settingsState.current?.card_lightness ?? 0.5) * 100),
+  );
+  let baselineBarLightnessOverride = $derived(project.board.bar_lightness !== undefined);
+  let baselineBarLightness = $derived(
+    Math.round((project.board.bar_lightness ?? settingsState.current?.bar_lightness ?? 0.38) * 100),
+  );
 
   let draftStatuses = $state<string[]>([]);
   let draftDefault = $state("");
   let draftShowPreviousWeeks = $state("");
+  let draftCardLightnessOverride = $state(false);
+  let draftCardLightness = $state(50);
+  let draftBarLightnessOverride = $state(false);
+  let draftBarLightness = $state(38);
   let initialized = $state(false);
   let errorMessage = $state("");
   let isSaving = $state(false);
@@ -35,6 +53,10 @@
       draftStatuses = [...baselineStatuses];
       draftDefault = baselineDefault;
       draftShowPreviousWeeks = baselineShowPreviousWeeks;
+      draftCardLightnessOverride = baselineCardLightnessOverride;
+      draftCardLightness = baselineCardLightness;
+      draftBarLightnessOverride = baselineBarLightnessOverride;
+      draftBarLightness = baselineBarLightness;
       initialized = true;
     }
   });
@@ -43,8 +65,18 @@
     !boardsEqual(
       { statuses: draftStatuses, default_status: draftDefault || undefined },
       { statuses: baselineStatuses, default_status: project.board.default_status },
-    ) || draftShowPreviousWeeks !== baselineShowPreviousWeeks,
+    ) ||
+      draftShowPreviousWeeks !== baselineShowPreviousWeeks ||
+      draftCardLightnessOverride !== baselineCardLightnessOverride ||
+      (draftCardLightnessOverride && draftCardLightness !== baselineCardLightness) ||
+      draftBarLightnessOverride !== baselineBarLightnessOverride ||
+      (draftBarLightnessOverride && draftBarLightness !== baselineBarLightness),
   );
+
+  let cardPreviewBg = $derived(neonCardColor(project.color, draftCardLightness / 100, NEON_CARD_CHROMA_BOOST));
+  let cardPreviewText = $derived(legibleInkColor(cardPreviewBg));
+  let barPreviewBg = $derived(neonCardColor(project.color, draftBarLightness / 100, WEEK_BAR_CHROMA_BOOST));
+  let barPreviewText = $derived(legibleInkColor(barPreviewBg));
 
   let availableStatusIds = $derived(allStatusIds.filter((id) => !draftStatuses.includes(id)));
 
@@ -74,6 +106,10 @@
     draftStatuses = [...baselineStatuses];
     draftDefault = baselineDefault;
     draftShowPreviousWeeks = baselineShowPreviousWeeks;
+    draftCardLightnessOverride = baselineCardLightnessOverride;
+    draftCardLightness = baselineCardLightness;
+    draftBarLightnessOverride = baselineBarLightnessOverride;
+    draftBarLightness = baselineBarLightness;
     errorMessage = "";
   }
 
@@ -86,6 +122,8 @@
           statuses: draftStatuses,
           default_status: draftDefault || undefined,
           show_previous_weeks: draftShowPreviousWeeks === "" ? undefined : draftShowPreviousWeeks === "true",
+          card_lightness: draftCardLightnessOverride ? draftCardLightness / 100 : undefined,
+          bar_lightness: draftBarLightnessOverride ? draftBarLightness / 100 : undefined,
         },
       });
       await refreshProjects();
@@ -190,6 +228,60 @@
     <p class="hint">
       Overrides the global Display setting for this project's Week view only.
     </p>
+  </div>
+
+  <div class="field lightness-field">
+    <label class="checkbox-row" for="card-lightness-override">
+      <input id="card-lightness-override" type="checkbox" bind:checked={draftCardLightnessOverride} />
+      Override Kanban card lightness for this project
+    </label>
+    {#if draftCardLightnessOverride}
+      <div class="control-with-preview">
+        <input
+          type="range"
+          min="0"
+          max="100"
+          step="1"
+          bind:value={draftCardLightness}
+          aria-label="Kanban card lightness"
+        />
+        <span class="control-value">{draftCardLightness}%</span>
+        <span
+          class="preview-swatch"
+          style="background: {cardPreviewBg}; color: {cardPreviewText}"
+          aria-hidden="true"
+        >
+          Sample
+        </span>
+      </div>
+    {/if}
+  </div>
+
+  <div class="field lightness-field">
+    <label class="checkbox-row" for="bar-lightness-override">
+      <input id="bar-lightness-override" type="checkbox" bind:checked={draftBarLightnessOverride} />
+      Override week/calendar bar lightness for this project
+    </label>
+    {#if draftBarLightnessOverride}
+      <div class="control-with-preview">
+        <input
+          type="range"
+          min="0"
+          max="100"
+          step="1"
+          bind:value={draftBarLightness}
+          aria-label="Week/calendar bar lightness"
+        />
+        <span class="control-value">{draftBarLightness}%</span>
+        <span
+          class="preview-swatch"
+          style="background: {barPreviewBg}; color: {barPreviewText}"
+          aria-hidden="true"
+        >
+          Sample
+        </span>
+      </div>
+    {/if}
   </div>
 
   {#if errorMessage}
@@ -359,6 +451,53 @@
     border-color: var(--color-accent);
     box-shadow: 0 0 0 3px var(--color-accent-soft);
     outline: none;
+  }
+
+  .lightness-field {
+    max-width: 28rem;
+  }
+
+  .checkbox-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+    cursor: pointer;
+  }
+
+  .checkbox-row input[type="checkbox"] {
+    width: 1.1rem;
+    height: 1.1rem;
+    accent-color: var(--color-accent);
+    cursor: pointer;
+  }
+
+  .control-with-preview {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    margin-top: var(--space-2xs);
+  }
+
+  .control-with-preview input[type="range"] {
+    flex: 1;
+    accent-color: var(--color-accent);
+  }
+
+  .control-value {
+    flex-shrink: 0;
+    font-size: var(--text-sm);
+    font-variant-numeric: tabular-nums;
+    color: var(--color-ink-muted);
+  }
+
+  .preview-swatch {
+    flex-shrink: 0;
+    width: 4.5rem;
+    padding: var(--space-2xs) 0;
+    border-radius: var(--radius-md);
+    text-align: center;
+    font-size: var(--text-xs);
+    font-weight: 600;
   }
 
   .hint {

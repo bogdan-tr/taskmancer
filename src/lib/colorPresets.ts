@@ -174,3 +174,43 @@ export const NEON_CARD_CHROMA_BOOST = 1.55;
  */
 export const WEEK_BAR_LIGHTNESS = 0.38;
 export const WEEK_BAR_CHROMA_BOOST = 1.6;
+
+/** WCAG contrast ratio between two relative luminances (each 0-1, as returned by `relativeLuminance`). */
+function contrastRatio(luminanceA: number, luminanceB: number): number {
+  const lighter = Math.max(luminanceA, luminanceB);
+  const darker = Math.min(luminanceA, luminanceB);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+const DARK_INK = "oklch(20% 0.014 50)";
+const LIGHT_INK = "oklch(96% 0.01 0)";
+
+/**
+ * Returns whichever of two literal ink colors (not theme tokens — the
+ * color-coded background's brightness has nothing to do with which theme
+ * is active, so a theme-variant token like `--color-ink` would pick the
+ * wrong color in plenty of cases) has the higher WCAG contrast ratio
+ * against `backgroundColor` (any CSS color `cssColorToHex` understands,
+ * e.g. a `neonCardColor` result).
+ *
+ * Deliberately uses real contrast math against the *resolved* color, not a
+ * lightness-only heuristic: chroma and hue both affect a color's actual
+ * luminance just as much as its OKLCH lightness does. For example, a
+ * vivid, fully-saturated blue at 50% OKLCH lightness (the original
+ * `NEON_CARD_LIGHTNESS` default) has a WCAG luminance around 0.11 — far
+ * darker than the 50% lightness figure alone suggests, since blue
+ * contributes very little to perceived brightness (the WCAG formula
+ * weights it at 0.0722, versus green's 0.7152) — so light ink wins there,
+ * not dark. An earlier version of this function picked purely off the
+ * lightness channel and got exactly this case wrong for the app's actual
+ * default project color.
+ */
+export function legibleInkColor(backgroundColor: string): string {
+  const backgroundLuminance = relativeLuminance(cssColorToHex(backgroundColor));
+  const darkInkLuminance = relativeLuminance(cssColorToHex(DARK_INK));
+  const lightInkLuminance = relativeLuminance(cssColorToHex(LIGHT_INK));
+  return contrastRatio(backgroundLuminance, darkInkLuminance) >=
+    contrastRatio(backgroundLuminance, lightInkLuminance)
+    ? DARK_INK
+    : LIGHT_INK;
+}

@@ -18,6 +18,12 @@ pub const DEFAULT_PROJECT_COLOR: &str = "#3b82f6";
 /// `show_previous_weeks` overrides `Settings::show_previous_weeks_column`
 /// for this project's Week view when set; `None` inherits the global
 /// default.
+///
+/// `card_lightness`/`bar_lightness` override
+/// `Settings::card_lightness`/`.bar_lightness` for this project's Kanban
+/// cards and week/calendar-view bars, respectively, when set — each `None`
+/// independently inherits its own global default. Must be a valid OKLCH
+/// lightness (`0.0..=1.0`, see `settings::validate_lightness`) when set.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct ProjectBoard {
     #[serde(default)]
@@ -26,6 +32,10 @@ pub struct ProjectBoard {
     pub default_status: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub show_previous_weeks: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub card_lightness: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bar_lightness: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

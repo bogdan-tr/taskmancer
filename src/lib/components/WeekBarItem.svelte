@@ -1,8 +1,9 @@
 <script lang="ts">
-  import { WEEK_BAR_CHROMA_BOOST, WEEK_BAR_LIGHTNESS, neonCardColor } from "$lib/colorPresets";
+  import { legibleInkColor, WEEK_BAR_CHROMA_BOOST, WEEK_BAR_LIGHTNESS, neonCardColor } from "$lib/colorPresets";
   import { priorityColor, priorityLabel } from "$lib/priorities.svelte";
-  import { resolveProjectColor } from "$lib/projectColor";
+  import { resolveBarLightness, resolveProjectColor } from "$lib/projectColor";
   import { projectsState } from "$lib/projects.svelte";
+  import { settingsState } from "$lib/settings.svelte";
   import { statusColor, statusLabel } from "$lib/statuses.svelte";
   import type { PriorityLevel, StatusDefinition, Task } from "$lib/types";
   import type { WeekBar } from "$lib/weekGrouping";
@@ -39,9 +40,19 @@
   let barColor = $derived(resolveProjectColor(task.project, projectsState.items));
   let barPriorityColor = $derived(priorityColor(priorities, task.priority));
   let barStatusColor = $derived(statusColor(statuses, task.status));
-  let barColorCodeBg = $derived(
-    colorCoded ? neonCardColor(barColor, WEEK_BAR_LIGHTNESS, WEEK_BAR_CHROMA_BOOST) : undefined,
+  /** The project's own override (Project.board.bar_lightness) takes precedence over the global default. */
+  let barLightness = $derived(
+    resolveBarLightness(
+      task.project,
+      projectsState.items,
+      settingsState.current?.bar_lightness ?? WEEK_BAR_LIGHTNESS,
+    ),
   );
+  let barColorCodeBg = $derived(
+    colorCoded ? neonCardColor(barColor, barLightness, WEEK_BAR_CHROMA_BOOST) : undefined,
+  );
+  /** Adapts to the resolved background color so text/icons stay legible across the lightness slider's full range. */
+  let barColorCodeText = $derived(barColorCodeBg ? legibleInkColor(barColorCodeBg) : undefined);
   let done = $derived(task.status === doneStatus);
   let cancelled = $derived(!done && cancelledStatus !== undefined && task.status === cancelledStatus);
 
@@ -109,7 +120,7 @@
   class:color-coded={colorCoded}
   class:bar-done={done}
   class:bar-cancelled={cancelled}
-  style="--bar-color: {barColor}; --bar-priority-color: {barPriorityColor}; --bar-status-color: {barStatusColor}; --bar-color-code-bg: {barColorCodeBg}"
+  style="--bar-color: {barColor}; --bar-priority-color: {barPriorityColor}; --bar-status-color: {barStatusColor}; --bar-color-code-bg: {barColorCodeBg}; --bar-color-code-text: {barColorCodeText}"
 >
   <div
     class="bar-summary"
@@ -250,19 +261,19 @@
     box-shadow: 0 0 0 2px var(--bar-color, var(--color-accent));
   }
 
-  /* "Color code" mode: a vivid, fixed-lightness rendering of the project's
-     hue/chroma (see `neonCardColor`, shared with TaskCard's card mode but
-     using Week-view-specific, deliberately darker constants). Unlike
-     TaskCard's lighter target (safe for dark text), this lightness is dark
-     enough that text/icons switch to a light color instead — a per-bar
-     contrast check isn't needed since the target lightness is fixed. */
+  /* "Color code" mode: a vivid rendering of the project's hue/chroma at a
+     configurable lightness (see `neonCardColor`/`barLightness` in the
+     script, shared with TaskCard's card mode but using Week-view-specific,
+     deliberately darker-by-default constants). Text/icon color adapts to
+     that lightness (`legibleInkColor`) so it stays legible across the
+     lightness slider's full range, not just at the original fixed value. */
   .bar.color-coded .bar-summary {
     background: var(--bar-color-code-bg);
-    color: oklch(96% 0.01 0);
+    color: var(--bar-color-code-text);
   }
 
   .bar.color-coded .bar-icon {
-    color: oklch(96% 0.01 0);
+    color: var(--bar-color-code-text);
   }
 
   .bar-icon {

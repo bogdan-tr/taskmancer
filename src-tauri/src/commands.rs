@@ -8,8 +8,8 @@ use crate::project::{Project, ProjectBoard, DEFAULT_PROJECT_COLOR};
 use crate::project_storage;
 use crate::settings::{
     resolve_due_relative_date, resolve_scheduled_relative_date, validate_due_relative_date_code,
-    validate_priority_id, validate_scheduled_relative_date_code, validate_settings,
-    validate_status_id, Settings, TaskDefaults,
+    validate_lightness, validate_priority_id, validate_scheduled_relative_date_code,
+    validate_settings, validate_status_id, Settings, TaskDefaults,
 };
 use crate::settings_storage;
 use crate::storage;
@@ -318,11 +318,34 @@ fn validate_due_creation_field(value: &Option<String>) -> Result<(), String> {
     }
 }
 
+/// Applies `update_task`'s editable fields from `task` onto `existing`:
+/// `title` (already trimmed by the caller), `project_name` (the already
+/// project-fallback-resolved name — see [`resolve_project_name`] — rather
+/// than `task.project` directly), `tags`, `priority`, `status`, `due`,
+/// `scheduled`, and `notes`. `status` is a normal editable field on this
+/// path: `TaskEditDialog.svelte`'s status dropdown (used from the week
+/// view's "Edit" button) saves through `update_task`, not just the Kanban
+/// board's dedicated `reorder_task` command, so it must take effect here
+/// too. `existing.id`, `.created`, and `.depends_on` are left untouched —
+/// the request payload can never overwrite them or redirect the write to a
+/// different task's file.
+fn apply_task_update(existing: &mut Task, title: String, project_name: String, task: Task) {
+    existing.title = title;
+    existing.project = Some(project_name);
+    existing.tags = task.tags;
+    existing.priority = task.priority;
+    existing.status = task.status;
+    existing.due = task.due;
+    existing.scheduled = task.scheduled;
+    existing.notes = task.notes;
+}
+
 /// Updates the editable fields of an existing task (title, project, tags,
-/// priority, due/scheduled dates, notes). The task's `id`, `created`,
-/// `status`, and `depends_on` are loaded from disk and preserved, so a
-/// stale or malformed `task` payload from the frontend cannot corrupt
-/// these fields or redirect the write to a different task's file.
+/// priority, status, due/scheduled dates, notes — see
+/// [`apply_task_update`]). The task's `id`, `created`, and `depends_on` are
+/// loaded from disk and preserved, so a stale or malformed `task` payload
+/// from the frontend cannot corrupt these fields or redirect the write to a
+/// different task's file.
 ///
 /// An empty/missing `task.project` falls back to `settings.default_project`
 /// (see [`resolve_project_name`]), so a task can never be saved without a
@@ -342,15 +365,11 @@ pub fn update_task(state: State<AppState>, task: Task) -> Result<Task, String> {
     let settings =
         settings_storage::load_settings(&state.settings_file).map_err(|e| e.to_string())?;
     validate_priority_id(&settings, &task.priority)?;
+    validate_status_id(&settings, &task.status)?;
 
+    let project_name = resolve_project_name(task.project.clone(), &settings);
     let mut existing = storage::load_task(&state.tasks_dir, &task.id).map_err(|e| e.to_string())?;
-    existing.title = title;
-    existing.project = Some(resolve_project_name(task.project, &settings));
-    existing.tags = task.tags;
-    existing.priority = task.priority;
-    existing.due = task.due;
-    existing.scheduled = task.scheduled;
-    existing.notes = task.notes;
+    apply_task_update(&mut existing, title, project_name, task);
 
     storage::update_task(&state.tasks_dir, &existing).map_err(|e| e.to_string())?;
     Ok(existing)
@@ -544,12 +563,14 @@ pub fn create_project(
 /// disk. Validates that `update.name` (trimmed) is non-empty and
 /// case-insensitively unique among the *other* projects, that every
 /// status/priority id referenced by `update.board` and `update.defaults` is
-/// defined in `settings`, and that `update.defaults.due`/`.scheduled`, if
-/// set, are recognized relative-date codes (mirroring the checks
-/// `validate_settings` applies to `Settings.defaults`). If `update.color`
-/// differs from the project's current color, it must be a 6-digit hex color
-/// (see [`validate_hex_color`]); an unchanged color is left as-is even if
-/// it predates that requirement.
+/// defined in `settings`, that `update.defaults.due`/`.scheduled`, if set,
+/// are recognized relative-date codes (mirroring the checks
+/// `validate_settings` applies to `Settings.defaults`), and that
+/// `update.board.card_lightness`/`.bar_lightness`, if set, are valid OKLCH
+/// lightness values (see [`validate_lightness`]). If `update.color` differs
+/// from the project's current color, it must be a 6-digit hex color (see
+/// [`validate_hex_color`]); an unchanged color is left as-is even if it
+/// predates that requirement.
 fn apply_project_update(
     projects: &mut [Project],
     index: usize,
@@ -585,6 +606,12 @@ fn apply_project_update(
     }
     if let Some(scheduled_code) = &update.defaults.scheduled {
         validate_scheduled_relative_date_code(scheduled_code)?;
+    }
+    if let Some(card_lightness) = update.board.card_lightness {
+        validate_lightness(card_lightness)?;
+    }
+    if let Some(bar_lightness) = update.board.bar_lightness {
+        validate_lightness(bar_lightness)?;
     }
 
     let existing = &projects[index];
@@ -1019,6 +1046,60 @@ mod tests {
         assert_eq!(task.priority, "high");
         assert_eq!(task.due, Some("2026-07-01".to_string()));
         assert_eq!(task.scheduled, Some("2026-06-25".to_string()));
+    }
+
+    #[test]
+    fn apply_task_update_applies_all_editable_fields_including_status() {
+        let mut existing = Task::new("Original title".to_string());
+        existing.status = "backlog".to_string();
+
+        let mut incoming = Task::new("New title".to_string());
+        incoming.status = "done".to_string();
+        incoming.tags = vec!["urgent".to_string()];
+        incoming.priority = "high".to_string();
+        incoming.due = Some("2026-07-01".to_string());
+        incoming.scheduled = Some("2026-06-20".to_string());
+        incoming.notes = "updated notes".to_string();
+
+        apply_task_update(
+            &mut existing,
+            "New title".to_string(),
+            "Work".to_string(),
+            incoming,
+        );
+
+        assert_eq!(existing.title, "New title");
+        assert_eq!(existing.project, Some("Work".to_string()));
+        assert_eq!(existing.tags, vec!["urgent".to_string()]);
+        assert_eq!(existing.priority, "high");
+        assert_eq!(existing.status, "done");
+        assert_eq!(existing.due, Some("2026-07-01".to_string()));
+        assert_eq!(existing.scheduled, Some("2026-06-20".to_string()));
+        assert_eq!(existing.notes, "updated notes".to_string());
+    }
+
+    #[test]
+    fn apply_task_update_preserves_id_created_and_depends_on() {
+        let mut existing = Task::new("Original title".to_string());
+        existing.depends_on = vec!["blocker-id".to_string()];
+        let original_id = existing.id.clone();
+        let original_created = existing.created.clone();
+
+        let mut incoming = Task::new("New title".to_string());
+        incoming.id = "a-different-id".to_string();
+        incoming.created = "2000-01-01T00:00:00Z".to_string();
+        incoming.depends_on = vec!["should-not-apply".to_string()];
+
+        apply_task_update(
+            &mut existing,
+            "New title".to_string(),
+            "Work".to_string(),
+            incoming,
+        );
+
+        assert_eq!(existing.id, original_id);
+        assert_eq!(existing.created, original_created);
+        assert_eq!(existing.depends_on, vec!["blocker-id".to_string()]);
     }
 
     #[test]
@@ -1600,6 +1681,63 @@ mod tests {
 
         assert_eq!(updated.board, update.board);
         assert_eq!(updated.defaults, update.defaults);
+    }
+
+    #[test]
+    fn apply_project_update_persists_valid_card_and_bar_lightness_overrides() {
+        let mut projects = vec![Project::new("Inbox".to_string(), "#abcdef".to_string(), 1)];
+        let mut update = projects[0].clone();
+        update.board = ProjectBoard {
+            card_lightness: Some(0.65),
+            bar_lightness: Some(0.2),
+            ..Default::default()
+        };
+
+        let updated =
+            apply_project_update(&mut projects, 0, update.clone(), &Settings::default()).unwrap();
+
+        assert_eq!(updated.board.card_lightness, Some(0.65));
+        assert_eq!(updated.board.bar_lightness, Some(0.2));
+    }
+
+    #[test]
+    fn apply_project_update_rejects_an_out_of_range_card_lightness_override() {
+        let mut projects = vec![Project::new("Inbox".to_string(), "#abcdef".to_string(), 1)];
+        let mut update = projects[0].clone();
+        update.board = ProjectBoard {
+            card_lightness: Some(1.5),
+            ..Default::default()
+        };
+
+        let result = apply_project_update(&mut projects, 0, update, &Settings::default());
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("lightness"));
+    }
+
+    #[test]
+    fn apply_project_update_rejects_an_out_of_range_bar_lightness_override() {
+        let mut projects = vec![Project::new("Inbox".to_string(), "#abcdef".to_string(), 1)];
+        let mut update = projects[0].clone();
+        update.board = ProjectBoard {
+            bar_lightness: Some(-0.1),
+            ..Default::default()
+        };
+
+        let result = apply_project_update(&mut projects, 0, update, &Settings::default());
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn apply_project_update_allows_unset_card_and_bar_lightness_to_inherit_the_global_default() {
+        let mut projects = vec![Project::new("Inbox".to_string(), "#abcdef".to_string(), 1)];
+        let update = projects[0].clone();
+
+        let updated = apply_project_update(&mut projects, 0, update, &Settings::default()).unwrap();
+
+        assert_eq!(updated.board.card_lightness, None);
+        assert_eq!(updated.board.bar_lightness, None);
     }
 
     #[test]

@@ -91,6 +91,8 @@ describe("mergeTags", () => {
   });
 });
 
+const NOW = new Date(2026, 5, 14); // 2026-06-14
+
 describe("resolveTaskPreview", () => {
   test("uses the default project, configured default priority/status, and global defaults when nothing is overridden", () => {
     const preview = resolveTaskPreview({
@@ -99,6 +101,7 @@ describe("resolveTaskPreview", () => {
       globalDefaults: { tags: ["chore"], priority: "low", status: "do", due: "next_day", scheduled: "today" },
       priorities: PRIORITIES,
       statuses: STATUSES,
+      now: NOW,
     });
 
     expect(preview).toEqual({
@@ -106,7 +109,7 @@ describe("resolveTaskPreview", () => {
       priorityId: "low",
       statusId: "do",
       tags: ["chore"],
-      due: "Next day",
+      due: "2026-06-15",
       scheduled: "Today",
     });
   });
@@ -252,10 +255,28 @@ describe("resolveTaskPreview", () => {
       projectDefaults: { tags: [], due: "in_1_week", scheduled: "in_1_month" },
       priorities: PRIORITIES,
       statuses: STATUSES,
+      now: NOW,
     });
 
-    expect(preview.due).toBe("1 week later");
+    // scheduled = in_1_month relative to now (2026-06-14) = 2026-07-14;
+    // due = in_1_week relative to *that* scheduled date, not to now.
+    expect(preview.due).toBe("2026-07-21");
     expect(preview.scheduled).toBe("In 1 month");
+  });
+
+  test("a default due code resolves relative to an explicitly-typed scheduled date, not 'today' (regression test: AddTaskModal preview previously showed 'Due today' for any default-resolved due date)", () => {
+    const preview = resolveTaskPreview({
+      // e.g. typing "sch tomorrow" on 2026-06-14, with no explicit due: token.
+      parsed: parsed({ scheduled: "2026-06-15" }),
+      defaultProjectName: "General",
+      globalDefaults: { tags: [], due: "next_day" },
+      priorities: PRIORITIES,
+      statuses: STATUSES,
+      now: NOW,
+    });
+
+    expect(preview.scheduled).toBe("2026-06-15");
+    expect(preview.due).toBe("2026-06-16");
   });
 
   test("an explicit due:/sch: quick-add token overrides the relative-date default", () => {

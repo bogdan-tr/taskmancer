@@ -4,10 +4,15 @@ import {
   hexToOklch,
   isHexColor,
   isLightColor,
+  legibleInkColor,
   neonCardColor,
+  NEON_CARD_CHROMA_BOOST,
+  NEON_CARD_LIGHTNESS,
   PRESET_COLOR_NAMES,
   PRESET_COLORS,
   relativeLuminance,
+  WEEK_BAR_CHROMA_BOOST,
+  WEEK_BAR_LIGHTNESS,
 } from "./colorPresets";
 
 describe("isHexColor", () => {
@@ -164,5 +169,41 @@ describe("neonCardColor", () => {
     const result = neonCardColor("#3b82f6", 0.85, 100);
     const chroma = Number(/oklch\([\d.]+% ([\d.]+) /.exec(result)?.[1]);
     expect(chroma).toBeLessThanOrEqual(0.4);
+  });
+});
+
+describe("legibleInkColor", () => {
+  test("returns light ink for the default project color at the default Kanban card lightness", () => {
+    // Regression test: an earlier version of this function picked purely
+    // off the OKLCH lightness channel (>= 0.45 => dark ink) and got this
+    // exact, very common case wrong — vivid blue at 50% lightness has a
+    // WCAG luminance of ~0.11 (far darker than 50% suggests), so light ink
+    // has much better contrast (~5.8:1 vs ~2.8:1), not dark.
+    const background = neonCardColor("#3b82f6", NEON_CARD_LIGHTNESS, NEON_CARD_CHROMA_BOOST);
+    const { l } = hexToOklch(cssColorToHex(legibleInkColor(background)));
+    expect(l).toBeGreaterThan(0.5);
+  });
+
+  test("returns light ink for the default project color at the default week-bar lightness", () => {
+    const background = neonCardColor("#3b82f6", WEEK_BAR_LIGHTNESS, WEEK_BAR_CHROMA_BOOST);
+    const { l } = hexToOklch(cssColorToHex(legibleInkColor(background)));
+    expect(l).toBeGreaterThan(0.5);
+  });
+
+  test("returns dark ink for a bright, low-chroma background", () => {
+    const background = "oklch(95% 0.02 90)";
+    const { l } = hexToOklch(cssColorToHex(legibleInkColor(background)));
+    expect(l).toBeLessThan(0.5);
+  });
+
+  test("returns light ink for a near-black background", () => {
+    const background = "oklch(5% 0.02 250)";
+    const { l } = hexToOklch(cssColorToHex(legibleInkColor(background)));
+    expect(l).toBeGreaterThan(0.5);
+  });
+
+  test("accepts a hex background directly, not just oklch()", () => {
+    const { l } = hexToOklch(cssColorToHex(legibleInkColor("#ffffff")));
+    expect(l).toBeLessThan(0.5);
   });
 });

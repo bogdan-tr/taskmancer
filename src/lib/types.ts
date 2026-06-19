@@ -30,6 +30,10 @@ export interface ProjectBoard {
   statuses: string[];
   default_status?: string;
   show_previous_weeks?: boolean;
+  /** Overrides `Settings.card_lightness` for this project's Kanban cards. `undefined` inherits the global default. */
+  card_lightness?: number;
+  /** Overrides `Settings.bar_lightness` for this project's week/calendar-view bars. `undefined` inherits the global default. */
+  bar_lightness?: number;
 }
 
 /**
@@ -121,6 +125,10 @@ export interface Settings {
   default_project: string;
   /** Global default for whether Week view shows a "previous weeks" column. See `ProjectBoard.show_previous_weeks`. */
   show_previous_weeks_column: boolean;
+  /** Global OKLCH lightness for "color code" mode's Kanban card background. See `ProjectBoard.card_lightness`. */
+  card_lightness: number;
+  /** Global OKLCH lightness for "color code" mode's week/calendar-view bar background. See `ProjectBoard.bar_lightness`. */
+  bar_lightness: number;
 }
 
 /**
