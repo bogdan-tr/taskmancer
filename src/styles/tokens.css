@@ -23,6 +23,13 @@
   --color-border: oklch(89% 0.012 75);
   --color-border-strong: oklch(80% 0.014 75);
 
+  /* Base background for done/cancelled task cards and bars — deliberately
+     a near-neutral gray, clearly darker than --color-surface-raised/
+     --color-canvas, so a small percentage of the status color mixed into it
+     (see TaskCard.svelte/WeekBarItem.svelte) still reads as "mostly gray
+     with a faint tint," not a normal-looking card. */
+  --color-finished-surface: oklch(80% 0.006 75);
+
   /* Neon accent triad */
   --color-neon-blue: oklch(52% 0.16 235);
   --color-neon-green: oklch(58% 0.14 155);

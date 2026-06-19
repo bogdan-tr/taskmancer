@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   compareByPriorityThenTitle,
   countTasksBeforeWeek,
+  dedupeFinishedTaskBars,
   groupPreviousWeeksBars,
   groupTasksByWeek,
   isTaskFinished,
@@ -32,7 +33,7 @@ function makeTask(overrides: Partial<Task> & { id: string }): Task {
 
 describe("groupTasksByWeek", () => {
   it("returns an empty bar list for each day when there are no tasks", () => {
-    const result = groupTasksByWeek([], WEEK_DATES, PRIORITIES);
+    const result = groupTasksByWeek([], WEEK_DATES, PRIORITIES, "done", "cancelled");
 
     expect(result).toHaveLength(7);
     expect(result.every((dayBars) => dayBars.length === 0)).toBe(true);
@@ -41,7 +42,7 @@ describe("groupTasksByWeek", () => {
   it("places a scheduled task on its scheduled day", () => {
     const task = makeTask({ id: "1", scheduled: "2024-01-03" });
 
-    const result = groupTasksByWeek([task], WEEK_DATES, PRIORITIES);
+    const result = groupTasksByWeek([task], WEEK_DATES, PRIORITIES, "done", "cancelled");
 
     expect(result[2]).toEqual([{ task, type: "scheduled", date: "2024-01-03" }]);
     expect(result[0]).toEqual([]);
@@ -51,7 +52,7 @@ describe("groupTasksByWeek", () => {
   it("places a due task on its due day", () => {
     const task = makeTask({ id: "1", due: "2024-01-05" });
 
-    const result = groupTasksByWeek([task], WEEK_DATES, PRIORITIES);
+    const result = groupTasksByWeek([task], WEEK_DATES, PRIORITIES, "done", "cancelled");
 
     expect(result[4]).toEqual([{ task, type: "due", date: "2024-01-05" }]);
   });
@@ -59,7 +60,7 @@ describe("groupTasksByWeek", () => {
   it("creates two separate bars for a task with both scheduled and due dates in the week", () => {
     const task = makeTask({ id: "1", scheduled: "2024-01-02", due: "2024-01-06" });
 
-    const result = groupTasksByWeek([task], WEEK_DATES, PRIORITIES);
+    const result = groupTasksByWeek([task], WEEK_DATES, PRIORITIES, "done", "cancelled");
 
     expect(result[1]).toEqual([{ task, type: "scheduled", date: "2024-01-02" }]);
     expect(result[5]).toEqual([{ task, type: "due", date: "2024-01-06" }]);
@@ -68,7 +69,7 @@ describe("groupTasksByWeek", () => {
   it("lists the scheduled bar before the due bar when both dates fall on the same day", () => {
     const task = makeTask({ id: "1", scheduled: "2024-01-04", due: "2024-01-04" });
 
-    const result = groupTasksByWeek([task], WEEK_DATES, PRIORITIES);
+    const result = groupTasksByWeek([task], WEEK_DATES, PRIORITIES, "done", "cancelled");
 
     expect(result[3]).toEqual([
       { task, type: "scheduled", date: "2024-01-04" },
@@ -79,7 +80,7 @@ describe("groupTasksByWeek", () => {
   it("ignores dates outside the given week", () => {
     const task = makeTask({ id: "1", scheduled: "2024-02-01", due: "2023-12-31" });
 
-    const result = groupTasksByWeek([task], WEEK_DATES, PRIORITIES);
+    const result = groupTasksByWeek([task], WEEK_DATES, PRIORITIES, "done", "cancelled");
 
     expect(result.every((dayBars) => dayBars.length === 0)).toBe(true);
   });
@@ -87,7 +88,7 @@ describe("groupTasksByWeek", () => {
   it("ignores tasks with neither a scheduled nor due date", () => {
     const task = makeTask({ id: "1" });
 
-    const result = groupTasksByWeek([task], WEEK_DATES, PRIORITIES);
+    const result = groupTasksByWeek([task], WEEK_DATES, PRIORITIES, "done", "cancelled");
 
     expect(result.every((dayBars) => dayBars.length === 0)).toBe(true);
   });
@@ -98,7 +99,7 @@ describe("groupTasksByWeek", () => {
     const taskC = makeTask({ id: "c", scheduled: "2024-01-01" });
     const taskD = makeTask({ id: "d", due: "2024-01-01" });
 
-    const result = groupTasksByWeek([taskA, taskB, taskC, taskD], WEEK_DATES, PRIORITIES);
+    const result = groupTasksByWeek([taskA, taskB, taskC, taskD], WEEK_DATES, PRIORITIES, "done", "cancelled");
 
     expect(result[0]).toEqual([
       { task: taskB, type: "scheduled", date: "2024-01-01" },
@@ -113,7 +114,7 @@ describe("groupTasksByWeek", () => {
     const high = makeTask({ id: "high", title: "Apple", priority: "high", scheduled: "2024-01-01" });
     const medium = makeTask({ id: "medium", title: "Mango", priority: "medium", scheduled: "2024-01-01" });
 
-    const result = groupTasksByWeek([low, high, medium], WEEK_DATES, PRIORITIES);
+    const result = groupTasksByWeek([low, high, medium], WEEK_DATES, PRIORITIES, "done", "cancelled");
 
     expect(result[0]).toEqual([
       { task: high, type: "scheduled", date: "2024-01-01" },
@@ -127,7 +128,7 @@ describe("groupTasksByWeek", () => {
     const taskA = makeTask({ id: "a", title: "Apple", priority: "medium", scheduled: "2024-01-01" });
     const taskC = makeTask({ id: "c", title: "Cherry", priority: "medium", scheduled: "2024-01-01" });
 
-    const result = groupTasksByWeek([taskB, taskA, taskC], WEEK_DATES, PRIORITIES);
+    const result = groupTasksByWeek([taskB, taskA, taskC], WEEK_DATES, PRIORITIES, "done", "cancelled");
 
     expect(result[0]).toEqual([
       { task: taskA, type: "scheduled", date: "2024-01-01" },
@@ -142,7 +143,7 @@ describe("groupTasksByWeek", () => {
     const dueLow = makeTask({ id: "d-low", title: "Zebra", priority: "low", due: "2024-01-01" });
     const dueHigh = makeTask({ id: "d-high", title: "Apple", priority: "high", due: "2024-01-01" });
 
-    const result = groupTasksByWeek([scheduledLow, scheduledHigh, dueLow, dueHigh], WEEK_DATES, PRIORITIES);
+    const result = groupTasksByWeek([scheduledLow, scheduledHigh, dueLow, dueHigh], WEEK_DATES, PRIORITIES, "done", "cancelled");
 
     expect(result[0]).toEqual([
       { task: scheduledHigh, type: "scheduled", date: "2024-01-01" },
@@ -156,11 +157,57 @@ describe("groupTasksByWeek", () => {
     const unknown = makeTask({ id: "u", title: "Apple", priority: "urgent", scheduled: "2024-01-01" });
     const low = makeTask({ id: "low", title: "Zebra", priority: "low", scheduled: "2024-01-01" });
 
-    const result = groupTasksByWeek([unknown, low], WEEK_DATES, PRIORITIES);
+    const result = groupTasksByWeek([unknown, low], WEEK_DATES, PRIORITIES, "done", "cancelled");
 
     expect(result[0]).toEqual([
       { task: low, type: "scheduled", date: "2024-01-01" },
       { task: unknown, type: "scheduled", date: "2024-01-01" },
+    ]);
+  });
+
+  it("sinks a done task below unfinished tasks within the same day", () => {
+    const done = makeTask({ id: "done", title: "Aaa", status: "done", priority: "high", scheduled: "2024-01-01" });
+    const active = makeTask({ id: "active", title: "Zzz", status: "do", priority: "low", scheduled: "2024-01-01" });
+
+    const result = groupTasksByWeek([done, active], WEEK_DATES, PRIORITIES, "done", "cancelled");
+
+    expect(result[0]).toEqual([
+      { task: active, type: "scheduled", date: "2024-01-01" },
+      { task: done, type: "scheduled", date: "2024-01-01" },
+    ]);
+  });
+
+  it("sinks a cancelled task below unfinished tasks within the same day", () => {
+    const cancelled = makeTask({ id: "c", status: "cancelled", priority: "high", scheduled: "2024-01-01" });
+    const active = makeTask({ id: "a", status: "do", priority: "low", scheduled: "2024-01-01" });
+
+    const result = groupTasksByWeek([cancelled, active], WEEK_DATES, PRIORITIES, "done", "cancelled");
+
+    expect(result[0]).toEqual([
+      { task: active, type: "scheduled", date: "2024-01-01" },
+      { task: cancelled, type: "scheduled", date: "2024-01-01" },
+    ]);
+  });
+
+  it("preserves relative order among finished bars, and among unfinished bars, when sinking finished ones", () => {
+    const activeHigh = makeTask({ id: "ah", status: "do", priority: "high", scheduled: "2024-01-01" });
+    const activeLow = makeTask({ id: "al", status: "do", priority: "low", scheduled: "2024-01-01" });
+    const doneHigh = makeTask({ id: "dh", status: "done", priority: "high", scheduled: "2024-01-01" });
+    const cancelledLow = makeTask({ id: "cl", status: "cancelled", priority: "low", due: "2024-01-01" });
+
+    const result = groupTasksByWeek(
+      [activeHigh, activeLow, doneHigh, cancelledLow],
+      WEEK_DATES,
+      PRIORITIES,
+      "done",
+      "cancelled",
+    );
+
+    expect(result[0]).toEqual([
+      { task: activeHigh, type: "scheduled", date: "2024-01-01" },
+      { task: activeLow, type: "scheduled", date: "2024-01-01" },
+      { task: doneHigh, type: "scheduled", date: "2024-01-01" },
+      { task: cancelledLow, type: "due", date: "2024-01-01" },
     ]);
   });
 });
@@ -209,6 +256,65 @@ describe("isTaskFinished", () => {
   it("returns false when cancelled status is unset and task status differs from done", () => {
     const task = makeTask({ id: "1", status: "cancelled" });
     expect(isTaskFinished(task, "done", undefined)).toBe(false);
+  });
+});
+
+describe("dedupeFinishedTaskBars", () => {
+  it("removes the scheduled bar for a done task that has both, when keeping due", () => {
+    const task = makeTask({ id: "1", status: "done", scheduled: "2024-01-01", due: "2024-01-03" });
+    const columns = groupTasksByWeek([task], WEEK_DATES, PRIORITIES, "done", "cancelled");
+
+    const result = dedupeFinishedTaskBars(columns, "done", "cancelled", "due");
+
+    expect(result[0]).toEqual([]);
+    expect(result[2]).toEqual([{ task, type: "due", date: "2024-01-03" }]);
+  });
+
+  it("removes the due bar for a cancelled task that has both, when keeping scheduled", () => {
+    const task = makeTask({ id: "1", status: "cancelled", scheduled: "2024-01-01", due: "2024-01-03" });
+    const columns = groupTasksByWeek([task], WEEK_DATES, PRIORITIES, "done", "cancelled");
+
+    const result = dedupeFinishedTaskBars(columns, "done", "cancelled", "scheduled");
+
+    expect(result[0]).toEqual([{ task, type: "scheduled", date: "2024-01-01" }]);
+    expect(result[2]).toEqual([]);
+  });
+
+  it("leaves a finished task with only one of the two dates untouched", () => {
+    const task = makeTask({ id: "1", status: "done", scheduled: "2024-01-01" });
+    const columns = groupTasksByWeek([task], WEEK_DATES, PRIORITIES, "done", "cancelled");
+
+    const result = dedupeFinishedTaskBars(columns, "done", "cancelled", "due");
+
+    expect(result[0]).toEqual([{ task, type: "scheduled", date: "2024-01-01" }]);
+  });
+
+  it("leaves unfinished tasks with both dates untouched", () => {
+    const task = makeTask({ id: "1", status: "do", scheduled: "2024-01-01", due: "2024-01-03" });
+    const columns = groupTasksByWeek([task], WEEK_DATES, PRIORITIES, "done", "cancelled");
+
+    const result = dedupeFinishedTaskBars(columns, "done", "cancelled", "due");
+
+    expect(result[0]).toEqual([{ task, type: "scheduled", date: "2024-01-01" }]);
+    expect(result[2]).toEqual([{ task, type: "due", date: "2024-01-03" }]);
+  });
+
+  it("removes one bar even when both scheduled and due fall on the same day", () => {
+    const task = makeTask({ id: "1", status: "done", scheduled: "2024-01-04", due: "2024-01-04" });
+    const columns = groupTasksByWeek([task], WEEK_DATES, PRIORITIES, "done", "cancelled");
+
+    const result = dedupeFinishedTaskBars(columns, "done", "cancelled", "due");
+
+    expect(result[3]).toEqual([{ task, type: "due", date: "2024-01-04" }]);
+  });
+
+  it("does not affect a finished task whose other date falls outside the visible week", () => {
+    const task = makeTask({ id: "1", status: "done", scheduled: "2024-01-01", due: "2024-02-01" });
+    const columns = groupTasksByWeek([task], WEEK_DATES, PRIORITIES, "done", "cancelled");
+
+    const result = dedupeFinishedTaskBars(columns, "done", "cancelled", "due");
+
+    expect(result[0]).toEqual([{ task, type: "scheduled", date: "2024-01-01" }]);
   });
 });
 

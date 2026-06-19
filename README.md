@@ -40,9 +40,11 @@ task entry, and (eventually) time tracking and analytics — built with
   column is hidden. See [Week view](#week-view) for details.
 - **Compact task cards** — the title sits on one line, with a wrapping row
   of chips below it (priority badge, project, tags, due date) that only
-  grows onto extra lines when needed. Done tasks show a strikethrough title
-  and a tint toward the done status's color; cancelled tasks get the same
-  tint plus an "×" overlay — on both Kanban cards and week-view bars.
+  grows onto extra lines when needed. Done tasks show a strikethrough title,
+  a checkmark, and a muted gray background with a faint tint of the done
+  status's color; cancelled tasks get the same muted background plus an "×"
+  — on both Kanban cards and week-view bars. In the week view, finished
+  tasks sink to the bottom of their day so active tasks stay up top.
 - **Projects** as first-class entities: a collapsible sidebar lists every
   project (with its own color), and each project has its own filtered board.
 - **Natural-language quick add** (`Ctrl+T` or the `+` button) — recognizes
@@ -218,10 +220,15 @@ and both dates) and an **Edit** button that opens the full task editor; close
 the popover by clicking elsewhere, pressing Escape, or its "×" button.
 
 An optional leading **"Previous"** column lists unfinished tasks scheduled or
-due before the visible week (read-only, not draggable). Toggle it from
-Settings → Display ("Week view" section) for a global default, or override it
-per-project from that project's settings page (Use global default / Always
-show / Always hide).
+due before the visible week (read-only, not draggable), and only appears when
+there's actually something to show. Toggle it from Settings → Display ("Week
+view" section) for a global default, or override it per-project from that
+project's settings page (Use global default / Always show / Always hide).
+
+A finished (done/cancelled) task with both a scheduled and due date in the
+visible week normally gets two bars, one per date. Turn on "Deduplicate
+completed/cancelled tasks" (Settings → Display) to keep only one — pick
+whether the due-date or scheduled-date bar wins when both exist.
 
 ### Keyboard shortcuts
 
@@ -247,6 +254,7 @@ Also on the **Settings** page, under "Display":
 | Card color mode | Project tag / Color code | "Project tag" shows a colored project chip on each card (default). "Color code" hides the chip and tints the whole card/bar in the project's color instead, at a fixed lightness chosen for readable text regardless of the source color. |
 | Due-date glow | on/off | Adds a soft red halo around cards/bars that are overdue or due today. |
 | Natural language due dates | on/off | Shows due dates as relative phrases ("due this Wednesday", "due next Saturday") instead of `due YYYY-MM-DD`, falling back to the absolute date outside a ~2-week window. |
+| Deduplicate completed/cancelled tasks | on/off, + keep due/scheduled | In the Week view, keeps only one bar (instead of two) for a finished task that has both a scheduled and due date in the visible week. |
 
 All settings above apply instantly and are saved in `localStorage`. The
 "Previous" week-view column toggle (see [Week view](#week-view)) is the one

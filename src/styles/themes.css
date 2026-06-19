@@ -21,6 +21,7 @@
 
   --color-border: oklch(32% 0.02 260);
   --color-border-strong: oklch(42% 0.03 260);
+  --color-finished-surface: oklch(19% 0.012 260);
 
   --color-neon-blue: oklch(75% 0.18 235);
   --color-neon-green: oklch(82% 0.2 155);
@@ -61,6 +62,7 @@
 
   --color-border: oklch(34% 0.05 270);
   --color-border-strong: oklch(45% 0.06 270);
+  --color-finished-surface: oklch(17% 0.025 270);
 
   --color-neon-blue: oklch(76% 0.16 245);
   --color-neon-green: oklch(83% 0.19 165);

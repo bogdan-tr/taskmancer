@@ -288,6 +288,68 @@ describe("displaySettings.svelte", () => {
     });
   });
 
+  describe("setDedupeFinishedTasks", () => {
+    it("updates reactive state and storage", async () => {
+      const { displayState, setDedupeFinishedTasks } = await import("./displaySettings.svelte");
+
+      setDedupeFinishedTasks(true);
+
+      expect(displayState.dedupeFinishedTasks).toBe(true);
+      expect(localStorage.getItem("taskmancer:dedupe-finished-tasks")).toBe("true");
+
+      setDedupeFinishedTasks(false);
+
+      expect(displayState.dedupeFinishedTasks).toBe(false);
+      expect(localStorage.getItem("taskmancer:dedupe-finished-tasks")).toBe("false");
+    });
+
+    it("does not throw when storage access fails", async () => {
+      vi.stubGlobal("localStorage", {
+        getItem: vi.fn(() => {
+          throw new Error("storage disabled");
+        }),
+        setItem: vi.fn(() => {
+          throw new Error("storage disabled");
+        }),
+      });
+      const { displayState, setDedupeFinishedTasks } = await import("./displaySettings.svelte");
+
+      expect(() => setDedupeFinishedTasks(true)).not.toThrow();
+      expect(displayState.dedupeFinishedTasks).toBe(true);
+    });
+  });
+
+  describe("setDedupeFinishedTasksKeep", () => {
+    it("updates reactive state and storage", async () => {
+      const { displayState, setDedupeFinishedTasksKeep } = await import("./displaySettings.svelte");
+
+      setDedupeFinishedTasksKeep("scheduled");
+
+      expect(displayState.dedupeFinishedTasksKeep).toBe("scheduled");
+      expect(localStorage.getItem("taskmancer:dedupe-finished-tasks-keep")).toBe("scheduled");
+
+      setDedupeFinishedTasksKeep("due");
+
+      expect(displayState.dedupeFinishedTasksKeep).toBe("due");
+      expect(localStorage.getItem("taskmancer:dedupe-finished-tasks-keep")).toBe("due");
+    });
+
+    it("does not throw when storage access fails", async () => {
+      vi.stubGlobal("localStorage", {
+        getItem: vi.fn(() => {
+          throw new Error("storage disabled");
+        }),
+        setItem: vi.fn(() => {
+          throw new Error("storage disabled");
+        }),
+      });
+      const { displayState, setDedupeFinishedTasksKeep } = await import("./displaySettings.svelte");
+
+      expect(() => setDedupeFinishedTasksKeep("scheduled")).not.toThrow();
+      expect(displayState.dedupeFinishedTasksKeep).toBe("scheduled");
+    });
+  });
+
   describe("initDisplay", () => {
     it("restores previously persisted values", async () => {
       store[FONT_SCALE_KEY] = "120";
@@ -297,6 +359,8 @@ describe("displaySettings.svelte", () => {
       store[SHOW_PRIORITY_CHIP_KEY] = "false";
       store[WEEK_STARTS_ON_KEY] = "sunday";
       store["taskmancer:due-date-glow"] = "true";
+      store["taskmancer:dedupe-finished-tasks"] = "true";
+      store["taskmancer:dedupe-finished-tasks-keep"] = "scheduled";
       const { displayState, initDisplay } = await import("./displaySettings.svelte");
 
       initDisplay();
@@ -308,6 +372,8 @@ describe("displaySettings.svelte", () => {
       expect(displayState.showPriorityChip).toBe(false);
       expect(displayState.weekStartsOn).toBe("sunday");
       expect(displayState.dueDateGlow).toBe(true);
+      expect(displayState.dedupeFinishedTasks).toBe(true);
+      expect(displayState.dedupeFinishedTasksKeep).toBe("scheduled");
       expect(document.documentElement.style.fontSize).toBe("120%");
       expect(setPropertyMock).toHaveBeenCalledWith("--column-width", "320px");
       expect(setPropertyMock).toHaveBeenCalledWith("--board-width", "1500px");
@@ -324,6 +390,8 @@ describe("displaySettings.svelte", () => {
         DEFAULT_SHOW_PRIORITY_CHIP,
         DEFAULT_WEEK_STARTS_ON,
         DEFAULT_DUE_DATE_GLOW,
+        DEFAULT_DEDUPE_FINISHED_TASKS,
+        DEFAULT_DEDUPE_FINISHED_TASKS_KEEP,
       } = await import("./displaySettings.svelte");
 
       initDisplay();
@@ -335,6 +403,8 @@ describe("displaySettings.svelte", () => {
       expect(displayState.showPriorityChip).toBe(DEFAULT_SHOW_PRIORITY_CHIP);
       expect(displayState.weekStartsOn).toBe(DEFAULT_WEEK_STARTS_ON);
       expect(displayState.dueDateGlow).toBe(DEFAULT_DUE_DATE_GLOW);
+      expect(displayState.dedupeFinishedTasks).toBe(DEFAULT_DEDUPE_FINISHED_TASKS);
+      expect(displayState.dedupeFinishedTasksKeep).toBe(DEFAULT_DEDUPE_FINISHED_TASKS_KEEP);
     });
 
     it("falls back to the default week start when storage holds an unrecognized value", async () => {

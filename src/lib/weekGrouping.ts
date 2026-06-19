@@ -24,18 +24,33 @@ export function compareByPriorityThenTitle(a: Task, b: Task, priorities: Priorit
   return a.title.localeCompare(b.title, undefined, { sensitivity: "base" });
 }
 
+/** Returns `true` if `task`'s status is the configured done status or (if set) the cancelled status. */
+export function isTaskFinished(
+  task: Task,
+  doneStatus: string,
+  cancelledStatus: string | undefined,
+): boolean {
+  return task.status === doneStatus || (cancelledStatus !== undefined && task.status === cancelledStatus);
+}
+
 /**
  * Groups `tasks` into per-day bars for each ISO date in `weekDates`.
  *
  * A task appears once per matching `scheduled`/`due` date within the week —
  * a task with both falling in the week gets one bar for each. Within a day,
  * scheduled bars are listed before due bars, each sorted by priority (highest
- * first) then alphabetically by title (see `compareByPriorityThenTitle`).
+ * first) then alphabetically by title (see `compareByPriorityThenTitle`) —
+ * except that finished tasks (see `isTaskFinished`) sink to the very bottom
+ * of the day's list (a stable sort, so their relative order among
+ * themselves, and among the unfinished bars above them, is unchanged), so a
+ * day's column stays focused on what's still actionable.
  */
 export function groupTasksByWeek(
   tasks: Task[],
   weekDates: string[],
   priorities: PriorityLevel[],
+  doneStatus: string,
+  cancelledStatus: string | undefined,
 ): WeekBar[][] {
   return weekDates.map((date) => {
     const scheduledBars: WeekBar[] = tasks
@@ -46,17 +61,48 @@ export function groupTasksByWeek(
       .filter((task) => task.due === date)
       .sort((a, b) => compareByPriorityThenTitle(a, b, priorities))
       .map((task) => ({ task, type: "due", date }));
-    return [...scheduledBars, ...dueBars];
+    return [...scheduledBars, ...dueBars].sort((a, b) => {
+      const aFinished = isTaskFinished(a.task, doneStatus, cancelledStatus) ? 1 : 0;
+      const bFinished = isTaskFinished(b.task, doneStatus, cancelledStatus) ? 1 : 0;
+      return aFinished - bFinished;
+    });
   });
 }
 
-/** Returns `true` if `task`'s status is the configured done status or (if set) the cancelled status. */
-export function isTaskFinished(
-  task: Task,
+/**
+ * Removes one bar for any finished task (see `isTaskFinished`) that has both
+ * a scheduled bar and a due bar somewhere across `weekColumns` — keeping
+ * only the bar matching `keep` and dropping the other, so a finished task
+ * with both dates in the visible week doesn't show up twice. A task with
+ * only one of the two dates (or one outside the visible week, so only one
+ * bar was ever created) is untouched, since there's nothing to deduplicate.
+ * Operates across the whole week (not per-day) because the two bars for the
+ * same task can land on different days.
+ */
+export function dedupeFinishedTaskBars(
+  weekColumns: WeekBar[][],
   doneStatus: string,
   cancelledStatus: string | undefined,
-): boolean {
-  return task.status === doneStatus || (cancelledStatus !== undefined && task.status === cancelledStatus);
+  keep: WeekBarType,
+): WeekBar[][] {
+  const finishedTaskTypes = new Map<string, Set<WeekBarType>>();
+  for (const dayBars of weekColumns) {
+    for (const bar of dayBars) {
+      if (!isTaskFinished(bar.task, doneStatus, cancelledStatus)) continue;
+      const types = finishedTaskTypes.get(bar.task.id) ?? new Set<WeekBarType>();
+      types.add(bar.type);
+      finishedTaskTypes.set(bar.task.id, types);
+    }
+  }
+
+  const removeType: WeekBarType = keep === "due" ? "scheduled" : "due";
+  return weekColumns.map((dayBars) =>
+    dayBars.filter((bar) => {
+      const types = finishedTaskTypes.get(bar.task.id);
+      const hasBothTypes = types !== undefined && types.has("scheduled") && types.has("due");
+      return !(hasBothTypes && bar.type === removeType);
+    }),
+  );
 }
 
 /**

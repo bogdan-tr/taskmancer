@@ -7,7 +7,13 @@
   import { FALLBACK_STATUSES, sortedStatuses } from "$lib/statuses.svelte";
   import type { Task } from "$lib/types";
   import { addDays, addWeeks, formatDateISO, startOfWeek, weekDates } from "$lib/weekRange";
-  import { countTasksBeforeWeek, groupPreviousWeeksBars, groupTasksByWeek, type WeekBar } from "$lib/weekGrouping";
+  import {
+    countTasksBeforeWeek,
+    dedupeFinishedTaskBars,
+    groupPreviousWeeksBars,
+    groupTasksByWeek,
+    type WeekBar,
+  } from "$lib/weekGrouping";
   import TaskEditDialog from "./TaskEditDialog.svelte";
   import WeekBarItem from "./WeekBarItem.svelte";
 
@@ -64,7 +70,11 @@
   let weekColumns: DraggableWeekBar[][] = $state([]);
 
   $effect(() => {
-    weekColumns = groupTasksByWeek(tasks, dateStrings, priorities).map((dayBars) => dayBars.map(toDraggable));
+    const grouped = groupTasksByWeek(tasks, dateStrings, priorities, doneStatus, cancelledStatus);
+    const deduped = displayState.dedupeFinishedTasks
+      ? dedupeFinishedTaskBars(grouped, doneStatus, cancelledStatus, displayState.dedupeFinishedTasksKeep)
+      : grouped;
+    weekColumns = deduped.map((dayBars) => dayBars.map(toDraggable));
   });
 
   /** Unfinished tasks scheduled/due before this week, for the optional leading column. Not draggable. */
@@ -182,12 +192,26 @@
     }
   }
 
+  /**
+   * The popover renders with `position: fixed` at viewport-clamped pixel
+   * coordinates (see `WeekBarItem.svelte`), so it always stays fully
+   * on-screen — but that also means it doesn't scroll along with its bar.
+   * Rather than let it visually detach and float over unrelated content
+   * during a scroll, just close it; reopening re-measures from the bar's
+   * new position.
+   */
+  function handleWindowScroll() {
+    if (openBarKey !== undefined) closePopover();
+  }
+
   onMount(() => {
     window.addEventListener("click", handleWindowClick);
     window.addEventListener("keydown", handleWindowKeydown);
+    window.addEventListener("scroll", handleWindowScroll, { passive: true });
     return () => {
       window.removeEventListener("click", handleWindowClick);
       window.removeEventListener("keydown", handleWindowKeydown);
+      window.removeEventListener("scroll", handleWindowScroll);
     };
   });
 </script>
@@ -238,7 +262,7 @@
   </div>
 
   <div class="week-grid">
-    {#if showPreviousWeeksColumn}
+    {#if showPreviousWeeksColumn && previousBars.length > 0}
       <div class="day-column previous-column">
         <div class="day-header">
           <span class="day-name">Previous</span>

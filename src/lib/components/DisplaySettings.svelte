@@ -13,6 +13,8 @@
     setBoardWidth,
     setCardColorMode,
     setColumnWidth,
+    setDedupeFinishedTasks,
+    setDedupeFinishedTasksKeep,
     setDueDateGlow,
     setFontScale,
     setNlDueDates,
@@ -20,6 +22,7 @@
     setShowPriorityGroups,
     setWeekStartsOn,
     type CardColorMode,
+    type DedupeFinishedTasksKeep,
     type WeekStartsOn,
   } from "$lib/displaySettings.svelte";
 
@@ -57,6 +60,14 @@
 
   function handleDueDateGlowChange(event: Event) {
     setDueDateGlow((event.currentTarget as HTMLInputElement).checked);
+  }
+
+  function handleDedupeFinishedTasksChange(event: Event) {
+    setDedupeFinishedTasks((event.currentTarget as HTMLInputElement).checked);
+  }
+
+  function handleDedupeFinishedTasksKeepChange(event: Event) {
+    setDedupeFinishedTasksKeep((event.currentTarget as HTMLSelectElement).value as DedupeFinishedTasksKeep);
   }
 </script>
 
@@ -210,6 +221,37 @@
       </span>
     </span>
   </label>
+
+  <label class="toggle-row">
+    <input
+      type="checkbox"
+      checked={displayState.dedupeFinishedTasks}
+      onchange={handleDedupeFinishedTasksChange}
+    />
+    <span class="toggle-text">
+      <span class="toggle-label">Deduplicate completed/cancelled tasks in Week view</span>
+      <span class="toggle-description">
+        A finished task with both a scheduled and due date in the visible week normally shows one
+        bar for each. When on, only one bar is kept.
+      </span>
+    </span>
+  </label>
+
+  {#if displayState.dedupeFinishedTasks}
+    <div class="control-row">
+      <div class="control-label">
+        <label for="dedupe-keep-select">Keep the</label>
+      </div>
+      <select
+        id="dedupe-keep-select"
+        value={displayState.dedupeFinishedTasksKeep}
+        onchange={handleDedupeFinishedTasksKeepChange}
+      >
+        <option value="due">Due date</option>
+        <option value="scheduled">Scheduled date</option>
+      </select>
+    </div>
+  {/if}
 </section>
 
 <style>

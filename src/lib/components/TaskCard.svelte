@@ -328,10 +328,23 @@
     >
       {task.title}
     </div>
-    {#if isCancelled}
+    {#if isDone}
+      <span class="task-done-check" aria-hidden="true">
+        <svg viewBox="0 0 16 16" width="30" height="30">
+          <path
+            d="M3 8.5l3.5 3.5L13 4.5"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.25"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </svg>
+      </span>
+    {:else if isCancelled}
       <span class="task-cancelled-x" aria-hidden="true">
         <svg viewBox="0 0 16 16" width="28" height="28">
-          <path d="M3 3l10 10M13 3L3 13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+          <path d="M3 3l10 10M13 3L3 13" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" />
         </svg>
       </span>
     {/if}
@@ -425,31 +438,19 @@
       0 0 22px 8px oklch(55% 0.22 18 / 0.3);
   }
 
-  /* Done: tint toward the configured done status's color and strike
-     through the title — a glance should make "this is finished"
-     unmistakable. Cancelled: tint toward the cancelled status's color and
-     overlay an X (see .task-cancelled-x) instead of a strikethrough, so the
-     two finished states read as visually distinct from each other, not
-     just both "muted." Layered on top of color-coded mode's background
-     (not mutually exclusive with it) by mixing rather than replacing. */
-  .task.task-done,
-  .task.task-cancelled {
-    background: color-mix(in oklch, var(--task-status-color) 14%, var(--task-color-code-bg, var(--color-surface-raised)));
-    opacity: 0.8;
-  }
-
   .task.task-done .task-title {
     text-decoration: line-through;
     text-decoration-thickness: 1.5px;
   }
 
+  .task-done-check,
   .task-cancelled-x {
     position: absolute;
     top: 50%;
     left: 50%;
     transform: translate(-50%, -50%);
     color: var(--task-status-color);
-    opacity: 0.55;
+    opacity: 0.85;
     pointer-events: none;
   }
 
@@ -488,6 +489,21 @@
     background: var(--color-surface-raised);
     border-color: var(--color-border-strong);
     color: var(--color-ink);
+  }
+
+  /* Done/cancelled: a small tint of the status color mixed into
+     --color-finished-surface (a dedicated near-neutral gray, clearly darker
+     than any normal card background in every theme — see tokens.css) so the
+     card reads as "mostly gray with a faint hint of its original color,"
+     not a normal-looking card. Comes after `.task.color-coded` in source
+     order (same specificity — last one wins) so a finished task always
+     looks finished, even when color-code mode would otherwise paint it a
+     vivid project color. No opacity reduction on the whole card — that
+     would equally dim the check/x overlay below, which should stand out,
+     not blend in. */
+  .task.task-done,
+  .task.task-cancelled {
+    background: color-mix(in oklch, var(--task-status-color) 16%, var(--color-finished-surface));
   }
 
   /* Drag placeholder clone (see svelte-dnd-action SHADOW_ELEMENT_ATTRIBUTE_NAME):
@@ -691,12 +707,20 @@
 
   .edit-actions {
     display: flex;
+    flex-wrap: wrap;
     gap: var(--space-2xs);
     margin-top: var(--space-3xs);
   }
 
   .edit-actions button {
-    flex: 1;
+    /* `flex-wrap` alone isn't enough — flex items default to `min-width:
+       auto`, which only stops shrinking once a button's own content can't
+       get any narrower, by which point all three are squeezed onto one
+       row and the last one (Delete) overflows past the card's edge on a
+       narrow column instead of wrapping. An explicit min-width gives the
+       row a real point at which it must wrap a button onto its own line. */
+    flex: 1 1 3.5rem;
+    min-width: 3.5rem;
     padding: var(--space-2xs) var(--space-xs);
     border-radius: var(--radius-sm);
     border: 1px solid transparent;

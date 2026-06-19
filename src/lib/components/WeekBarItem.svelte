@@ -45,6 +45,47 @@
   let done = $derived(task.status === doneStatus);
   let cancelled = $derived(!done && cancelledStatus !== undefined && task.status === cancelledStatus);
 
+  const VIEWPORT_MARGIN_PX = 8;
+  const POPOVER_GAP_PX = 6;
+
+  let summaryEl: HTMLDivElement | undefined = $state(undefined);
+  let popoverEl: HTMLDivElement | undefined = $state(undefined);
+  /** `position: fixed` pixel coordinates for the popover, computed below — `undefined` until measured once. */
+  let popoverPosition: { top: number; left: number } | undefined = $state(undefined);
+
+  /**
+   * A first attempt at keeping the popover on-screen flipped it between two
+   * fixed CSS positions (`top` below the bar, or `bottom` above it) based on
+   * a "does it fit" check — but that's still just a heuristic, and any case
+   * where it guessed wrong (or where *neither* side fully fit) left the
+   * popover overflowing the window exactly like before, still requiring a
+   * scroll. This instead computes exact `position: fixed` pixel coordinates
+   * every time it opens, then *clamps* them into the visible viewport as a
+   * final, unconditional step — so even in a worst case (a very short
+   * window, a very tall popover) it's pinned fully on-screen, just possibly
+   * overlapping the bar, rather than ever extending past the window edge.
+   */
+  $effect(() => {
+    if (!isOpen || !summaryEl || !popoverEl) {
+      popoverPosition = undefined;
+      return;
+    }
+    const summaryRect = summaryEl.getBoundingClientRect();
+    const popoverRect = popoverEl.getBoundingClientRect();
+
+    let top = summaryRect.bottom + POPOVER_GAP_PX;
+    if (top + popoverRect.height > window.innerHeight - VIEWPORT_MARGIN_PX) {
+      const above = summaryRect.top - POPOVER_GAP_PX - popoverRect.height;
+      if (above >= VIEWPORT_MARGIN_PX) top = above;
+    }
+    top = Math.max(VIEWPORT_MARGIN_PX, Math.min(top, window.innerHeight - popoverRect.height - VIEWPORT_MARGIN_PX));
+
+    let left = rightAlignPopover ? summaryRect.right - popoverRect.width : summaryRect.left;
+    left = Math.max(VIEWPORT_MARGIN_PX, Math.min(left, window.innerWidth - popoverRect.width - VIEWPORT_MARGIN_PX));
+
+    popoverPosition = { top, left };
+  });
+
   /**
    * `.bar-summary` must not be a real `<button>`: `svelte-dnd-action` skips
    * drag-initiation for any mousedown target with `.value !== undefined`
@@ -78,6 +119,7 @@
     aria-expanded={isOpen}
     onclick={onToggle}
     onkeydown={handleSummaryKeydown}
+    bind:this={summaryEl}
   >
     <span class="bar-icon" aria-hidden="true">
       {#if weekBar.type === "scheduled"}
@@ -103,7 +145,13 @@
     </span>
     <span class="bar-title">{task.title}</span>
     <span class="bar-status-box" aria-hidden="true"></span>
-    {#if cancelled}
+    {#if done}
+      <span class="bar-done-check" aria-hidden="true">
+        <svg viewBox="0 0 16 16" width="20" height="20">
+          <path d="M3 8.5l3.5 3.5L13 4.5" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      </span>
+    {:else if cancelled}
       <span class="bar-cancelled-x" aria-hidden="true">
         <svg viewBox="0 0 16 16" width="22" height="22">
           <path d="M3 3l10 10M13 3L3 13" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" />
@@ -112,7 +160,14 @@
     {/if}
   </div>
   {#if isOpen}
-    <div class="bar-popover" class:popover-right={rightAlignPopover}>
+    <div
+      class="bar-popover"
+      class:popover-right={rightAlignPopover}
+      style={popoverPosition
+        ? `position: fixed; top: ${popoverPosition.top}px; left: ${popoverPosition.left}px;`
+        : ""}
+      bind:this={popoverEl}
+    >
       <div class="popover-header">
         <p class="popover-title">{task.title}</p>
         <button type="button" class="popover-close" onclick={onClosePopover} aria-label="Close">
@@ -224,15 +279,19 @@
     overflow-wrap: break-word;
   }
 
-  /* Done: tint toward the configured done status's color and strike through
-     the title — a glance should make "this is finished" unmistakable.
-     Cancelled: tint toward the cancelled status's color and overlay an X
-     (see .bar-cancelled-x) instead of a strikethrough, so the two finished
-     states read as visually distinct from each other, not just both
-     "muted." */
-  .bar.bar-done .bar-summary {
-    background: color-mix(in oklch, var(--bar-status-color) 16%, var(--color-surface));
-    opacity: 0.75;
+  /* Done/cancelled: a small tint of the status color mixed into
+     --color-finished-surface (a dedicated near-neutral gray, clearly darker
+     than the bar's normal --color-surface in every theme — see tokens.css)
+     so the bar reads as "mostly gray with a faint hint," not a normal bar.
+     Comes after `.bar.color-coded` in source order (same specificity — last
+     one wins) so a finished bar always looks finished, even in "color code"
+     mode. Plus a strikethrough title for done, an "x" for cancelled, so the
+     two finished states stay visually distinct from each other. No opacity
+     reduction on the whole bar — that would equally dim the check/x icon,
+     which should stand out, not blend in. */
+  .bar.bar-done .bar-summary,
+  .bar.bar-cancelled .bar-summary {
+    background: color-mix(in oklch, var(--bar-status-color) 16%, var(--color-finished-surface));
   }
 
   .bar.bar-done .bar-title {
@@ -240,11 +299,7 @@
     text-decoration-thickness: 1.5px;
   }
 
-  .bar.bar-cancelled .bar-summary {
-    background: color-mix(in oklch, var(--bar-status-color) 16%, var(--color-surface));
-    opacity: 0.75;
-  }
-
+  .bar-done-check,
   .bar-cancelled-x {
     display: flex;
     align-items: center;
@@ -261,6 +316,13 @@
     background: var(--bar-status-color, var(--color-border-strong));
   }
 
+  /* `position: absolute` here is only the pre-measurement fallback, used
+     for the one frame (if any) before the script's `$effect` computes exact
+     `position: fixed` pixel coordinates and overrides `position`/`top`/
+     `left` via the inline `style` attribute (which always wins over a
+     stylesheet rule for the same property, regardless of specificity). The
+     fixed, viewport-clamped coordinates are what actually keep the popover
+     on-screen — see `WeekBarItem.svelte`'s script. */
   .bar-popover {
     position: absolute;
     top: calc(100% + var(--space-3xs));

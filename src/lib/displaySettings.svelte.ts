@@ -7,6 +7,8 @@ const WEEK_STARTS_ON_KEY = "taskmancer:week-starts-on";
 const NL_DUE_DATES_KEY = "taskmancer:nl-due-dates";
 const CARD_COLOR_MODE_KEY = "taskmancer:card-color-mode";
 const DUE_DATE_GLOW_KEY = "taskmancer:due-date-glow";
+const DEDUPE_FINISHED_TASKS_KEY = "taskmancer:dedupe-finished-tasks";
+const DEDUPE_FINISHED_TASKS_KEEP_KEY = "taskmancer:dedupe-finished-tasks-keep";
 
 export const MIN_FONT_SCALE = 80;
 export const MAX_FONT_SCALE = 140;
@@ -36,6 +38,11 @@ export const DEFAULT_CARD_COLOR_MODE: CardColorMode = "project_tag";
 
 export const DEFAULT_DUE_DATE_GLOW = false;
 
+/** Which bar to keep, for a finished task with both a scheduled and due date in the visible week, when deduplicating. */
+export type DedupeFinishedTasksKeep = "scheduled" | "due";
+export const DEFAULT_DEDUPE_FINISHED_TASKS = false;
+export const DEFAULT_DEDUPE_FINISHED_TASKS_KEEP: DedupeFinishedTasksKeep = "due";
+
 /**
  * Boxed in an object because Svelte 5 forbids exporting a reassigned `$state`
  * binding directly from a module — only its properties may be mutated.
@@ -50,6 +57,8 @@ export const displayState = $state<{
   nlDueDates: boolean;
   cardColorMode: CardColorMode;
   dueDateGlow: boolean;
+  dedupeFinishedTasks: boolean;
+  dedupeFinishedTasksKeep: DedupeFinishedTasksKeep;
 }>({
   fontScale: DEFAULT_FONT_SCALE,
   columnWidth: DEFAULT_COLUMN_WIDTH,
@@ -60,6 +69,8 @@ export const displayState = $state<{
   nlDueDates: DEFAULT_NL_DUE_DATES,
   cardColorMode: DEFAULT_CARD_COLOR_MODE,
   dueDateGlow: DEFAULT_DUE_DATE_GLOW,
+  dedupeFinishedTasks: DEFAULT_DEDUPE_FINISHED_TASKS,
+  dedupeFinishedTasksKeep: DEFAULT_DEDUPE_FINISHED_TASKS_KEEP,
 });
 
 function clamp(value: number, min: number, max: number): number {
@@ -162,6 +173,26 @@ export function setDueDateGlow(value: boolean): void {
   }
 }
 
+/** Toggles deduplicating a finished task's week-view bars (when it has both a scheduled and due date) and persists it. */
+export function setDedupeFinishedTasks(value: boolean): void {
+  displayState.dedupeFinishedTasks = value;
+  try {
+    localStorage.setItem(DEDUPE_FINISHED_TASKS_KEY, value ? "true" : "false");
+  } catch {
+    // Persistence is best-effort; the choice still applies for this session.
+  }
+}
+
+/** Sets which bar to keep for a deduplicated finished task and persists it. */
+export function setDedupeFinishedTasksKeep(value: DedupeFinishedTasksKeep): void {
+  displayState.dedupeFinishedTasksKeep = value;
+  try {
+    localStorage.setItem(DEDUPE_FINISHED_TASKS_KEEP_KEY, value);
+  } catch {
+    // Persistence is best-effort; the choice still applies for this session.
+  }
+}
+
 /** Parses a persisted numeric setting, falling back to `fallback` when missing, invalid, or out of range. */
 function parseStoredNumber(raw: string | null, min: number, max: number, fallback: number): number {
   if (raw === null) return fallback;
@@ -181,6 +212,8 @@ export function initDisplay(): void {
   let storedNlDueDates: string | null = null;
   let storedCardColorMode: string | null = null;
   let storedDueDateGlow: string | null = null;
+  let storedDedupeFinishedTasks: string | null = null;
+  let storedDedupeFinishedTasksKeep: string | null = null;
   try {
     storedFontScale = localStorage.getItem(FONT_SCALE_KEY);
     storedColumnWidth = localStorage.getItem(COLUMN_WIDTH_KEY);
@@ -191,6 +224,8 @@ export function initDisplay(): void {
     storedNlDueDates = localStorage.getItem(NL_DUE_DATES_KEY);
     storedCardColorMode = localStorage.getItem(CARD_COLOR_MODE_KEY);
     storedDueDateGlow = localStorage.getItem(DUE_DATE_GLOW_KEY);
+    storedDedupeFinishedTasks = localStorage.getItem(DEDUPE_FINISHED_TASKS_KEY);
+    storedDedupeFinishedTasksKeep = localStorage.getItem(DEDUPE_FINISHED_TASKS_KEEP_KEY);
   } catch {
     // Fall back to defaults below.
   }
@@ -208,4 +243,10 @@ export function initDisplay(): void {
   setNlDueDates(storedNlDueDates === "true");
   setCardColorMode(storedCardColorMode === "color_code" ? "color_code" : DEFAULT_CARD_COLOR_MODE);
   setDueDateGlow(storedDueDateGlow === "true");
+  setDedupeFinishedTasks(
+    storedDedupeFinishedTasks === null ? DEFAULT_DEDUPE_FINISHED_TASKS : storedDedupeFinishedTasks === "true",
+  );
+  setDedupeFinishedTasksKeep(
+    storedDedupeFinishedTasksKeep === "scheduled" ? "scheduled" : DEFAULT_DEDUPE_FINISHED_TASKS_KEEP,
+  );
 }
