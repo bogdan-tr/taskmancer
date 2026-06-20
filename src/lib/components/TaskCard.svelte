@@ -31,6 +31,7 @@
   import type { Task } from "$lib/types";
   import Autocomplete from "./Autocomplete.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
+  import DatePickerPopover from "./DatePickerPopover.svelte";
 
   interface Props {
     task: Task;
@@ -342,7 +343,16 @@
       </label>
       <label>
         Due
-        <input type="text" bind:value={draftDue} placeholder="YYYY-MM-DD" />
+        <span class="date-input-row">
+          <input type="text" bind:value={draftDue} placeholder="YYYY-MM-DD" />
+          <DatePickerPopover
+            selected={draftDue || undefined}
+            triggerLabel="Pick due date"
+            clearLabel="Never"
+            onSelect={(iso) => (draftDue = iso)}
+            onClear={() => (draftDue = "")}
+          />
+        </span>
         {#if draftDue}
           {@const dueHint = formatDueDateDisplay(draftDue, new Date(), displayState.nlDueDates)}
           {#if dueHint}
@@ -357,7 +367,16 @@
       </label>
       <label>
         Scheduled
-        <input type="text" bind:value={draftScheduled} placeholder="YYYY-MM-DD" />
+        <span class="date-input-row">
+          <input type="text" bind:value={draftScheduled} placeholder="YYYY-MM-DD" />
+          <DatePickerPopover
+            selected={draftScheduled || undefined}
+            triggerLabel="Pick scheduled date"
+            clearLabel="Clear"
+            onSelect={(iso) => (draftScheduled = iso)}
+            onClear={() => (draftScheduled = "")}
+          />
+        </span>
       </label>
       <label>
         Estimated time
@@ -731,6 +750,17 @@
 
   .field-with-suggestions input {
     width: 100%;
+  }
+
+  .date-input-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3xs);
+  }
+
+  .date-input-row input {
+    flex: 1;
+    min-width: 0;
   }
 
   .estimate-inputs {

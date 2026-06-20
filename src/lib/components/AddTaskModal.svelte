@@ -21,6 +21,7 @@
   import { tagsState } from "$lib/tags.svelte";
   import { resolveTaskPreview } from "$lib/taskPreview";
   import Autocomplete from "./Autocomplete.svelte";
+  import DatePickerPopover from "./DatePickerPopover.svelte";
 
   interface Props {
     open: boolean;
@@ -71,9 +72,47 @@
       ? undefined
       : minutesFromHoursAndMinutes(draftEstimatedHours ?? 0, draftEstimatedMinutes ?? 0),
   );
-  /** `parsed`, with the explicit estimated-time controls overriding the quick-add token once manually set. */
+
+  /**
+   * Calendar-popup overrides for Due/Scheduled. Unlike the estimated-time
+   * boxes above, picking a date here never rewrites the title text — it's a
+   * silent override that wins in the preview, exactly the same precedence
+   * model as the estimated-time boxes (manual wins over the quick-add token
+   * once set), just without a pair of always-visible input boxes to keep in
+   * sync. `draftDueOverride` may also be the `"none"` sentinel (the picker's
+   * "Never" action), mirroring the `due:na`/`due na` quick-add token.
+   */
+  let draftDueOverride: string | undefined = $state(undefined);
+  let dueManuallySet = $state(false);
+  let draftScheduledOverride: string | undefined = $state(undefined);
+  let scheduledManuallySet = $state(false);
+
+  function handleDueSelect(iso: string) {
+    draftDueOverride = iso;
+    dueManuallySet = true;
+  }
+
+  function handleDueNever() {
+    draftDueOverride = "none";
+    dueManuallySet = true;
+  }
+
+  function handleScheduledSelect(iso: string) {
+    draftScheduledOverride = iso;
+    scheduledManuallySet = true;
+  }
+
+  /** Scheduled has no "never" concept — clearing just stops overriding and falls back to the token/default/today resolution chain. */
+  function handleScheduledClear() {
+    draftScheduledOverride = undefined;
+    scheduledManuallySet = false;
+  }
+
+  /** `parsed`, with the explicit estimated-time/due/scheduled controls overriding their quick-add tokens once manually set. */
   let effectiveParsed: ParsedTaskInput = $derived({
     ...parsed,
+    due: dueManuallySet ? draftDueOverride : parsed.due,
+    scheduled: scheduledManuallySet ? draftScheduledOverride : parsed.scheduled,
     estimatedMinutes: estimateManuallySet ? explicitEstimatedMinutes : parsed.estimatedMinutes,
   });
 
@@ -119,6 +158,20 @@
   );
 
   /**
+   * The date each calendar popup highlights as "selected": the manual
+   * override once set, else the fully resolved preview value — never the
+   * raw `parsed.due`/`parsed.scheduled`, which is `undefined` whenever no
+   * quick-add token was typed even if a project/global default applies (the
+   * same `parsed`-vs-`preview` distinction the estimated-time sync effect
+   * below has to get right).
+   */
+  let dueSelectedForPicker = $derived.by(() => {
+    if (dueManuallySet) return draftDueOverride !== "none" ? draftDueOverride : undefined;
+    return preview.due !== "Never" ? preview.due : undefined;
+  });
+  let scheduledSelectedForPicker = $derived(scheduledManuallySet ? draftScheduledOverride : preview.scheduledDate);
+
+  /**
    * Mirrors `preview.estimatedMinutes` (quick-add token, else project
    * default, else global default) into the editable boxes, live, as long as
    * the user hasn't manually overridden them — this is what makes a
@@ -159,6 +212,10 @@
         draftEstimatedHours = undefined;
         draftEstimatedMinutes = undefined;
         estimateManuallySet = false;
+        draftDueOverride = undefined;
+        dueManuallySet = false;
+        draftScheduledOverride = undefined;
+        scheduledManuallySet = false;
         suggestions = [];
         activeToken = undefined;
         dialogEl.showModal();
@@ -401,20 +458,40 @@
       <div class="field-row">
         <dt>Scheduled</dt>
         <span class="syntax-hint">sch &lt;phrase&gt;</span>
-        <dd class:filled={!!preview.scheduled}>{preview.scheduled ?? "—"}</dd>
+        <dd class="date-value" class:filled={!!preview.scheduled}>
+          <span>{preview.scheduled ?? "—"}</span>
+          <DatePickerPopover
+            selected={scheduledSelectedForPicker}
+            triggerLabel="Pick scheduled date"
+            clearLabel="Clear"
+            rightAlign
+            onSelect={handleScheduledSelect}
+            onClear={handleScheduledClear}
+          />
+        </dd>
       </div>
       <div class="field-row">
         <dt>Due</dt>
         <span class="syntax-hint">due &lt;phrase&gt; / due na</span>
-        <dd class:filled={!!preview.due}>
-          {#if preview.due && preview.due !== "Never"}
-            {@const dueDisplay = formatDueDateDisplay(preview.due, new Date(), displayState.nlDueDates)}
-            <span class:due-today={dueDisplay?.variant === "today"} class:due-tomorrow={dueDisplay?.variant === "tomorrow"} class:due-overdue={dueDisplay?.variant === "overdue"}>
-              {dueDisplay?.label ?? preview.due}
-            </span>
-          {:else}
-            {preview.due ?? "—"}
-          {/if}
+        <dd class="date-value" class:filled={!!preview.due}>
+          <span>
+            {#if preview.due && preview.due !== "Never"}
+              {@const dueDisplay = formatDueDateDisplay(preview.due, new Date(), displayState.nlDueDates)}
+              <span class:due-today={dueDisplay?.variant === "today"} class:due-tomorrow={dueDisplay?.variant === "tomorrow"} class:due-overdue={dueDisplay?.variant === "overdue"}>
+                {dueDisplay?.label ?? preview.due}
+              </span>
+            {:else}
+              {preview.due ?? "—"}
+            {/if}
+          </span>
+          <DatePickerPopover
+            selected={dueSelectedForPicker}
+            triggerLabel="Pick due date"
+            clearLabel="Never"
+            rightAlign
+            onSelect={handleDueSelect}
+            onClear={handleDueNever}
+          />
         </dd>
       </div>
       <div class="field-row">
@@ -686,6 +763,13 @@
     flex-wrap: wrap;
     justify-content: flex-end;
     gap: var(--space-3xs);
+  }
+
+  .field-row dd.date-value {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: var(--space-2xs);
   }
 
   .field-row dd.estimate-editable {

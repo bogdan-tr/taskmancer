@@ -88,6 +88,13 @@ export interface TaskPreview {
   tags: string[];
   due?: string;
   scheduled?: string;
+  /**
+   * The same resolution as `scheduled`, but always an absolute `YYYY-MM-DD`
+   * date, never a label — for UI that needs a real date to anchor against
+   * (e.g. highlighting the right day in a calendar-popup date picker),
+   * where `scheduled`'s human-readable label (e.g. "Tomorrow") isn't usable.
+   */
+  scheduledDate: string;
   estimatedMinutes?: number;
 }
 
@@ -131,6 +138,8 @@ export interface ResolveTaskPreviewOptions {
  *   (project defaults override global defaults when non-empty).
  * - `scheduled`: the quick-add `sch:` token, else the label for the
  *   effective default relative-date code (project overrides global).
+ * - `scheduledDate`: the same resolution as `scheduled`, but always resolved
+ *   to an absolute date rather than a label — see [`TaskPreview`].
  * - `due`: the quick-add `due:` token, `"Never"` for the `due:na`/`due na`
  *   never-due token or a default due code of `"none"`, else the effective
  *   default due code resolved to an absolute date relative to the
@@ -187,6 +196,7 @@ export function resolveTaskPreview(options: ResolveTaskPreviewOptions): TaskPrev
     tags,
     due,
     scheduled: parsed.scheduled ?? (scheduledCode ? scheduledRelativeDateLabel(scheduledCode) : undefined),
+    scheduledDate: resolvedScheduledDate,
     estimatedMinutes,
   };
 }

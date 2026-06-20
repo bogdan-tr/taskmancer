@@ -75,13 +75,19 @@ task entry, and (eventually) time tracking and analytics — built with
   tracked-time attribute also exists on every task (shown as a chip on the
   Kanban card once non-zero) but isn't user-editable yet — it's a placeholder
   for the real time-tracking infrastructure, still planned.
+- **Calendar-popup date picker** — a small calendar icon next to every
+  Due/Scheduled field (task cards, the edit dialog, and the Add Task preview)
+  opens a hand-built month-grid picker with Today/Tomorrow/etc. quick-picks,
+  sitting alongside the existing typed `YYYY-MM-DD`/quick-add phrase entry
+  rather than replacing it. Hand-built rather than a native `<input
+  type="date">`, which freezes the window under webkit2gtk on Linux.
 
 ### Planned
 
-Time-tracking infrastructure (start/stop timers, time logs), Pomodoro/focus
-mode, idle detection, recurring tasks, habit tracking, analytics dashboards,
-plugin system, calendar sync, and import/export. See the in-app roadmap for
-current priorities.
+Time-tracking infrastructure (start/stop timers, time logs), a recurrence
+system (recurring tasks), Pomodoro/focus mode, idle detection, habit
+tracking, analytics dashboards, plugin system, calendar sync, and
+import/export. See the in-app roadmap for current priorities.
 
 ## Tech stack
 
@@ -201,7 +207,11 @@ status to pick from (tag listing is disabled once you have more than 10
 distinct tags — spell it out instead). The Add Task modal's field list shows
 a syntax reminder next to each attribute, plus dedicated hrs/mins inputs for
 estimated time (the one new attribute that also gets an explicit editable
-control there, not just a quick-add token).
+control there, not just a quick-add token). The Due and Scheduled rows also
+have a small calendar icon that opens the [date-picker popup](#date-picker)
+as an alternative to typing a phrase — picking a date there overrides
+whatever the typed phrase/default would have resolved to, without touching
+the title text.
 
 #### Date phrases
 
@@ -217,6 +227,21 @@ control there, not just a quick-add token).
 | `<month> <day> <year>` | Same as above with an explicit 4-digit year (used as-is, even if in the past) | `due june 11 2027` |
 
 `due:<token>` / `sch:<token>` (the colon form) only support `today`, `tomorrow`, `YYYY-MM-DD`, and plain weekday names — not `next <weekday>` or absolute month/day dates.
+
+#### Date picker
+
+The calendar icon next to any Due/Scheduled field (task cards' inline edit,
+the task edit dialog, and the Add Task preview) opens a hand-built month
+grid — clicking a day sets that date. A row of quick-picks (Today, Tomorrow,
+In 2 days, In 3 days, In 1 week, In 1 month) sits above the grid for the
+common cases. A clear action sits next to the quick-picks: on Due it reads
+**Never** (clearing the due date entirely, the same as the `due na`
+quick-add token); on Scheduled it reads **Clear** (removing whatever you'd
+set there — in the Add Task modal that means falling back to whatever the
+typed phrase or configured default would resolve to; on an existing task it
+just empties the field). The picker is purely an alternative input method —
+it never touches the title text in the Add Task modal, and the existing
+typed `YYYY-MM-DD` field still works everywhere it always has.
 
 ### Week view
 

@@ -111,6 +111,7 @@ describe("resolveTaskPreview", () => {
       tags: ["chore"],
       due: "2026-06-15",
       scheduled: "Today",
+      scheduledDate: "2026-06-14",
     });
   });
 
@@ -121,6 +122,7 @@ describe("resolveTaskPreview", () => {
       globalDefaults: EMPTY_DEFAULTS,
       priorities: PRIORITIES,
       statuses: STATUSES,
+      now: NOW,
     });
 
     expect(preview).toEqual({
@@ -130,6 +132,7 @@ describe("resolveTaskPreview", () => {
       tags: [],
       due: undefined,
       scheduled: undefined,
+      scheduledDate: "2026-06-14",
     });
   });
 
@@ -353,6 +356,48 @@ describe("resolveTaskPreview", () => {
     });
 
     expect(preview.estimatedMinutes).toBe(60);
+  });
+
+  test("scheduledDate resolves to the explicit sch: token's date, unlike scheduled which only carries a label for a default", () => {
+    const preview = resolveTaskPreview({
+      parsed: parsed({ scheduled: "2026-07-04" }),
+      defaultProjectName: "General",
+      globalDefaults: EMPTY_DEFAULTS,
+      priorities: PRIORITIES,
+      statuses: STATUSES,
+      now: NOW,
+    });
+
+    expect(preview.scheduled).toBe("2026-07-04");
+    expect(preview.scheduledDate).toBe("2026-07-04");
+  });
+
+  test("scheduledDate resolves a default relative-date code to an absolute date, while scheduled keeps showing its label", () => {
+    const preview = resolveTaskPreview({
+      parsed: parsed(),
+      defaultProjectName: "General",
+      globalDefaults: { tags: [], scheduled: "in_1_week" },
+      priorities: PRIORITIES,
+      statuses: STATUSES,
+      now: NOW,
+    });
+
+    expect(preview.scheduled).toBe("In 1 week");
+    expect(preview.scheduledDate).toBe("2026-06-21");
+  });
+
+  test("scheduledDate falls back to 'now' when neither an explicit token nor a default code is set", () => {
+    const preview = resolveTaskPreview({
+      parsed: parsed(),
+      defaultProjectName: "General",
+      globalDefaults: EMPTY_DEFAULTS,
+      priorities: PRIORITIES,
+      statuses: STATUSES,
+      now: NOW,
+    });
+
+    expect(preview.scheduled).toBeUndefined();
+    expect(preview.scheduledDate).toBe("2026-06-14");
   });
 
   test("estimatedMinutes is undefined when no token or default is set", () => {
