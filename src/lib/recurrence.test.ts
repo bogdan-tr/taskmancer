@@ -76,28 +76,28 @@ describe("formatDueRule", () => {
   });
 
   test("formats a zero-day offset as 'same day'", () => {
-    expect(formatDueRule({ kind: "AfterScheduled", days: 0 })).toBe("Same day as scheduled");
+    expect(formatDueRule({ kind: "AfterScheduled", days: 0 })).toBe("Same day as each occurrence");
   });
 
   test("formats a positive one-day offset in the singular", () => {
-    expect(formatDueRule({ kind: "AfterScheduled", days: 1 })).toBe("1 day after scheduled");
+    expect(formatDueRule({ kind: "AfterScheduled", days: 1 })).toBe("1 day after each occurrence");
   });
 
   test("formats a positive multi-day offset in the plural", () => {
-    expect(formatDueRule({ kind: "AfterScheduled", days: 5 })).toBe("5 days after scheduled");
+    expect(formatDueRule({ kind: "AfterScheduled", days: 5 })).toBe("5 days after each occurrence");
   });
 
   test("formats a negative one-day offset in the singular", () => {
-    expect(formatDueRule({ kind: "AfterScheduled", days: -1 })).toBe("1 day before scheduled");
+    expect(formatDueRule({ kind: "AfterScheduled", days: -1 })).toBe("1 day before each occurrence");
   });
 
   test("formats a negative multi-day offset in the plural", () => {
-    expect(formatDueRule({ kind: "AfterScheduled", days: -3 })).toBe("3 days before scheduled");
+    expect(formatDueRule({ kind: "AfterScheduled", days: -3 })).toBe("3 days before each occurrence");
   });
 
-  test("formats a weekday rule with interval 1 as 'Next <weekday>'", () => {
+  test("formats a weekday rule with interval 1 as 'Every <weekday>'", () => {
     const rule: DueRule = { kind: "Weekday", weekday: 1, interval_weeks: 1 };
-    expect(formatDueRule(rule)).toBe("Next Mon");
+    expect(formatDueRule(rule)).toBe("Every Mon");
   });
 
   test("formats a weekday rule with interval 2 as 'Every other <weekday>'", () => {

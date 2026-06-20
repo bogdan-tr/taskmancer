@@ -74,7 +74,7 @@ export function formatRecurrenceFrequency(frequency: RecurrenceFrequency): strin
   }
 }
 
-/** Formats a `DueRule` for display, e.g. "Same day as scheduled", "3 days after scheduled", "Next Monday", "Every other Friday". */
+/** Formats a `DueRule` for display, e.g. "Same day as each occurrence", "3 days after each occurrence", "Every Monday", "Every other Friday". */
 export function formatDueRule(rule: DueRule): string {
   switch (rule.kind) {
     case "Never":
@@ -82,12 +82,21 @@ export function formatDueRule(rule: DueRule): string {
     case "DefaultCode":
       return dueRelativeDateLabel(rule.code);
     case "AfterScheduled":
-      if (rule.days === 0) return "Same day as scheduled";
-      if (rule.days > 0) return rule.days === 1 ? "1 day after scheduled" : `${rule.days} days after scheduled`;
-      return rule.days === -1 ? "1 day before scheduled" : `${-rule.days} days before scheduled`;
+      // "after each occurrence", not "after scheduled" — the latter reads
+      // like a one-time calculation against a single date, when this rule
+      // actually recomputes fresh against every occurrence's own scheduled
+      // date (the original source of user confusion this wording avoids).
+      if (rule.days === 0) return "Same day as each occurrence";
+      if (rule.days > 0)
+        return rule.days === 1 ? "1 day after each occurrence" : `${rule.days} days after each occurrence`;
+      return rule.days === -1 ? "1 day before each occurrence" : `${-rule.days} days before each occurrence`;
     case "Weekday": {
+      // "Every <day>", not "Next <day>" — this is a per-occurrence rule
+      // that resolves afresh each time, not a single upcoming date, and
+      // "Next Friday" reads like the latter (the original source of user
+      // confusion this wording exists to avoid).
       const day = WEEKDAY_LABELS[rule.weekday];
-      return rule.interval_weeks <= 1 ? `Next ${day}` : `Every other ${day}`;
+      return rule.interval_weeks <= 1 ? `Every ${day}` : `Every other ${day}`;
     }
   }
 }

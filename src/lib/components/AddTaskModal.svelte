@@ -172,13 +172,14 @@
   );
 
   /**
-   * When recurring, the series' due *rule* (e.g. "Same day as scheduled",
-   * "3 days after scheduled") rather than a single resolved date — a single
-   * date for occurrence #1 isn't useful for understanding what every future
-   * occurrence's due date will be, which is exactly what every occurrence
-   * actually gets (see `resolveSeriesDueRule`'s own doc comment). Computed
-   * the same way `handleSubmit` computes what's actually sent, so the
-   * preview never shows something different from what gets created.
+   * When recurring, the series' due *rule* (e.g. "Same day as each
+   * occurrence", "3 days after each occurrence", "Every Friday") rather
+   * than a single resolved date — a single date for occurrence #1 isn't
+   * useful for understanding what every future occurrence's due date will
+   * be, which is exactly what every occurrence actually gets (see
+   * `resolveSeriesDueRule`'s own doc comment). Computed the same way
+   * `handleSubmit` computes what's actually sent, so the preview never
+   * shows something different from what gets created.
    */
   let seriesDueRule = $derived(
     parsed.recurrence
@@ -847,7 +848,9 @@
   }
 
   .field-row dd.estimate-editable input {
-    width: 3rem;
+    /* Wide enough for a comfortable 3-digit value (e.g. "100" hours)
+       without the text crowding the field's edge. */
+    width: 4rem;
     padding: var(--space-3xs) var(--space-2xs);
     border-radius: var(--radius-sm);
     border: 1px solid var(--color-border);
