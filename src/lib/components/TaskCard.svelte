@@ -24,22 +24,31 @@
   } from "$lib/priorities.svelte";
   import { resolveCardLightness, resolveInkMode, resolveProjectColor } from "$lib/projectColor";
   import { projectsState } from "$lib/projects.svelte";
+  import type { SeriesEditScope } from "$lib/recurrence";
   import { settingsState } from "$lib/settings.svelte";
   import { FALLBACK_STATUSES, statusColor } from "$lib/statuses.svelte";
-  import { emptyToUndefined, formatTags, isValidOptionalDate, parseTags } from "$lib/taskFields";
+  import {
+    emptyToUndefined,
+    formatTags,
+    isValidOptionalDate,
+    parseTags,
+    seriesSharedFieldsChanged,
+  } from "$lib/taskFields";
   import { tagsState } from "$lib/tags.svelte";
   import type { Task } from "$lib/types";
   import Autocomplete from "./Autocomplete.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
   import DatePickerPopover from "./DatePickerPopover.svelte";
+  import SeriesScopeDialog from "./SeriesScopeDialog.svelte";
 
   interface Props {
     task: Task;
-    onUpdate: (task: Task) => void;
-    onDelete: (id: string) => void;
+    onUpdate: (task: Task, scope?: SeriesEditScope) => void;
+    onDelete: (id: string, scope?: SeriesEditScope) => void;
+    onRemoveRecurrence: (id: string) => void;
   }
 
-  let { task, onUpdate, onDelete }: Props = $props();
+  let { task, onUpdate, onDelete, onRemoveRecurrence }: Props = $props();
 
   const priorities = $derived(settingsState.current?.priorities ?? FALLBACK_PRIORITIES);
   const projectColor = $derived(resolveProjectColor(task.project, projectsState.items));
@@ -102,6 +111,17 @@
   let draftNotes = $state("");
   let editError = $state("");
   let showDeleteConfirm = $state(false);
+  let showRemoveRecurrenceConfirm = $state(false);
+
+  /** The action awaiting a "just this task vs. this and future" choice, and the built task to save (only relevant for "save"). */
+  let pendingScopeKind: "save" | "delete" | undefined = $state(undefined);
+  let pendingScopeTask: Task | undefined = $state(undefined);
+  let scopeDialogOpen = $derived(pendingScopeKind !== undefined);
+  let scopeDialogTitle = $derived(
+    pendingScopeKind === "delete" ? "Delete recurring task" : "Save changes to recurring task",
+  );
+  const scopeDialogMessage =
+    "This task repeats. Apply this to just this task, or to this task and every future one?";
 
   let projectSuggestions: string[] = $state([]);
   let projectSuggestionIndex = $state(0);
@@ -225,7 +245,7 @@
         ? undefined
         : minutesFromHoursAndMinutes(draftEstimatedHours ?? 0, draftEstimatedMinutes ?? 0);
 
-    onUpdate({
+    const updated: Task = {
       ...task,
       title: draftTitle,
       project: emptyToUndefined(draftProject),
@@ -235,12 +255,22 @@
       scheduled: emptyToUndefined(draftScheduled),
       estimated_minutes: estimatedMinutes,
       notes: draftNotes,
-    });
+    };
+
+    if (task.series_id !== undefined && seriesSharedFieldsChanged(task, updated)) {
+      pendingScopeTask = updated;
+      pendingScopeKind = "save";
+      return;
+    }
+
+    onUpdate(updated);
     isEditing = false;
   }
 
   function handleDelete() {
-    if (generalState.confirmTaskDeletion) {
+    if (task.series_id !== undefined) {
+      pendingScopeKind = "delete";
+    } else if (generalState.confirmTaskDeletion) {
       showDeleteConfirm = true;
     } else {
       onDelete(task.id);
@@ -250,6 +280,46 @@
   function confirmDelete() {
     showDeleteConfirm = false;
     onDelete(task.id);
+  }
+
+  function handleScopeThis() {
+    if (pendingScopeKind === "save" && pendingScopeTask) {
+      onUpdate(pendingScopeTask, "this");
+      isEditing = false;
+    } else if (pendingScopeKind === "delete") {
+      onDelete(task.id, "this");
+    }
+    pendingScopeKind = undefined;
+    pendingScopeTask = undefined;
+  }
+
+  function handleScopeFuture() {
+    if (pendingScopeKind === "save" && pendingScopeTask) {
+      onUpdate(pendingScopeTask, "future");
+      isEditing = false;
+    } else if (pendingScopeKind === "delete") {
+      onDelete(task.id, "future");
+    }
+    pendingScopeKind = undefined;
+    pendingScopeTask = undefined;
+  }
+
+  function cancelScopeDialog() {
+    pendingScopeKind = undefined;
+    pendingScopeTask = undefined;
+  }
+
+  function handleRemoveRecurrenceClick() {
+    showRemoveRecurrenceConfirm = true;
+  }
+
+  function confirmRemoveRecurrence() {
+    showRemoveRecurrenceConfirm = false;
+    onRemoveRecurrence(task.id);
+  }
+
+  function cancelRemoveRecurrence() {
+    showRemoveRecurrenceConfirm = false;
   }
 
   function cancelDelete() {
@@ -407,6 +477,11 @@
         Notes
         <textarea bind:value={draftNotes} rows="3"></textarea>
       </label>
+      {#if task.series_id !== undefined}
+        <button type="button" class="remove-recurrence-link" onclick={handleRemoveRecurrenceClick}>
+          Remove recurrence
+        </button>
+      {/if}
       {#if editError}
         <p class="edit-error" role="alert">{editError}</p>
       {/if}
@@ -494,6 +569,24 @@
     confirmLabel="Delete"
     onConfirm={confirmDelete}
     onCancel={cancelDelete}
+  />
+
+  <ConfirmDialog
+    open={showRemoveRecurrenceConfirm}
+    title="Remove recurrence?"
+    message="This stops the series from generating any more occurrences. Tasks already created (past and future) are left as they are."
+    confirmLabel="Remove recurrence"
+    onConfirm={confirmRemoveRecurrence}
+    onCancel={cancelRemoveRecurrence}
+  />
+
+  <SeriesScopeDialog
+    open={scopeDialogOpen}
+    title={scopeDialogTitle}
+    message={scopeDialogMessage}
+    onThis={handleScopeThis}
+    onFuture={handleScopeFuture}
+    onCancel={cancelScopeDialog}
   />
 </li>
 
@@ -881,5 +974,21 @@
 
   .edit-actions button.danger:hover {
     background: var(--color-danger-hover);
+  }
+
+  .remove-recurrence-link {
+    align-self: flex-start;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--color-ink-muted);
+    font-size: var(--text-xs);
+    font-weight: 600;
+    text-decoration: underline;
+    cursor: pointer;
+  }
+
+  .remove-recurrence-link:hover {
+    color: var(--color-danger);
   }
 </style>

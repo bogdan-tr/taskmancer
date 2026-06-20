@@ -3,24 +3,36 @@
   import { displayState } from "$lib/displaySettings.svelte";
   import { formatDueDateDisplay } from "$lib/dueDateDisplay";
   import { hoursAndMinutesFromMinutes, minutesFromHoursAndMinutes, normalizeHoursMinutes } from "$lib/estimatedTime";
+  import { generalState } from "$lib/generalSettings.svelte";
   import { FALLBACK_PRIORITIES, sortedPriorities } from "$lib/priorities.svelte";
   import { projectsState } from "$lib/projects.svelte";
+  import type { SeriesEditScope } from "$lib/recurrence";
   import { settingsState } from "$lib/settings.svelte";
   import { FALLBACK_STATUSES, sortedStatuses } from "$lib/statuses.svelte";
-  import { emptyToUndefined, formatTags, isValidOptionalDate, parseTags } from "$lib/taskFields";
+  import {
+    emptyToUndefined,
+    formatTags,
+    isValidOptionalDate,
+    parseTags,
+    seriesSharedFieldsChanged,
+  } from "$lib/taskFields";
   import { tagsState } from "$lib/tags.svelte";
   import type { Task } from "$lib/types";
   import Autocomplete from "./Autocomplete.svelte";
+  import ConfirmDialog from "./ConfirmDialog.svelte";
   import DatePickerPopover from "./DatePickerPopover.svelte";
+  import SeriesScopeDialog from "./SeriesScopeDialog.svelte";
 
   interface Props {
     open: boolean;
     task: Task | undefined;
-    onSave: (task: Task) => void;
+    onSave: (task: Task, scope?: SeriesEditScope) => void;
+    onDelete: (id: string, scope?: SeriesEditScope) => void;
+    onRemoveRecurrence: (id: string) => void;
     onCancel: () => void;
   }
 
-  let { open, task, onSave, onCancel }: Props = $props();
+  let { open, task, onSave, onDelete, onRemoveRecurrence, onCancel }: Props = $props();
 
   const priorities = $derived(settingsState.current?.priorities ?? FALLBACK_PRIORITIES);
   const statuses = $derived(sortedStatuses(settingsState.current?.statuses ?? FALLBACK_STATUSES));
@@ -38,6 +50,18 @@
   let draftEstimatedMinutes: number | undefined = $state(undefined);
   let draftNotes = $state("");
   let editError = $state("");
+  let showDeleteConfirm = $state(false);
+  let showRemoveRecurrenceConfirm = $state(false);
+
+  /** The action awaiting a "just this task vs. this and future" choice, and the built task to save (only relevant for "save"). */
+  let pendingScopeKind: "save" | "delete" | undefined = $state(undefined);
+  let pendingScopeTask: Task | undefined = $state(undefined);
+  let scopeDialogOpen = $derived(pendingScopeKind !== undefined);
+  let scopeDialogTitle = $derived(
+    pendingScopeKind === "delete" ? "Delete recurring task" : "Save changes to recurring task",
+  );
+  const scopeDialogMessage =
+    "This task repeats. Apply this to just this task, or to this task and every future one?";
 
   let projectSuggestions: string[] = $state([]);
   let projectSuggestionIndex = $state(0);
@@ -181,7 +205,7 @@
         ? undefined
         : minutesFromHoursAndMinutes(draftEstimatedHours ?? 0, draftEstimatedMinutes ?? 0);
 
-    onSave({
+    const updated: Task = {
       ...task,
       title: draftTitle,
       project: emptyToUndefined(draftProject),
@@ -192,7 +216,75 @@
       scheduled: emptyToUndefined(draftScheduled),
       estimated_minutes: estimatedMinutes,
       notes: draftNotes,
-    });
+    };
+
+    if (task.series_id !== undefined && seriesSharedFieldsChanged(task, updated)) {
+      pendingScopeTask = updated;
+      pendingScopeKind = "save";
+      return;
+    }
+
+    onSave(updated);
+  }
+
+  function handleDelete() {
+    if (!task) return;
+    if (task.series_id !== undefined) {
+      pendingScopeKind = "delete";
+    } else if (generalState.confirmTaskDeletion) {
+      showDeleteConfirm = true;
+    } else {
+      onDelete(task.id);
+    }
+  }
+
+  function confirmDelete() {
+    if (!task) return;
+    showDeleteConfirm = false;
+    onDelete(task.id);
+  }
+
+  function cancelDelete() {
+    showDeleteConfirm = false;
+  }
+
+  function handleScopeThis() {
+    if (pendingScopeKind === "save" && pendingScopeTask) {
+      onSave(pendingScopeTask, "this");
+    } else if (pendingScopeKind === "delete" && task) {
+      onDelete(task.id, "this");
+    }
+    pendingScopeKind = undefined;
+    pendingScopeTask = undefined;
+  }
+
+  function handleScopeFuture() {
+    if (pendingScopeKind === "save" && pendingScopeTask) {
+      onSave(pendingScopeTask, "future");
+    } else if (pendingScopeKind === "delete" && task) {
+      onDelete(task.id, "future");
+    }
+    pendingScopeKind = undefined;
+    pendingScopeTask = undefined;
+  }
+
+  function cancelScopeDialog() {
+    pendingScopeKind = undefined;
+    pendingScopeTask = undefined;
+  }
+
+  function handleRemoveRecurrenceClick() {
+    showRemoveRecurrenceConfirm = true;
+  }
+
+  function confirmRemoveRecurrence() {
+    if (!task) return;
+    showRemoveRecurrenceConfirm = false;
+    onRemoveRecurrence(task.id);
+  }
+
+  function cancelRemoveRecurrence() {
+    showRemoveRecurrenceConfirm = false;
   }
 </script>
 
@@ -346,16 +438,49 @@
         Notes
         <textarea bind:value={draftNotes} rows="3"></textarea>
       </label>
+      {#if task.series_id !== undefined}
+        <button type="button" class="remove-recurrence-link" onclick={handleRemoveRecurrenceClick}>
+          Remove recurrence
+        </button>
+      {/if}
       {#if editError}
         <p class="edit-error" role="alert">{editError}</p>
       {/if}
       <div class="edit-actions">
         <button type="submit">Save</button>
         <button type="button" class="secondary" onclick={onCancel}>Cancel</button>
+        <button type="button" class="danger" onclick={handleDelete}>Delete</button>
       </div>
     </form>
   {/if}
 </dialog>
+
+<ConfirmDialog
+  open={showDeleteConfirm}
+  title="Delete task"
+  message={task ? `Delete "${task.title}"? This can't be undone.` : ""}
+  confirmLabel="Delete"
+  onConfirm={confirmDelete}
+  onCancel={cancelDelete}
+/>
+
+<ConfirmDialog
+  open={showRemoveRecurrenceConfirm}
+  title="Remove recurrence?"
+  message="This stops the series from generating any more occurrences. Tasks already created (past and future) are left as they are."
+  confirmLabel="Remove recurrence"
+  onConfirm={confirmRemoveRecurrence}
+  onCancel={cancelRemoveRecurrence}
+/>
+
+<SeriesScopeDialog
+  open={scopeDialogOpen}
+  title={scopeDialogTitle}
+  message={scopeDialogMessage}
+  onThis={handleScopeThis}
+  onFuture={handleScopeFuture}
+  onCancel={cancelScopeDialog}
+/>
 
 <style>
   .task-edit-dialog {
@@ -539,5 +664,30 @@
     background: var(--color-canvas);
     box-shadow: none;
     transform: none;
+  }
+
+  .edit-actions button.danger {
+    background: var(--color-danger);
+    color: var(--color-accent-ink);
+  }
+
+  .edit-actions button.danger:hover {
+    background: var(--color-danger-hover);
+  }
+
+  .remove-recurrence-link {
+    align-self: flex-start;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--color-ink-muted);
+    font-size: var(--text-xs);
+    font-weight: 600;
+    text-decoration: underline;
+    cursor: pointer;
+  }
+
+  .remove-recurrence-link:hover {
+    color: var(--color-danger);
   }
 </style>

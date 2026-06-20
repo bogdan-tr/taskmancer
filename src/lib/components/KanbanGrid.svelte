@@ -1,6 +1,7 @@
 <script lang="ts">
   import { dndzone, type DndEvent } from "svelte-dnd-action";
   import type { BoardColumn } from "$lib/kanbanGrouping";
+  import type { SeriesEditScope } from "$lib/recurrence";
   import type { Task } from "$lib/types";
   import TaskCard from "./TaskCard.svelte";
 
@@ -11,11 +12,13 @@
     groupByPriority: boolean;
     onConsider: (statusId: string | undefined, bucketIndex: number, event: CustomEvent<DndEvent<Task>>) => void;
     onFinalize: (statusId: string | undefined, bucketIndex: number, event: CustomEvent<DndEvent<Task>>) => void;
-    onUpdate: (task: Task) => void;
-    onDelete: (id: string) => void;
+    onUpdate: (task: Task, scope?: SeriesEditScope) => void;
+    onDelete: (id: string, scope?: SeriesEditScope) => void;
+    onRemoveRecurrence: (id: string) => void;
   }
 
-  let { boardColumns, groupByPriority, onConsider, onFinalize, onUpdate, onDelete }: Props = $props();
+  let { boardColumns, groupByPriority, onConsider, onFinalize, onUpdate, onDelete, onRemoveRecurrence }: Props =
+    $props();
 </script>
 
 <div class="board">
@@ -42,7 +45,7 @@
             onfinalize={(event) => onFinalize(column.id, bucketIndex, event)}
           >
             {#each bucket.tasks as task (task.id)}
-              <TaskCard {task} {onUpdate} {onDelete} />
+              <TaskCard {task} {onUpdate} {onDelete} {onRemoveRecurrence} />
             {/each}
           </ul>
         </div>

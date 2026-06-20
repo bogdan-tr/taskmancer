@@ -4,6 +4,7 @@
   import { displayState } from "$lib/displaySettings.svelte";
   import { addMonths, monthDates, startOfMonth } from "$lib/monthRange";
   import { FALLBACK_PRIORITIES } from "$lib/priorities.svelte";
+  import type { SeriesEditScope } from "$lib/recurrence";
   import { settingsState } from "$lib/settings.svelte";
   import { FALLBACK_STATUSES, sortedStatuses } from "$lib/statuses.svelte";
   import type { Task } from "$lib/types";
@@ -27,7 +28,9 @@
   interface Props {
     /** Tasks to place on the month grid (project-filtered, but not Kanban-visibility-filtered). */
     tasks: Task[];
-    onUpdate: (task: Task) => void | Promise<void>;
+    onUpdate: (task: Task, scope?: SeriesEditScope) => void | Promise<void>;
+    onDelete: (id: string, scope?: SeriesEditScope) => void | Promise<void>;
+    onRemoveRecurrence: (id: string) => void | Promise<void>;
     /**
      * Called whenever the visible month grid's last date changes (navigating
      * forward, jumping to today, or the week-start-day setting realigning
@@ -37,7 +40,7 @@
     onEnsureOccurrences?: (through: string) => void;
   }
 
-  let { tasks, onUpdate, onEnsureOccurrences }: Props = $props();
+  let { tasks, onUpdate, onDelete, onRemoveRecurrence, onEnsureOccurrences }: Props = $props();
 
   const priorities = $derived(settingsState.current?.priorities ?? FALLBACK_PRIORITIES);
   const statuses = $derived(sortedStatuses(settingsState.current?.statuses ?? FALLBACK_STATUSES));
@@ -165,8 +168,13 @@
     editingTask = undefined;
   }
 
-  async function saveEdit(task: Task) {
-    await onUpdate(task);
+  async function saveEdit(task: Task, scope?: SeriesEditScope) {
+    await onUpdate(task, scope);
+    closeEdit();
+  }
+
+  async function deleteEdit(id: string, scope?: SeriesEditScope) {
+    await onDelete(id, scope);
     closeEdit();
   }
 
@@ -290,7 +298,14 @@
   </div>
 </div>
 
-<TaskEditDialog open={editDialogOpen} task={editingTask} onSave={saveEdit} onCancel={closeEdit} />
+<TaskEditDialog
+  open={editDialogOpen}
+  task={editingTask}
+  onSave={saveEdit}
+  onDelete={deleteEdit}
+  {onRemoveRecurrence}
+  onCancel={closeEdit}
+/>
 
 <style>
   .calendar-view {

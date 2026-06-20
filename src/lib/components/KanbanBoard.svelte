@@ -4,11 +4,14 @@
   import {
     createRecurringTask,
     createTask,
+    deleteSeriesOccurrence,
     deleteTask,
     ensureOccurrencesUntil,
     finishDay,
     listTasks,
+    removeRecurrence,
     reorderTask,
+    updateSeriesOccurrence,
     updateTask,
   } from "$lib/api";
   import { isVisibleOnBoard } from "$lib/boardVisibility";
@@ -34,6 +37,7 @@
   import type { ParsedTaskInput } from "$lib/naturalLanguage";
   import { FALLBACK_PRIORITIES } from "$lib/priorities.svelte";
   import { projectsState } from "$lib/projects.svelte";
+  import type { SeriesEditScope } from "$lib/recurrence";
   import { settingsState } from "$lib/settings.svelte";
   import {
     FALLBACK_STATUS_COLOR,
@@ -252,10 +256,15 @@
     recomputeHasOther();
   }
 
-  async function handleUpdate(task: Task) {
+  async function handleUpdate(task: Task, scope?: SeriesEditScope) {
     try {
-      const updated = await updateTask(task);
-      replaceTask(updated);
+      if (scope) {
+        const updated = await updateSeriesOccurrence(task, scope);
+        for (const t of updated) replaceTask(t);
+      } else {
+        const updated = await updateTask(task);
+        replaceTask(updated);
+      }
       errorMessage = "";
       finishDayMessage = "";
       void refreshTags();
@@ -264,14 +273,39 @@
     }
   }
 
-  async function handleDelete(id: string) {
+  /**
+   * `scope: "future"` can delete an unbounded number of other occurrences
+   * at once, so rather than track which ids those were, a full `refresh()`
+   * reloads the task list afterward — mirroring `confirmFinishDay`'s own
+   * bulk-operation pattern below. `scope: "this"`/no scope only ever
+   * deletes the one task, so `removeTask` stays precise there.
+   */
+  async function handleDelete(id: string, scope?: SeriesEditScope) {
     try {
-      await deleteTask(id);
-      removeTask(id);
+      if (scope) {
+        await deleteSeriesOccurrence(id, scope);
+        if (scope === "future") {
+          await refresh();
+        } else {
+          removeTask(id);
+        }
+      } else {
+        await deleteTask(id);
+        removeTask(id);
+      }
       errorMessage = "";
       finishDayMessage = "";
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : "Failed to delete task";
+    }
+  }
+
+  async function handleRemoveRecurrence(id: string) {
+    try {
+      await removeRecurrence(id);
+      errorMessage = "";
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : "Failed to remove recurrence";
     }
   }
 
@@ -539,11 +573,19 @@
     <WeekView
       tasks={visibleTasks}
       onUpdate={handleUpdate}
+      onDelete={handleDelete}
+      onRemoveRecurrence={handleRemoveRecurrence}
       {showPreviousWeeksColumn}
       onEnsureOccurrences={ensureOccurrencesThrough}
     />
   {:else if activeView === "calendar"}
-    <CalendarView tasks={visibleTasks} onUpdate={handleUpdate} onEnsureOccurrences={ensureOccurrencesThrough} />
+    <CalendarView
+      tasks={visibleTasks}
+      onUpdate={handleUpdate}
+      onDelete={handleDelete}
+      onRemoveRecurrence={handleRemoveRecurrence}
+      onEnsureOccurrences={ensureOccurrencesThrough}
+    />
   {:else}
     <KanbanGrid
       {boardColumns}
@@ -552,6 +594,7 @@
       onFinalize={handleFinalize}
       onUpdate={handleUpdate}
       onDelete={handleDelete}
+      onRemoveRecurrence={handleRemoveRecurrence}
     />
   {/if}
 </main>

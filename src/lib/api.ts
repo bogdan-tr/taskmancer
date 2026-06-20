@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { ParsedTaskInput } from "./naturalLanguage";
-import type { RecurrenceFrequency } from "./recurrence";
+import type { RecurrenceFrequency, SeriesEditScope } from "./recurrence";
 import type {
   DeleteProjectResult,
   FinishDayResult,
@@ -60,8 +60,23 @@ export async function updateTask(task: Task): Promise<Task> {
   return invoke<Task>("update_task", { task });
 }
 
+/** Updates an occurrence of a recurring task; `scope` decides how far the edit reaches (see `SeriesEditScope`). Returns every task changed. */
+export async function updateSeriesOccurrence(task: Task, scope: SeriesEditScope): Promise<Task[]> {
+  return invoke<Task[]>("update_series_occurrence", { task, scope });
+}
+
 export async function deleteTask(id: string): Promise<void> {
   return invoke<void>("delete_task", { id });
+}
+
+/** Deletes an occurrence of a recurring task; `scope` decides how far the deletion reaches (see `SeriesEditScope`). */
+export async function deleteSeriesOccurrence(taskId: string, scope: SeriesEditScope): Promise<void> {
+  return invoke<void>("delete_series_occurrence", { taskId, scope });
+}
+
+/** Stops a recurring task's series from generating any further occurrences. Existing occurrences keep their `series_id`. */
+export async function removeRecurrence(taskId: string): Promise<void> {
+  return invoke<void>("remove_recurrence", { taskId });
 }
 
 export async function reorderTask(

@@ -1,5 +1,26 @@
 import { describe, expect, test } from "vitest";
-import { emptyToUndefined, formatTags, isValidOptionalDate, parseTags } from "./taskFields";
+import { emptyToUndefined, formatTags, isValidOptionalDate, parseTags, seriesSharedFieldsChanged } from "./taskFields";
+import type { Task } from "./types";
+
+function baseTask(overrides: Partial<Task> = {}): Task {
+  return {
+    id: "task-1",
+    title: "Water the plants",
+    status: "backlog",
+    project: "Home",
+    tags: ["chore"],
+    priority: "medium",
+    due: "2026-06-21",
+    scheduled: "2026-06-20",
+    order: 1,
+    created: "2026-06-15T10:00:00+00:00",
+    depends_on: [],
+    estimated_minutes: 15,
+    tracked_minutes: 0,
+    notes: "Use the green watering can",
+    ...overrides,
+  };
+}
 
 describe("parseTags", () => {
   test("splits comma-separated tags and trims whitespace", () => {
@@ -62,5 +83,70 @@ describe("isValidOptionalDate", () => {
 
   test("rejects a string that isn't a date at all", () => {
     expect(isValidOptionalDate("tomorrow")).toBe(false);
+  });
+});
+
+describe("seriesSharedFieldsChanged", () => {
+  test("returns false when nothing shared changed", () => {
+    const original = baseTask();
+    const edited = baseTask();
+
+    expect(seriesSharedFieldsChanged(original, edited)).toBe(false);
+  });
+
+  test("returns false when only per-occurrence fields changed (status, due, scheduled)", () => {
+    const original = baseTask();
+    const edited = baseTask({ status: "done", due: "2026-07-01", scheduled: "2026-06-25" });
+
+    expect(seriesSharedFieldsChanged(original, edited)).toBe(false);
+  });
+
+  test("returns true when the title changed", () => {
+    const original = baseTask();
+    const edited = baseTask({ title: "Water the ferns" });
+
+    expect(seriesSharedFieldsChanged(original, edited)).toBe(true);
+  });
+
+  test("returns true when the project changed", () => {
+    const original = baseTask();
+    const edited = baseTask({ project: "Garden" });
+
+    expect(seriesSharedFieldsChanged(original, edited)).toBe(true);
+  });
+
+  test("returns true when the priority changed", () => {
+    const original = baseTask();
+    const edited = baseTask({ priority: "high" });
+
+    expect(seriesSharedFieldsChanged(original, edited)).toBe(true);
+  });
+
+  test("returns true when estimated_minutes changed", () => {
+    const original = baseTask();
+    const edited = baseTask({ estimated_minutes: 30 });
+
+    expect(seriesSharedFieldsChanged(original, edited)).toBe(true);
+  });
+
+  test("returns true when notes changed", () => {
+    const original = baseTask();
+    const edited = baseTask({ notes: "Use the blue watering can" });
+
+    expect(seriesSharedFieldsChanged(original, edited)).toBe(true);
+  });
+
+  test("returns true when a tag was added", () => {
+    const original = baseTask();
+    const edited = baseTask({ tags: ["chore", "urgent"] });
+
+    expect(seriesSharedFieldsChanged(original, edited)).toBe(true);
+  });
+
+  test("returns false when tags are the same but in a different order", () => {
+    const original = baseTask({ tags: ["chore", "urgent"] });
+    const edited = baseTask({ tags: ["urgent", "chore"] });
+
+    expect(seriesSharedFieldsChanged(original, edited)).toBe(false);
   });
 });

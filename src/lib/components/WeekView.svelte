@@ -3,6 +3,7 @@
   import { dndzone, type DndEvent } from "svelte-dnd-action";
   import { displayState } from "$lib/displaySettings.svelte";
   import { FALLBACK_PRIORITIES } from "$lib/priorities.svelte";
+  import type { SeriesEditScope } from "$lib/recurrence";
   import { settingsState } from "$lib/settings.svelte";
   import { FALLBACK_STATUSES, sortedStatuses } from "$lib/statuses.svelte";
   import type { Task } from "$lib/types";
@@ -29,7 +30,9 @@
   interface Props {
     /** Tasks to place on the week grid (project-filtered, but not Kanban-visibility-filtered). */
     tasks: Task[];
-    onUpdate: (task: Task) => void | Promise<void>;
+    onUpdate: (task: Task, scope?: SeriesEditScope) => void | Promise<void>;
+    onDelete: (id: string, scope?: SeriesEditScope) => void | Promise<void>;
+    onRemoveRecurrence: (id: string) => void | Promise<void>;
     /** Whether to show the leading "Previous" column of unfinished tasks scheduled/due before this week. */
     showPreviousWeeksColumn: boolean;
     /**
@@ -44,7 +47,8 @@
     onEnsureOccurrences?: (through: string) => void;
   }
 
-  let { tasks, onUpdate, showPreviousWeeksColumn, onEnsureOccurrences }: Props = $props();
+  let { tasks, onUpdate, onDelete, onRemoveRecurrence, showPreviousWeeksColumn, onEnsureOccurrences }: Props =
+    $props();
 
   const priorities = $derived(settingsState.current?.priorities ?? FALLBACK_PRIORITIES);
   const statuses = $derived(sortedStatuses(settingsState.current?.statuses ?? FALLBACK_STATUSES));
@@ -189,8 +193,13 @@
     editingTask = undefined;
   }
 
-  async function saveEdit(task: Task) {
-    await onUpdate(task);
+  async function saveEdit(task: Task, scope?: SeriesEditScope) {
+    await onUpdate(task, scope);
+    closeEdit();
+  }
+
+  async function deleteEdit(id: string, scope?: SeriesEditScope) {
+    await onDelete(id, scope);
     closeEdit();
   }
 
@@ -340,7 +349,14 @@
   </div>
 </div>
 
-<TaskEditDialog open={editDialogOpen} task={editingTask} onSave={saveEdit} onCancel={closeEdit} />
+<TaskEditDialog
+  open={editDialogOpen}
+  task={editingTask}
+  onSave={saveEdit}
+  onDelete={deleteEdit}
+  {onRemoveRecurrence}
+  onCancel={closeEdit}
+/>
 
 <style>
   .week-view {

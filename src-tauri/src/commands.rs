@@ -388,10 +388,17 @@ fn generate_series_occurrences(
         .and_then(|s| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
         .map(|end| through.min(end))
         .unwrap_or(through);
-    series.generated_until = dates
+    // Never move the watermark backward: a `through` at or before what's
+    // already generated (e.g. Week view's near-term initial call, made
+    // after a wider baseline/extension already advanced it further) must
+    // be a complete no-op, not a regression that would make the next call
+    // think the already-generated range still needs generating.
+    let new_watermark = dates
         .last()
-        .map(|d| d.format("%Y-%m-%d").to_string())
-        .unwrap_or_else(|| effective_horizon.format("%Y-%m-%d").to_string());
+        .copied()
+        .unwrap_or(effective_horizon)
+        .max(generated_until);
+    series.generated_until = new_watermark.format("%Y-%m-%d").to_string();
 
     Ok(created)
 }
@@ -660,6 +667,228 @@ pub fn update_task(state: State<AppState>, task: Task) -> Result<Task, String> {
 #[tauri::command]
 pub fn delete_task(state: State<AppState>, id: String) -> Result<(), String> {
     storage::delete_task(&state.tasks_dir, &id).map_err(|e| e.to_string())
+}
+
+/// Copies the template fields a `Series` shares across every occurrence
+/// (title, project, priority, tags, estimated time, notes — see `Series`'s
+/// own doc comment for why `status`/`due`/`scheduled` are excluded) from
+/// `task` onto `series`. Used by [`update_series_occurrence`]'s `"future"`
+/// scope to fold an edit back into the template, so occurrences generated
+/// *after* this edit also pick it up.
+fn apply_series_template_update(series: &mut Series, task: &Task) {
+    series.title = task.title.clone();
+    series.project = task.project.clone();
+    series.priority = task.priority.clone();
+    series.tags = task.tags.clone();
+    series.estimated_minutes = task.estimated_minutes;
+    series.notes = task.notes.clone();
+}
+
+/// Applies the same template fields [`apply_series_template_update`] copies
+/// onto a series, directly onto another already-generated occurrence —
+/// used to propagate a `"future"`-scoped edit to every other occurrence at
+/// or after the edited one's date, without touching that occurrence's own
+/// status/due/scheduled.
+fn apply_template_to_occurrence(occurrence: &mut Task, task: &Task) {
+    occurrence.title = task.title.clone();
+    occurrence.project = task.project.clone();
+    occurrence.priority = task.priority.clone();
+    occurrence.tags = task.tags.clone();
+    occurrence.estimated_minutes = task.estimated_minutes;
+    occurrence.notes = task.notes.clone();
+}
+
+/// Returns every task in `all_tasks` belonging to `series_id` (other than
+/// `exclude_id`, if given) whose `scheduled` date is on or after `cutoff` —
+/// the set a `"future"`-scoped edit ([`update_series_occurrence`])
+/// propagates shared-field changes onto, or a `"future"`-scoped delete
+/// ([`delete_series_occurrence`]) removes. The two callers pass a
+/// different `exclude_id`: an edit already saves the occurrence that
+/// triggered it separately, so it excludes that id to avoid double-applying
+/// the update; a delete has no separate "already handled" task — deleting
+/// "this and future" must delete that occurrence too — so it passes `None`.
+/// A task with no `scheduled` date is never included, since there's no
+/// date to compare against `cutoff`.
+fn future_occurrences<'a>(
+    all_tasks: &'a [Task],
+    series_id: &str,
+    exclude_id: Option<&str>,
+    cutoff: &str,
+) -> Vec<&'a Task> {
+    all_tasks
+        .iter()
+        .filter(|task| exclude_id.is_none_or(|id| task.id != id))
+        .filter(|task| task.series_id.as_deref() == Some(series_id))
+        .filter(|task| {
+            task.scheduled
+                .as_deref()
+                .is_some_and(|scheduled| scheduled >= cutoff)
+        })
+        .collect()
+}
+
+/// Updates an occurrence of a recurring task, with `scope` (`"this"` or
+/// `"future"`) deciding how far the edit reaches:
+/// - `"this"`: behaves exactly like [`update_task`], plus severs
+///   `series_id` — the edited task becomes a fully standalone task from
+///   this point on.
+/// - `"future"`: saves the edit on this occurrence (keeping its
+///   `series_id`), folds the same shared-field values into the series
+///   template (so future-generated occurrences inherit them too — see
+///   [`apply_series_template_update`]), and propagates them onto every
+///   other already-generated occurrence whose `scheduled` date is on or
+///   after this one's — never touching any of their own
+///   status/due/scheduled, or any occurrence *before* this date (past
+///   occurrences are left as an untouched historical record).
+///
+/// Returns every task that was changed (just the one, for `"this"`; the
+/// edited occurrence plus every future one updated, for `"future"`).
+#[tauri::command]
+pub fn update_series_occurrence(
+    state: State<AppState>,
+    task: Task,
+    scope: String,
+) -> Result<Vec<Task>, String> {
+    let title = task.title.trim().to_string();
+    if title.is_empty() {
+        return Err("task title must not be empty".to_string());
+    }
+    validate_date_field(&task.due, "due")?;
+    validate_date_field(&task.scheduled, "scheduled")?;
+    if task.scheduled.is_none() {
+        return Err("scheduled date must not be empty".to_string());
+    }
+    if scope != "this" && scope != "future" {
+        return Err("scope must be 'this' or 'future'".to_string());
+    }
+
+    let settings =
+        settings_storage::load_settings(&state.settings_file).map_err(|e| e.to_string())?;
+    validate_priority_id(&settings, &task.priority)?;
+    validate_status_id(&settings, &task.status)?;
+
+    let project_name = resolve_project_name(task.project.clone(), &settings);
+    let mut existing = storage::load_task(&state.tasks_dir, &task.id).map_err(|e| e.to_string())?;
+    let series_id = existing.series_id.clone();
+    apply_task_update(&mut existing, title, project_name, task);
+
+    if scope == "this" {
+        existing.series_id = None;
+        storage::update_task(&state.tasks_dir, &existing).map_err(|e| e.to_string())?;
+        return Ok(vec![existing]);
+    }
+
+    let Some(series_id) = series_id else {
+        return Err("task is not part of a recurring series".to_string());
+    };
+    let scheduled = existing.scheduled.clone().unwrap_or_default();
+
+    storage::update_task(&state.tasks_dir, &existing).map_err(|e| e.to_string())?;
+    let mut updated = vec![existing.clone()];
+
+    let _guard = state
+        .series_lock
+        .lock()
+        .map_err(|_| "series lock poisoned".to_string())?;
+
+    let mut all_series =
+        series_storage::list_series(&state.series_file).map_err(|e| e.to_string())?;
+    let Some(series) = all_series.iter_mut().find(|s| s.id == series_id) else {
+        return Err(format!("series '{series_id}' not found"));
+    };
+    apply_series_template_update(series, &existing);
+    series_storage::save_series(&state.series_file, &all_series).map_err(|e| e.to_string())?;
+
+    let all_tasks = storage::list_tasks(&state.tasks_dir).map_err(|e| e.to_string())?;
+    for other in future_occurrences(&all_tasks, &series_id, Some(&existing.id), &scheduled) {
+        let mut other = other.clone();
+        apply_template_to_occurrence(&mut other, &existing);
+        storage::update_task(&state.tasks_dir, &other).map_err(|e| e.to_string())?;
+        updated.push(other);
+    }
+
+    Ok(updated)
+}
+
+/// Deletes an occurrence of a recurring task, with `scope` (`"this"` or
+/// `"future"`) deciding how far the deletion reaches:
+/// - `"this"`: behaves exactly like [`delete_task`] — only this occurrence
+///   is removed, the series and every other occurrence are untouched.
+/// - `"future"`: deletes this occurrence and every other already-generated
+///   occurrence in the same series whose `scheduled` date is on or after
+///   this one's, then caps the series' `end_date` to the day before this
+///   date so generation never recreates them. Past occurrences (before
+///   this date) are left untouched.
+#[tauri::command]
+pub fn delete_series_occurrence(
+    state: State<AppState>,
+    task_id: String,
+    scope: String,
+) -> Result<(), String> {
+    if scope != "this" && scope != "future" {
+        return Err("scope must be 'this' or 'future'".to_string());
+    }
+
+    let task = storage::load_task(&state.tasks_dir, &task_id).map_err(|e| e.to_string())?;
+
+    if scope == "this" {
+        return storage::delete_task(&state.tasks_dir, &task_id).map_err(|e| e.to_string());
+    }
+
+    let (Some(series_id), Some(scheduled)) = (task.series_id.clone(), task.scheduled.clone())
+    else {
+        return storage::delete_task(&state.tasks_dir, &task_id).map_err(|e| e.to_string());
+    };
+
+    let _guard = state
+        .series_lock
+        .lock()
+        .map_err(|_| "series lock poisoned".to_string())?;
+
+    let all_tasks = storage::list_tasks(&state.tasks_dir).map_err(|e| e.to_string())?;
+    for other in future_occurrences(&all_tasks, &series_id, None, &scheduled) {
+        storage::delete_task(&state.tasks_dir, &other.id).map_err(|e| e.to_string())?;
+    }
+
+    let mut all_series =
+        series_storage::list_series(&state.series_file).map_err(|e| e.to_string())?;
+    if let Some(series) = all_series.iter_mut().find(|s| s.id == series_id) {
+        if let Some(cutoff) = chrono::NaiveDate::parse_from_str(&scheduled, "%Y-%m-%d")
+            .ok()
+            .and_then(|d| d.checked_sub_days(chrono::Days::new(1)))
+        {
+            series.end_date = Some(cutoff.format("%Y-%m-%d").to_string());
+        }
+    }
+    series_storage::save_series(&state.series_file, &all_series).map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+/// Stops a recurring task's series from generating any further occurrences.
+/// Existing occurrences (past and future) keep their `series_id` rather
+/// than having it severed — the user's explicit choice, so a future
+/// series-level report could still group them.
+#[tauri::command]
+pub fn remove_recurrence(state: State<AppState>, task_id: String) -> Result<(), String> {
+    let task = storage::load_task(&state.tasks_dir, &task_id).map_err(|e| e.to_string())?;
+    let Some(series_id) = task.series_id else {
+        return Err("task is not part of a recurring series".to_string());
+    };
+
+    let _guard = state
+        .series_lock
+        .lock()
+        .map_err(|_| "series lock poisoned".to_string())?;
+
+    let mut all_series =
+        series_storage::list_series(&state.series_file).map_err(|e| e.to_string())?;
+    let Some(series) = all_series.iter_mut().find(|s| s.id == series_id) else {
+        return Err(format!("series '{series_id}' not found"));
+    };
+    series.active = false;
+    series_storage::save_series(&state.series_file, &all_series).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// Sets a task's board position (`order`) and optionally its status and/or
@@ -2786,6 +3015,147 @@ mod tests {
         series
     }
 
+    fn edited_occurrence_task() -> Task {
+        let mut task = Task::new("Water the ferns".to_string());
+        task.project = Some("Garden".to_string());
+        task.priority = "high".to_string();
+        task.status = "in-progress".to_string();
+        task.tags = vec!["urgent".to_string()];
+        task.estimated_minutes = Some(20);
+        task.notes = "Use the green watering can".to_string();
+        task.scheduled = Some("2026-06-20".to_string());
+        task.due = Some("2026-06-21".to_string());
+        task.series_id = Some("series-abc".to_string());
+        task
+    }
+
+    #[test]
+    fn apply_series_template_update_copies_shared_fields_only() {
+        let mut series = new_test_series(
+            crate::series::RecurrenceFrequency::EveryNDays { interval: 1 },
+            "2026-06-15",
+        );
+        let edited = edited_occurrence_task();
+
+        apply_series_template_update(&mut series, &edited);
+
+        assert_eq!(series.title, "Water the ferns");
+        assert_eq!(series.project, Some("Garden".to_string()));
+        assert_eq!(series.priority, "high");
+        assert_eq!(series.tags, vec!["urgent".to_string()]);
+        assert_eq!(series.estimated_minutes, Some(20));
+        assert_eq!(series.notes, "Use the green watering can");
+        // Unaffected: the series' own date/rule fields aren't touched by a
+        // template update, since status/due/scheduled are per-occurrence.
+        assert_eq!(series.anchor_date, "2026-06-15");
+    }
+
+    #[test]
+    fn apply_template_to_occurrence_copies_shared_fields_but_not_status_or_dates() {
+        let mut occurrence = Task::new("Old title".to_string());
+        occurrence.status = "done".to_string();
+        occurrence.scheduled = Some("2026-07-01".to_string());
+        occurrence.due = Some("2026-07-02".to_string());
+        let edited = edited_occurrence_task();
+
+        apply_template_to_occurrence(&mut occurrence, &edited);
+
+        assert_eq!(occurrence.title, "Water the ferns");
+        assert_eq!(occurrence.project, Some("Garden".to_string()));
+        assert_eq!(occurrence.priority, "high");
+        assert_eq!(occurrence.tags, vec!["urgent".to_string()]);
+        assert_eq!(occurrence.estimated_minutes, Some(20));
+        assert_eq!(occurrence.notes, "Use the green watering can");
+        // Untouched: status/scheduled/due stay this occurrence's own.
+        assert_eq!(occurrence.status, "done");
+        assert_eq!(occurrence.scheduled, Some("2026-07-01".to_string()));
+        assert_eq!(occurrence.due, Some("2026-07-02".to_string()));
+    }
+
+    fn series_occurrence(id: &str, series_id: &str, scheduled: &str) -> Task {
+        let mut task = Task::new("Water the plants".to_string());
+        task.id = id.to_string();
+        task.series_id = Some(series_id.to_string());
+        task.scheduled = Some(scheduled.to_string());
+        task
+    }
+
+    #[test]
+    fn future_occurrences_includes_tasks_on_or_after_the_cutoff() {
+        let tasks = vec![
+            series_occurrence("a", "series-1", "2026-06-19"),
+            series_occurrence("b", "series-1", "2026-06-20"),
+            series_occurrence("c", "series-1", "2026-06-21"),
+        ];
+
+        let result = future_occurrences(&tasks, "series-1", None, "2026-06-20");
+
+        let ids: Vec<&str> = result.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, vec!["b", "c"]);
+    }
+
+    #[test]
+    fn future_occurrences_excludes_tasks_before_the_cutoff() {
+        let tasks = vec![series_occurrence("a", "series-1", "2026-06-19")];
+
+        let result = future_occurrences(&tasks, "series-1", None, "2026-06-20");
+
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn future_occurrences_excludes_tasks_from_a_different_series() {
+        let tasks = vec![series_occurrence("a", "series-2", "2026-06-25")];
+
+        let result = future_occurrences(&tasks, "series-1", None, "2026-06-20");
+
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn future_occurrences_excludes_tasks_with_no_series_id() {
+        let mut task = Task::new("Unrelated task".to_string());
+        task.scheduled = Some("2026-06-25".to_string());
+        let tasks = vec![task];
+
+        let result = future_occurrences(&tasks, "series-1", None, "2026-06-20");
+
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn future_occurrences_excludes_tasks_with_no_scheduled_date() {
+        let mut task = Task::new("No date".to_string());
+        task.series_id = Some("series-1".to_string());
+        let tasks = vec![task];
+
+        let result = future_occurrences(&tasks, "series-1", None, "2026-06-20");
+
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn future_occurrences_excludes_the_given_exclude_id_even_if_otherwise_matching() {
+        let tasks = vec![series_occurrence("a", "series-1", "2026-06-25")];
+
+        let result = future_occurrences(&tasks, "series-1", Some("a"), "2026-06-20");
+
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn future_occurrences_includes_a_task_exactly_at_the_cutoff_when_not_excluded() {
+        // Mirrors `delete_series_occurrence`'s use: the task that originated the
+        // "this and future" request has `scheduled == cutoff` and must still be
+        // included, since deleting "this and future" deletes that occurrence too.
+        let tasks = vec![series_occurrence("a", "series-1", "2026-06-20")];
+
+        let result = future_occurrences(&tasks, "series-1", None, "2026-06-20");
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, "a");
+    }
+
     #[test]
     fn build_series_occurrence_copies_template_fields() {
         let series = new_test_series(
@@ -2940,5 +3310,55 @@ mod tests {
         let result = generate_series_occurrences(dir.path(), &settings, None, &mut series, through);
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn generate_series_occurrences_never_moves_the_watermark_backward_when_through_is_already_covered(
+    ) {
+        // Regression test: a real user-reported bug where switching between Week and
+        // Calendar view (each asking to "ensure occurrences through" a different,
+        // often much nearer-term date than what a prior call had already generated)
+        // rewound `generated_until` backward, causing the *next* call to think the
+        // already-generated range still needed generating — producing duplicate
+        // occurrences that multiplied every time a view was switched.
+        let dir = tempdir().unwrap();
+        let settings = Settings::default();
+        let mut series = new_test_series(
+            crate::series::RecurrenceFrequency::EveryNDays { interval: 1 },
+            "2026-06-15",
+        );
+
+        // First call: a wide baseline window, as `create_recurring_task` does.
+        let baseline_horizon = chrono::NaiveDate::from_ymd_opt(2026, 8, 14).unwrap();
+        let baseline_created =
+            generate_series_occurrences(dir.path(), &settings, None, &mut series, baseline_horizon)
+                .unwrap();
+        assert_eq!(baseline_created.len(), 60);
+        assert_eq!(series.generated_until, "2026-08-14");
+
+        // Second call: a much nearer-term "through", as Week view's initial mount does.
+        let near_term_through = chrono::NaiveDate::from_ymd_opt(2026, 6, 22).unwrap();
+        let second_call_created = generate_series_occurrences(
+            dir.path(),
+            &settings,
+            None,
+            &mut series,
+            near_term_through,
+        )
+        .unwrap();
+
+        assert!(second_call_created.is_empty());
+        assert_eq!(series.generated_until, "2026-08-14");
+
+        // Third call: back to (or past) the original wide horizon — must still be a
+        // no-op, not a re-generation of the range the buggy version would have
+        // forgotten about after the second call rewound the watermark.
+        let third_call_created =
+            generate_series_occurrences(dir.path(), &settings, None, &mut series, baseline_horizon)
+                .unwrap();
+
+        assert!(third_call_created.is_empty());
+        let saved = storage::list_tasks(dir.path()).unwrap();
+        assert_eq!(saved.len(), 60);
     }
 }

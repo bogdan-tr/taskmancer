@@ -10,6 +10,15 @@ export type RecurrenceFrequency =
   | { kind: "Weekly"; weekdays: number[]; interval_weeks: number }
   | { kind: "MonthlyByDay"; day: number };
 
+/**
+ * How far an edit/delete on a recurring task's occurrence should reach:
+ * `"this"` affects only that occurrence (severing its link to the series,
+ * for an edit); `"future"` also affects every other already-generated
+ * occurrence on or after that one's date (and, for an edit, the series
+ * template itself, so occurrences generated later inherit it too).
+ */
+export type SeriesEditScope = "this" | "future";
+
 const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 function ordinal(day: number): string {
