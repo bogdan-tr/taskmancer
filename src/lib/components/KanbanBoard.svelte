@@ -173,7 +173,12 @@
   async function handleAddTask(parsed: ParsedTaskInput) {
     try {
       if (parsed.recurrence) {
-        const tasks = await createRecurringTask(parsed, parsed.recurrence.frequency, parsed.recurrence.endDate);
+        const tasks = await createRecurringTask(
+          parsed,
+          parsed.recurrence.frequency,
+          parsed.recurrence.endDate,
+          parsed.dueRule,
+        );
         for (const task of tasks) replaceTask(task);
       } else {
         const task = await createTask(parsed);

@@ -1,5 +1,14 @@
 import { describe, expect, test } from "vitest";
-import { formatRecurrenceFrequency, type RecurrenceFrequency } from "./recurrence";
+import {
+  daysBetween,
+  formatDueRule,
+  formatRecurrenceFrequency,
+  resolveDueRule,
+  resolveNonRecurringDue,
+  resolveSeriesDueRule,
+  type DueRule,
+  type RecurrenceFrequency,
+} from "./recurrence";
 
 describe("formatRecurrenceFrequency", () => {
   test("formats a daily interval", () => {
@@ -54,5 +63,183 @@ describe("formatRecurrenceFrequency", () => {
 
   test("formats the 31st correctly", () => {
     expect(formatRecurrenceFrequency({ kind: "MonthlyByDay", day: 31 })).toBe("Monthly on the 31st");
+  });
+});
+
+describe("formatDueRule", () => {
+  test("formats Never", () => {
+    expect(formatDueRule({ kind: "Never" })).toBe("Never");
+  });
+
+  test("formats a recognized default code via its existing label", () => {
+    expect(formatDueRule({ kind: "DefaultCode", code: "next_day" })).toBe("Next day");
+  });
+
+  test("formats a zero-day offset as 'same day'", () => {
+    expect(formatDueRule({ kind: "AfterScheduled", days: 0 })).toBe("Same day as scheduled");
+  });
+
+  test("formats a positive one-day offset in the singular", () => {
+    expect(formatDueRule({ kind: "AfterScheduled", days: 1 })).toBe("1 day after scheduled");
+  });
+
+  test("formats a positive multi-day offset in the plural", () => {
+    expect(formatDueRule({ kind: "AfterScheduled", days: 5 })).toBe("5 days after scheduled");
+  });
+
+  test("formats a negative one-day offset in the singular", () => {
+    expect(formatDueRule({ kind: "AfterScheduled", days: -1 })).toBe("1 day before scheduled");
+  });
+
+  test("formats a negative multi-day offset in the plural", () => {
+    expect(formatDueRule({ kind: "AfterScheduled", days: -3 })).toBe("3 days before scheduled");
+  });
+
+  test("formats a weekday rule with interval 1 as 'Next <weekday>'", () => {
+    const rule: DueRule = { kind: "Weekday", weekday: 1, interval_weeks: 1 };
+    expect(formatDueRule(rule)).toBe("Next Mon");
+  });
+
+  test("formats a weekday rule with interval 2 as 'Every other <weekday>'", () => {
+    const rule: DueRule = { kind: "Weekday", weekday: 5, interval_weeks: 2 };
+    expect(formatDueRule(rule)).toBe("Every other Fri");
+  });
+});
+
+describe("daysBetween", () => {
+  test("returns 0 for the same date", () => {
+    expect(daysBetween("2026-06-15", "2026-06-15")).toBe(0);
+  });
+
+  test("returns a positive count when the second date is later", () => {
+    expect(daysBetween("2026-06-15", "2026-06-20")).toBe(5);
+  });
+
+  test("returns a negative count when the second date is earlier", () => {
+    expect(daysBetween("2026-06-20", "2026-06-15")).toBe(-5);
+  });
+
+  test("correctly counts across a month boundary", () => {
+    expect(daysBetween("2026-06-28", "2026-07-02")).toBe(4);
+  });
+});
+
+describe("resolveDueRule", () => {
+  test("Never resolves to undefined", () => {
+    expect(resolveDueRule({ kind: "Never" }, "2026-06-15")).toBeUndefined();
+  });
+
+  test("DefaultCode resolves via the existing relative-date resolver", () => {
+    expect(resolveDueRule({ kind: "DefaultCode", code: "next_day" }, "2026-06-15")).toBe("2026-06-16");
+  });
+
+  test("DefaultCode 'none' resolves to undefined", () => {
+    expect(resolveDueRule({ kind: "DefaultCode", code: "none" }, "2026-06-15")).toBeUndefined();
+  });
+
+  test("AfterScheduled zero days is the same day", () => {
+    expect(resolveDueRule({ kind: "AfterScheduled", days: 0 }, "2026-06-15")).toBe("2026-06-15");
+  });
+
+  test("AfterScheduled positive days is later", () => {
+    expect(resolveDueRule({ kind: "AfterScheduled", days: 5 }, "2026-06-15")).toBe("2026-06-20");
+  });
+
+  test("AfterScheduled negative days is earlier", () => {
+    expect(resolveDueRule({ kind: "AfterScheduled", days: -3 }, "2026-06-15")).toBe("2026-06-12");
+  });
+
+  test("Weekday rule resolves to the same day when scheduled is already that weekday", () => {
+    // 2026-06-15 is a Monday.
+    expect(resolveDueRule({ kind: "Weekday", weekday: 1, interval_weeks: 1 }, "2026-06-15")).toBe("2026-06-15");
+  });
+
+  test("Weekday rule resolves to the next occurrence of that weekday", () => {
+    // 2026-06-15 is a Monday; the next Friday is 2026-06-19.
+    expect(resolveDueRule({ kind: "Weekday", weekday: 5, interval_weeks: 1 }, "2026-06-15")).toBe("2026-06-19");
+  });
+
+  test("Weekday rule wraps around to next week when the weekday already passed", () => {
+    // 2026-06-19 is a Friday; the next Monday is 2026-06-22, not earlier.
+    expect(resolveDueRule({ kind: "Weekday", weekday: 1, interval_weeks: 1 }, "2026-06-19")).toBe("2026-06-22");
+  });
+
+  test("Weekday rule with interval 2 skips the next occurrence", () => {
+    // 2026-06-15 is a Monday; the next Friday is 2026-06-19, the one after is 2026-06-26.
+    expect(resolveDueRule({ kind: "Weekday", weekday: 5, interval_weeks: 2 }, "2026-06-15")).toBe("2026-06-26");
+  });
+});
+
+describe("resolveSeriesDueRule", () => {
+  test("uses an already-structured dueRule as-is, ignoring due", () => {
+    const rule: DueRule = { kind: "AfterScheduled", days: 5 };
+
+    expect(resolveSeriesDueRule(undefined, rule, "2026-06-15")).toEqual(rule);
+  });
+
+  test("a dueRule of Weekday is also used as-is", () => {
+    const rule: DueRule = { kind: "Weekday", weekday: 1, interval_weeks: 2 };
+
+    expect(resolveSeriesDueRule(undefined, rule, "2026-06-15")).toEqual(rule);
+  });
+
+  test("due === 'none' with no dueRule resolves to Never", () => {
+    expect(resolveSeriesDueRule("none", undefined, "2026-06-15")).toEqual({ kind: "Never" });
+  });
+
+  test("a resolved absolute due date becomes a generic AfterScheduled offset from scheduled", () => {
+    expect(resolveSeriesDueRule("2026-06-20", undefined, "2026-06-15")).toEqual({
+      kind: "AfterScheduled",
+      days: 5,
+    });
+  });
+
+  test("a due date before the scheduled date produces a negative offset", () => {
+    expect(resolveSeriesDueRule("2026-06-12", undefined, "2026-06-15")).toEqual({
+      kind: "AfterScheduled",
+      days: -3,
+    });
+  });
+
+  test("a due date equal to the scheduled date produces a zero offset", () => {
+    expect(resolveSeriesDueRule("2026-06-15", undefined, "2026-06-15")).toEqual({
+      kind: "AfterScheduled",
+      days: 0,
+    });
+  });
+
+  test("neither due nor dueRule set resolves to undefined, deferring to the backend default", () => {
+    expect(resolveSeriesDueRule(undefined, undefined, "2026-06-15")).toBeUndefined();
+  });
+});
+
+describe("resolveNonRecurringDue", () => {
+  test("an already-resolved absolute due date is used as-is, ignoring any dueRule", () => {
+    expect(resolveNonRecurringDue("2026-06-20", { kind: "AfterScheduled", days: 5 }, "2026-06-15")).toBe(
+      "2026-06-20",
+    );
+  });
+
+  test("the 'none' sentinel is used as-is, ignoring any dueRule", () => {
+    expect(resolveNonRecurringDue("none", { kind: "AfterScheduled", days: 5 }, "2026-06-15")).toBe("none");
+  });
+
+  test("an AfterScheduled dueRule with no due set resolves to an absolute date relative to scheduled", () => {
+    // This is the bug this function exists to fix: 'due in 5 days' on a
+    // non-recurring task resolves to `dueRule`, not `due` — without this
+    // resolution, createTask (which only reads `due`) would silently get
+    // no due date at all despite the preview showing one.
+    expect(resolveNonRecurringDue(undefined, { kind: "AfterScheduled", days: 5 }, "2026-06-15")).toBe("2026-06-20");
+  });
+
+  test("a Weekday dueRule with no due set resolves to an absolute date relative to scheduled", () => {
+    // 2026-06-15 is a Monday; the next Friday is 2026-06-19.
+    expect(resolveNonRecurringDue(undefined, { kind: "Weekday", weekday: 5, interval_weeks: 1 }, "2026-06-15")).toBe(
+      "2026-06-19",
+    );
+  });
+
+  test("neither due nor dueRule set resolves to undefined", () => {
+    expect(resolveNonRecurringDue(undefined, undefined, "2026-06-15")).toBeUndefined();
   });
 });

@@ -155,6 +155,175 @@ describe("parseTaskInput", () => {
     expect(phrase.due).toBe("none");
   });
 
+  test("'due na' also sets dueRule to the Never sentinel", () => {
+    const result = parseTaskInput("Pay rent due na", NOW);
+
+    expect(result.dueRule).toEqual({ kind: "Never" });
+  });
+
+  test("'due:na' also sets dueRule to the Never sentinel", () => {
+    const result = parseTaskInput("Pay rent due:na", NOW);
+
+    expect(result.dueRule).toEqual({ kind: "Never" });
+  });
+
+  test("extracts 'due in <n> days' as an AfterScheduled rule, leaving due unresolved", () => {
+    const result = parseTaskInput("Water plants due in 5 days", NOW);
+
+    expect(result.title).toBe("Water plants");
+    expect(result.due).toBeUndefined();
+    expect(result.dueRule).toEqual({ kind: "AfterScheduled", days: 5 });
+  });
+
+  test("'due in <n> day' (singular) is recognized the same as 'days'", () => {
+    const result = parseTaskInput("Water plants due in 1 day", NOW);
+
+    expect(result.dueRule).toEqual({ kind: "AfterScheduled", days: 1 });
+  });
+
+  test("'due in 0 days' is a valid same-day offset", () => {
+    const result = parseTaskInput("Water plants due in 0 days", NOW);
+
+    expect(result.dueRule).toEqual({ kind: "AfterScheduled", days: 0 });
+  });
+
+  test("'due in' without a recognized day count falls through, leaving it in the title", () => {
+    const result = parseTaskInput("Water plants due in a while", NOW);
+
+    expect(result.title).toBe("Water plants due in a while");
+    expect(result.due).toBeUndefined();
+    expect(result.dueRule).toBeUndefined();
+  });
+
+  test("extracts a plural weekday ('due mondays') as a Weekday rule with interval 1 when the task is recurring", () => {
+    const result = parseTaskInput("Gym every saturday due mondays", NOW);
+
+    expect(result.title).toBe("Gym");
+    expect(result.due).toBeUndefined();
+    expect(result.dueRule).toEqual({ kind: "Weekday", weekday: 1, interval_weeks: 1 });
+  });
+
+  test("extracts 'due every <weekday>' (singular) as a Weekday rule with interval 1 when the task is recurring", () => {
+    const result = parseTaskInput("Gym every saturday due every monday", NOW);
+
+    expect(result.dueRule).toEqual({ kind: "Weekday", weekday: 1, interval_weeks: 1 });
+  });
+
+  test("a plain singular weekday with no 'every' or plural keeps its existing absolute-date meaning", () => {
+    // NOW is Wednesday 2026-06-10; next Monday is 2026-06-15.
+    const result = parseTaskInput("Gym due monday", NOW);
+
+    expect(result.due).toBe("2026-06-15");
+    expect(result.dueRule).toBeUndefined();
+  });
+
+  test("extracts 'due other mondays' (plural) as a Weekday rule with interval 2 when the task is recurring", () => {
+    const result = parseTaskInput("Gym every saturday due other mondays", NOW);
+
+    expect(result.due).toBeUndefined();
+    expect(result.dueRule).toEqual({ kind: "Weekday", weekday: 1, interval_weeks: 2 });
+  });
+
+  test("extracts 'due every other <weekday>' (singular) as a Weekday rule with interval 2 when the task is recurring", () => {
+    const result = parseTaskInput("Gym every saturday due every other monday", NOW);
+
+    expect(result.dueRule).toEqual({ kind: "Weekday", weekday: 1, interval_weeks: 2 });
+  });
+
+  test("the weekday-rule phrase is case-insensitive", () => {
+    const result = parseTaskInput("Gym every saturday due MONDAYS", NOW);
+
+    expect(result.dueRule).toEqual({ kind: "Weekday", weekday: 1, interval_weeks: 1 });
+  });
+
+  test("recognizes a plural weekday immediately followed by a comma-separated list boundary", () => {
+    const result = parseTaskInput("Gym every saturday due mondays, for real", NOW);
+
+    expect(result.dueRule).toEqual({ kind: "Weekday", weekday: 1, interval_weeks: 1 });
+    expect(result.title).toBe("Gym for real");
+  });
+
+  test("'due every' with no recognized weekday falls through, leaving it in the title", () => {
+    const result = parseTaskInput("Gym every saturday due every banana", NOW);
+
+    expect(result.title).toBe("Gym due every banana");
+    expect(result.due).toBeUndefined();
+    expect(result.dueRule).toBeUndefined();
+  });
+
+  test("recurring due rules work together with an 'every ...' recurrence token in the same title", () => {
+    const result = parseTaskInput("Gym every saturday due in 2 days", NOW);
+
+    expect(result.title).toBe("Gym");
+    expect(result.recurrence?.frequency).toEqual({ kind: "Weekly", weekdays: [6], interval_weeks: 1 });
+    expect(result.dueRule).toEqual({ kind: "AfterScheduled", days: 2 });
+  });
+
+  test("'due in <n> days' (the generic offset form) works even without an 'every ...' recurrence token", () => {
+    const result = parseTaskInput("Water plants due in 2 days", NOW);
+
+    expect(result.recurrence).toBeUndefined();
+    expect(result.dueRule).toEqual({ kind: "AfterScheduled", days: 2 });
+  });
+
+  test("the weekday-rule due phrase is NOT recognized on a non-recurring task — 'due mondays' stays literal", () => {
+    const result = parseTaskInput("Gym due mondays", NOW);
+
+    expect(result.title).toBe("Gym due mondays");
+    expect(result.due).toBeUndefined();
+    expect(result.dueRule).toBeUndefined();
+  });
+
+  test("'due every <weekday>' with nothing else recurring: the due phrase itself isn't matched, but the standalone 'every <weekday>' that's left over is still a valid recurrence phrase in its own right (pre-existing grammar, unrelated to the due-rule gate)", () => {
+    const result = parseTaskInput("Gym due every monday", NOW);
+
+    expect(result.title).toBe("Gym due");
+    expect(result.dueRule).toBeUndefined();
+    expect(result.recurrence?.frequency).toEqual({ kind: "Weekly", weekdays: [1], interval_weeks: 1 });
+  });
+
+  test("the weekday-rule due phrase is NOT recognized on a non-recurring task — 'due other mondays' stays literal", () => {
+    const result = parseTaskInput("Gym due other mondays", NOW);
+
+    expect(result.title).toBe("Gym due other mondays");
+    expect(result.dueRule).toBeUndefined();
+  });
+
+  test("a separate recurrence token appearing AFTER the due phrase in the title still counts as recurring", () => {
+    // "due mondays" appears before "every saturday" — the weekday-rule
+    // phrase still needs to be recognized correctly via the pre-scan.
+    const result = parseTaskInput("Gym due mondays every saturday", NOW);
+
+    expect(result.dueRule).toEqual({ kind: "Weekday", weekday: 1, interval_weeks: 1 });
+    expect(result.recurrence?.frequency).toEqual({ kind: "Weekly", weekdays: [6], interval_weeks: 1 });
+  });
+
+  // The recurrence pre-scan must actually resolve a real recurrence phrase,
+  // not just look for the bare word "every" — ordinary English uses of
+  // "every" elsewhere in a title must never falsely gate the weekday due
+  // rule open on what's actually a non-recurring task (a false positive
+  // there would silently drop the due date entirely, since `createTask`
+  // never reads `dueRule` — see api.ts).
+  test.each([
+    "Review every single PR due fridays",
+    "Email the team every week or so due mondays",
+    "Check on it every now and then due fridays",
+    "Tell them every detail due mondays",
+    "Call every time due mondays",
+  ])("an ordinary, non-recurrence use of 'every' does not falsely enable the weekday due rule: %s", (title) => {
+    const result = parseTaskInput(title, NOW);
+
+    expect(result.dueRule).toBeUndefined();
+    expect(result.recurrence).toBeUndefined();
+  });
+
+  test("'every day' is a real recurrence phrase, so a weekday due rule alongside it is correctly recognized", () => {
+    const result = parseTaskInput("Call every day due mondays", NOW);
+
+    expect(result.recurrence?.frequency).toEqual({ kind: "EveryNDays", interval: 1 });
+    expect(result.dueRule).toEqual({ kind: "Weekday", weekday: 1, interval_weeks: 1 });
+  });
+
   test("parses a combination of tags, project, priority, and due date", () => {
     const result = parseTaskInput(
       "Finish slides #work +ProjectX !high due:tomorrow for the review",

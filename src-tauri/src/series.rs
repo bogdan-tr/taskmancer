@@ -2,12 +2,86 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::settings::validate_due_relative_date_code;
-
 /// A day of the week, `0` (Sunday) through `6` (Saturday) — matches the
 /// frontend's `Date.getDay()` convention (see `weekRange.ts`) so the two
 /// sides need no translation when mirroring this logic.
 pub type Weekday = u8;
+
+/// How a recurring task's due date relates to each occurrence's own
+/// scheduled date (never to "today", and never a single fixed absolute
+/// date — that wouldn't make sense once there's more than one occurrence).
+/// Resolved per-occurrence by [`crate::recurrence::resolve_due_rule`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind")]
+pub enum DueRule {
+    /// No due date for any occurrence — the `due na`/`due:na` sentinel,
+    /// generalized to every occurrence the series produces. A distinct
+    /// variant (rather than wrapping the whole field in `Option`) so a
+    /// command parameter can tell "explicitly never due" apart from "no
+    /// override given, use the configured default" — `Series.due_rule`
+    /// itself is never optional; every series has *some* rule, even if
+    /// that rule is "never".
+    Never,
+    /// The project/global default due-code (see
+    /// [`crate::settings::DUE_RELATIVE_DATE_CODES`]), resolved per-
+    /// occurrence via [`crate::settings::resolve_due_relative_date`] exactly
+    /// like a normal (non-recurring) task's default due code already is.
+    /// Used when no explicit due phrase was typed when creating the
+    /// recurring task — kept as a distinct variant (rather than converting
+    /// it to a fixed [`DueRule::AfterScheduled`] offset up front) so
+    /// `"in_1_month"` keeps its true calendar-month arithmetic for every
+    /// occurrence, instead of an approximation baked in from whichever
+    /// month the series happened to start in.
+    DefaultCode { code: String },
+    /// Due `days` days after the occurrence's own scheduled date (`0` is
+    /// the same day). Covers every NL due phrase that doesn't name a
+    /// weekday-based rule explicitly — `due tomorrow`, `due in 5 days`,
+    /// `due jul 31`, even a singular weekday like `due monday` — each
+    /// resolves to a date once, and the *gap* between that date and the
+    /// scheduled date becomes this offset, applied consistently to every
+    /// future occurrence. May be negative (due before scheduled) — unusual
+    /// but not rejected, since a workflow that wants it isn't unreasonable
+    /// and there's nothing to clamp it against.
+    AfterScheduled { days: i32 },
+    /// Due on the next occurrence of `weekday` on or after the occurrence's
+    /// own scheduled date, every `interval_weeks` weeks (`1` is the very
+    /// next occurrence; `2` skips that one, due on the one after — "every
+    /// other <weekday>", mirroring the scheduling side's same concept).
+    /// Only reachable via the dedicated `due <weekday>s`/`due every
+    /// <weekday>` NL phrase, never via a plain singular weekday (which
+    /// resolves through `AfterScheduled` instead, to avoid two different
+    /// rules silently producing the same date for the common case).
+    Weekday {
+        weekday: Weekday,
+        interval_weeks: u32,
+    },
+}
+
+/// Returns `Ok(())` if `rule` is internally well-formed — a recognized code
+/// for [`DueRule::DefaultCode`] (see
+/// [`crate::settings::validate_due_relative_date_code`]), an in-range
+/// weekday and a positive interval for [`DueRule::Weekday`], and always
+/// valid for [`DueRule::AfterScheduled`] including a negative offset (see
+/// its own doc comment) — or an error describing the problem otherwise.
+pub fn validate_due_rule(rule: &DueRule) -> Result<(), String> {
+    match rule {
+        DueRule::Never => Ok(()),
+        DueRule::DefaultCode { code } => crate::settings::validate_due_relative_date_code(code),
+        DueRule::AfterScheduled { .. } => Ok(()),
+        DueRule::Weekday {
+            weekday,
+            interval_weeks,
+        } => {
+            if *weekday > 6 {
+                return Err("weekday must be 0 (Sunday) through 6 (Saturday)".to_string());
+            }
+            if *interval_weeks == 0 {
+                return Err("due interval must be at least 1 week".to_string());
+            }
+            Ok(())
+        }
+    }
+}
 
 /// How often a series repeats. Each variant carries only the fields that
 /// are actually meaningful for it (no shared generic "interval" field),
@@ -98,12 +172,11 @@ pub struct Series {
     /// generated for a date after this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end_date: Option<String>,
-    /// A [`crate::settings::DUE_RELATIVE_DATE_CODES`] code each occurrence's
-    /// due date is resolved against, relative to that occurrence's own
-    /// scheduled date (via [`crate::settings::resolve_due_relative_date`]) —
-    /// `None` means occurrences have no due date.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub due_code: Option<String>,
+    /// How each occurrence's due date relates to its own scheduled date —
+    /// see [`DueRule`], including its own [`DueRule::Never`] variant for "no
+    /// due date at all" (so this field is never itself optional).
+    #[serde(default = "default_due_rule")]
+    pub due_rule: DueRule,
     /// The last date (`YYYY-MM-DD`) occurrences have been generated through
     /// — the watermark the rolling lookahead window extends forward from.
     /// Generation only ever moves this forward and never revisits a date at
@@ -136,6 +209,10 @@ fn default_active() -> bool {
     true
 }
 
+fn default_due_rule() -> DueRule {
+    DueRule::Never
+}
+
 impl Series {
     /// Creates a new active series with a freshly generated id and the
     /// current time as `created`. `generated_until` starts at `anchor_date`
@@ -148,7 +225,7 @@ impl Series {
         frequency: RecurrenceFrequency,
         anchor_date: String,
         end_date: Option<String>,
-        due_code: Option<String>,
+        due_rule: DueRule,
         title: String,
         project: Option<String>,
         priority: String,
@@ -162,7 +239,7 @@ impl Series {
             generated_until: anchor_date.clone(),
             anchor_date,
             end_date,
-            due_code,
+            due_rule,
             active: true,
             title,
             project,
@@ -176,15 +253,12 @@ impl Series {
 }
 
 /// Returns `Ok(())` if `series` is internally well-formed — its frequency
-/// is valid (see [`validate_recurrence_frequency`]) and its `due_code`, if
-/// set, is a recognized code (see
-/// [`crate::settings::validate_due_relative_date_code`]) — or an error
-/// describing the first problem found otherwise.
+/// is valid (see [`validate_recurrence_frequency`]) and its `due_rule` is
+/// well-formed (see [`validate_due_rule`]) — or an error describing the
+/// first problem found otherwise.
 pub fn validate_series(series: &Series) -> Result<(), String> {
     validate_recurrence_frequency(&series.frequency)?;
-    if let Some(due_code) = &series.due_code {
-        validate_due_relative_date_code(due_code)?;
-    }
+    validate_due_rule(&series.due_rule)?;
     Ok(())
 }
 
@@ -204,7 +278,7 @@ mod tests {
             frequency,
             "2026-06-15".to_string(),
             None,
-            None,
+            DueRule::Never,
             "Water the plants".to_string(),
             None,
             "medium".to_string(),
@@ -231,11 +305,20 @@ mod tests {
     }
 
     #[test]
-    fn new_series_has_no_end_date_or_due_code_by_default() {
+    fn new_series_has_no_end_date_and_a_never_due_rule_by_default() {
         let series = new_series(RecurrenceFrequency::EveryNDays { interval: 1 });
 
         assert_eq!(series.end_date, None);
-        assert_eq!(series.due_code, None);
+        assert_eq!(series.due_rule, DueRule::Never);
+    }
+
+    #[test]
+    fn due_rule_defaults_to_never_when_absent_from_json() {
+        let json = r##"{"id":"abc","frequency":{"kind":"EveryNDays","interval":1},"anchor_date":"2026-06-15","generated_until":"2026-06-15","title":"Water the plants","priority":"medium","created":"2026-06-15T10:00:00+00:00"}"##;
+
+        let series: Series = serde_json::from_str(json).expect("parsing should succeed");
+
+        assert_eq!(series.due_rule, DueRule::Never);
     }
 
     #[test]
@@ -338,7 +421,7 @@ mod tests {
     #[test]
     fn validate_series_rejects_an_invalid_frequency() {
         let mut series = new_series(RecurrenceFrequency::EveryNDays { interval: 0 });
-        series.due_code = None;
+        series.due_rule = DueRule::Never;
 
         let result = validate_series(&series);
 
@@ -346,9 +429,12 @@ mod tests {
     }
 
     #[test]
-    fn validate_series_rejects_an_unrecognized_due_code() {
+    fn validate_series_rejects_an_invalid_due_rule() {
         let mut series = new_series(RecurrenceFrequency::EveryNDays { interval: 1 });
-        series.due_code = Some("not_a_real_code".to_string());
+        series.due_rule = DueRule::Weekday {
+            weekday: 7,
+            interval_weeks: 1,
+        };
 
         let result = validate_series(&series);
 
@@ -356,17 +442,80 @@ mod tests {
     }
 
     #[test]
-    fn validate_series_accepts_a_recognized_due_code() {
+    fn validate_series_accepts_a_well_formed_due_rule() {
         let mut series = new_series(RecurrenceFrequency::EveryNDays { interval: 1 });
-        series.due_code = Some("next_day".to_string());
+        series.due_rule = DueRule::AfterScheduled { days: 1 };
 
         assert!(validate_series(&series).is_ok());
     }
 
     #[test]
-    fn validate_series_accepts_no_due_code() {
+    fn validate_series_accepts_the_never_due_rule() {
         let series = new_series(RecurrenceFrequency::EveryNDays { interval: 1 });
 
         assert!(validate_series(&series).is_ok());
+    }
+
+    #[test]
+    fn validate_due_rule_accepts_never() {
+        assert!(validate_due_rule(&DueRule::Never).is_ok());
+    }
+
+    #[test]
+    fn validate_due_rule_accepts_any_after_scheduled_offset_including_negative() {
+        assert!(validate_due_rule(&DueRule::AfterScheduled { days: 0 }).is_ok());
+        assert!(validate_due_rule(&DueRule::AfterScheduled { days: 30 }).is_ok());
+        assert!(validate_due_rule(&DueRule::AfterScheduled { days: -1 }).is_ok());
+    }
+
+    #[test]
+    fn validate_due_rule_accepts_a_well_formed_weekday_rule() {
+        assert!(validate_due_rule(&DueRule::Weekday {
+            weekday: 1,
+            interval_weeks: 1,
+        })
+        .is_ok());
+        assert!(validate_due_rule(&DueRule::Weekday {
+            weekday: 6,
+            interval_weeks: 2,
+        })
+        .is_ok());
+    }
+
+    #[test]
+    fn validate_due_rule_rejects_an_out_of_range_weekday() {
+        let result = validate_due_rule(&DueRule::Weekday {
+            weekday: 7,
+            interval_weeks: 1,
+        });
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_due_rule_rejects_a_zero_week_interval() {
+        let result = validate_due_rule(&DueRule::Weekday {
+            weekday: 1,
+            interval_weeks: 0,
+        });
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_due_rule_accepts_a_recognized_default_code() {
+        assert!(validate_due_rule(&DueRule::DefaultCode {
+            code: "in_1_month".to_string()
+        })
+        .is_ok());
+    }
+
+    #[test]
+    fn validate_due_rule_rejects_an_unrecognized_default_code() {
+        let result = validate_due_rule(&DueRule::DefaultCode {
+            code: "not_a_real_code".to_string(),
+        });
+
+        assert!(result.is_err());
     }
 }

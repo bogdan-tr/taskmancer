@@ -1,9 +1,44 @@
 use chrono::{Datelike, Days, NaiveDate};
 
-use crate::series::{RecurrenceFrequency, Series};
+use crate::series::{DueRule, RecurrenceFrequency, Series};
+use crate::settings::resolve_due_relative_date;
 
 fn parse_date(iso: &str) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(iso, "%Y-%m-%d").ok()
+}
+
+/// Resolves `rule` to an absolute due date for an occurrence scheduled on
+/// `scheduled`. Returns `None` for "never due" — [`DueRule::Never`],
+/// [`DueRule::DefaultCode`]'s `"none"` sentinel (mirroring
+/// [`resolve_due_relative_date`]'s own handling of it), or an otherwise
+/// unrecognized default code (defensive — should be unreachable for a rule
+/// that passed [`crate::series::validate_due_rule`] at write time).
+pub fn resolve_due_rule(rule: &DueRule, scheduled: NaiveDate) -> Option<NaiveDate> {
+    match rule {
+        DueRule::Never => None,
+        DueRule::DefaultCode { code } => resolve_due_relative_date(code, scheduled),
+        DueRule::AfterScheduled { days } => {
+            if *days >= 0 {
+                scheduled.checked_add_days(Days::new(*days as u64))
+            } else {
+                scheduled.checked_sub_days(Days::new((-*days) as u64))
+            }
+        }
+        DueRule::Weekday {
+            weekday,
+            interval_weeks,
+        } => {
+            let scheduled_weekday = scheduled.weekday().num_days_from_sunday() as i64;
+            let days_until_next = (*weekday as i64 - scheduled_weekday).rem_euclid(7);
+            let next = scheduled.checked_add_days(Days::new(days_until_next as u64))?;
+            let extra_weeks = interval_weeks.saturating_sub(1) as u64;
+            if extra_weeks == 0 {
+                Some(next)
+            } else {
+                next.checked_add_days(Days::new(7 * extra_weeks))
+            }
+        }
+    }
 }
 
 /// Computes the occurrence dates `series` produces strictly after `after`
@@ -166,7 +201,7 @@ mod tests {
             frequency,
             anchor_date.to_string(),
             end_date.map(|s| s.to_string()),
-            None,
+            DueRule::Never,
             "Water the plants".to_string(),
             None,
             "medium".to_string(),
@@ -442,5 +477,132 @@ mod tests {
         let dates = occurrence_dates_in_range(&series, date("2026-06-15"), date("2026-06-17"));
 
         assert_eq!(dates, vec![date("2026-06-16"), date("2026-06-17")]);
+    }
+
+    mod resolve_due_rule_tests {
+        use super::*;
+
+        #[test]
+        fn after_scheduled_zero_days_is_the_same_day() {
+            let resolved =
+                resolve_due_rule(&DueRule::AfterScheduled { days: 0 }, date("2026-06-15"));
+
+            assert_eq!(resolved, Some(date("2026-06-15")));
+        }
+
+        #[test]
+        fn after_scheduled_positive_days_is_later() {
+            let resolved =
+                resolve_due_rule(&DueRule::AfterScheduled { days: 5 }, date("2026-06-15"));
+
+            assert_eq!(resolved, Some(date("2026-06-20")));
+        }
+
+        #[test]
+        fn after_scheduled_negative_days_is_earlier() {
+            let resolved =
+                resolve_due_rule(&DueRule::AfterScheduled { days: -3 }, date("2026-06-15"));
+
+            assert_eq!(resolved, Some(date("2026-06-12")));
+        }
+
+        #[test]
+        fn weekday_rule_resolves_to_the_same_day_when_scheduled_is_already_that_weekday() {
+            // 2026-06-15 is a Monday.
+            let resolved = resolve_due_rule(
+                &DueRule::Weekday {
+                    weekday: 1,
+                    interval_weeks: 1,
+                },
+                date("2026-06-15"),
+            );
+
+            assert_eq!(resolved, Some(date("2026-06-15")));
+        }
+
+        #[test]
+        fn weekday_rule_resolves_to_the_next_occurrence_of_that_weekday() {
+            // 2026-06-15 is a Monday; the next Friday is 2026-06-19.
+            let resolved = resolve_due_rule(
+                &DueRule::Weekday {
+                    weekday: 5,
+                    interval_weeks: 1,
+                },
+                date("2026-06-15"),
+            );
+
+            assert_eq!(resolved, Some(date("2026-06-19")));
+        }
+
+        #[test]
+        fn weekday_rule_wraps_around_to_next_week_when_the_weekday_already_passed() {
+            // 2026-06-19 is a Friday; the next Monday is 2026-06-22, not earlier.
+            let resolved = resolve_due_rule(
+                &DueRule::Weekday {
+                    weekday: 1,
+                    interval_weeks: 1,
+                },
+                date("2026-06-19"),
+            );
+
+            assert_eq!(resolved, Some(date("2026-06-22")));
+        }
+
+        #[test]
+        fn weekday_rule_with_interval_two_skips_the_next_occurrence() {
+            // 2026-06-15 is a Monday; the next Friday is 2026-06-19, the one after is 2026-06-26.
+            let resolved = resolve_due_rule(
+                &DueRule::Weekday {
+                    weekday: 5,
+                    interval_weeks: 2,
+                },
+                date("2026-06-15"),
+            );
+
+            assert_eq!(resolved, Some(date("2026-06-26")));
+        }
+
+        #[test]
+        fn never_resolves_to_no_due_date() {
+            let resolved = resolve_due_rule(&DueRule::Never, date("2026-06-15"));
+
+            assert_eq!(resolved, None);
+        }
+
+        #[test]
+        fn default_code_resolves_via_the_settings_relative_date_resolver() {
+            let resolved = resolve_due_rule(
+                &DueRule::DefaultCode {
+                    code: "next_day".to_string(),
+                },
+                date("2026-06-15"),
+            );
+
+            assert_eq!(resolved, Some(date("2026-06-16")));
+        }
+
+        #[test]
+        fn default_code_none_sentinel_resolves_to_never_due() {
+            let resolved = resolve_due_rule(
+                &DueRule::DefaultCode {
+                    code: "none".to_string(),
+                },
+                date("2026-06-15"),
+            );
+
+            assert_eq!(resolved, None);
+        }
+
+        #[test]
+        fn default_code_unrecognized_resolves_to_none_rather_than_panicking() {
+            let resolved = resolve_due_rule(
+                &DueRule::DefaultCode {
+                    code: "not_a_real_code".to_string(),
+                },
+                date("2026-06-15"),
+            );
+
+            assert_eq!(resolved, None);
+        }
     }
 }

@@ -16,7 +16,12 @@
   import { FALLBACK_PRIORITIES, priorityColor, priorityLabel, sortedPriorities } from "$lib/priorities.svelte";
   import { resolveProjectColor } from "$lib/projectColor";
   import { projectsState } from "$lib/projects.svelte";
-  import { formatRecurrenceFrequency } from "$lib/recurrence";
+  import {
+    formatDueRule,
+    formatRecurrenceFrequency,
+    resolveNonRecurringDue,
+    resolveSeriesDueRule,
+  } from "$lib/recurrence";
   import { settingsState } from "$lib/settings.svelte";
   import { FALLBACK_STATUSES, sortedStatuses, statusLabel } from "$lib/statuses.svelte";
   import { tagsState } from "$lib/tags.svelte";
@@ -109,10 +114,18 @@
     scheduledManuallySet = false;
   }
 
-  /** `parsed`, with the explicit estimated-time/due/scheduled controls overriding their quick-add tokens once manually set. */
+  /**
+   * `parsed`, with the explicit estimated-time/due/scheduled controls
+   * overriding their quick-add tokens once manually set. A manual due
+   * override also clears `dueRule` — the user's most recent, most explicit
+   * action (picking a specific date, or "Never") must win over a possibly-
+   * stale `due in <n> days`/weekday-rule phrase still sitting in the title,
+   * not be silently overridden by it.
+   */
   let effectiveParsed: ParsedTaskInput = $derived({
     ...parsed,
     due: dueManuallySet ? draftDueOverride : parsed.due,
+    dueRule: dueManuallySet ? undefined : parsed.dueRule,
     scheduled: scheduledManuallySet ? draftScheduledOverride : parsed.scheduled,
     estimatedMinutes: estimateManuallySet ? explicitEstimatedMinutes : parsed.estimatedMinutes,
   });
@@ -156,6 +169,21 @@
       statuses,
       projectBoardDefaultStatus: matchedProject?.board.default_status,
     }),
+  );
+
+  /**
+   * When recurring, the series' due *rule* (e.g. "Same day as scheduled",
+   * "3 days after scheduled") rather than a single resolved date — a single
+   * date for occurrence #1 isn't useful for understanding what every future
+   * occurrence's due date will be, which is exactly what every occurrence
+   * actually gets (see `resolveSeriesDueRule`'s own doc comment). Computed
+   * the same way `handleSubmit` computes what's actually sent, so the
+   * preview never shows something different from what gets created.
+   */
+  let seriesDueRule = $derived(
+    parsed.recurrence
+      ? resolveSeriesDueRule(effectiveParsed.due, effectiveParsed.dueRule, preview.scheduledDate)
+      : undefined,
   );
 
   /**
@@ -328,7 +356,20 @@
   async function handleSubmit(event: Event) {
     event.preventDefault();
     if (!parsed.title) return;
-    await onSubmit({ ...effectiveParsed, project: preview.project });
+    if (parsed.recurrence) {
+      await onSubmit({
+        ...effectiveParsed,
+        project: preview.project,
+        dueRule: resolveSeriesDueRule(effectiveParsed.due, effectiveParsed.dueRule, preview.scheduledDate),
+      });
+    } else {
+      await onSubmit({
+        ...effectiveParsed,
+        project: preview.project,
+        due: resolveNonRecurringDue(effectiveParsed.due, effectiveParsed.dueRule, preview.scheduledDate),
+        dueRule: undefined,
+      });
+    }
   }
 </script>
 
@@ -472,10 +513,14 @@
       </div>
       <div class="field-row">
         <dt>Due</dt>
-        <span class="syntax-hint">due &lt;phrase&gt; / due na</span>
+        <span class="syntax-hint">
+          {parsed.recurrence ? "due <phrase> / due in <n> days / due <weekday>s" : "due <phrase> / due na"}
+        </span>
         <dd class="date-value" class:filled={!!preview.due}>
           <span>
-            {#if preview.due && preview.due !== "Never"}
+            {#if seriesDueRule}
+              {formatDueRule(seriesDueRule)}
+            {:else if preview.due && preview.due !== "Never"}
               {@const dueDisplay = formatDueDateDisplay(preview.due, new Date(), displayState.nlDueDates)}
               <span class:due-today={dueDisplay?.variant === "today"} class:due-tomorrow={dueDisplay?.variant === "tomorrow"} class:due-overdue={dueDisplay?.variant === "overdue"}>
                 {dueDisplay?.label ?? preview.due}

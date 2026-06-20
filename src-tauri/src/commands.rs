@@ -6,8 +6,8 @@ use tauri::State;
 
 use crate::project::{Project, ProjectBoard, DEFAULT_PROJECT_COLOR};
 use crate::project_storage;
-use crate::recurrence::occurrence_dates_in_range;
-use crate::series::{validate_series, RecurrenceFrequency, Series};
+use crate::recurrence::{occurrence_dates_in_range, resolve_due_rule};
+use crate::series::{validate_series, DueRule, RecurrenceFrequency, Series};
 use crate::series_storage;
 use crate::settings::{
     resolve_due_relative_date, resolve_scheduled_relative_date, validate_due_relative_date_code,
@@ -332,7 +332,7 @@ pub fn create_task(
 /// Builds the single occurrence task for `date` from `series`'s template,
 /// resolving status the same way any freshly created task does (never
 /// copied from the template — see `Series`'s own doc comment for why) and
-/// due relative to `date` itself via `series.due_code`.
+/// due relative to `date` itself via `series.due_rule`.
 fn build_series_occurrence(
     series: &Series,
     settings: &Settings,
@@ -346,11 +346,7 @@ fn build_series_occurrence(
     task.priority = series.priority.clone();
     task.estimated_minutes = series.estimated_minutes;
     task.scheduled = Some(date.format("%Y-%m-%d").to_string());
-    task.due = series
-        .due_code
-        .as_deref()
-        .and_then(|code| resolve_due_relative_date(code, date))
-        .map(|d| d.format("%Y-%m-%d").to_string());
+    task.due = resolve_due_rule(&series.due_rule, date).map(|d| d.format("%Y-%m-%d").to_string());
     task.series_id = Some(series.id.clone());
     task
 }
@@ -409,6 +405,15 @@ fn generate_series_occurrences(
 /// [`RECURRENCE_BASELINE_LOOKAHEAD_DAYS`] days (see [`ensure_occurrences_until`]
 /// for extending further as the user scrolls). Returns every task created
 /// (the first occurrence, then any generated ones, in date order).
+///
+/// `due_rule`, if given, is the series' due rule exactly as the frontend
+/// derived it from whatever due phrase was typed (see `naturalLanguage.ts`)
+/// — an explicit override the same way `due`/`priority`/etc. already are,
+/// taking precedence over the configured project/global default due code
+/// when set. This is what fixes the original inconsistency bug: the first
+/// occurrence and every later one now derive their due date from the same
+/// rule, instead of the first using whatever `due` resolved to and every
+/// other occurrence silently falling back to an unrelated default.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub fn create_recurring_task(
@@ -423,6 +428,7 @@ pub fn create_recurring_task(
     estimated_minutes: Option<u32>,
     frequency: RecurrenceFrequency,
     end_date: Option<String>,
+    due_rule: Option<DueRule>,
 ) -> Result<Vec<Task>, String> {
     let title = title.trim().to_string();
     if title.is_empty() {
@@ -462,8 +468,11 @@ pub fn create_recurring_task(
         resolve_creation_defaults(&settings, project_defaults, today, tags, due, scheduled);
     let resolved_estimated_minutes = estimated_minutes
         .or_else(|| effective_default_estimated_minutes(&settings.defaults, project_defaults));
-    let due_code =
-        effective_default_code(&settings.defaults.due, project_defaults.map(|d| &d.due)).cloned();
+    let series_due_rule = due_rule.unwrap_or_else(|| {
+        effective_default_code(&settings.defaults.due, project_defaults.map(|d| &d.due))
+            .map(|code| DueRule::DefaultCode { code: code.clone() })
+            .unwrap_or(DueRule::Never)
+    });
 
     if let Some(end) = &end_date {
         let end_date = chrono::NaiveDate::parse_from_str(end, "%Y-%m-%d")
@@ -479,7 +488,7 @@ pub fn create_recurring_task(
         frequency,
         resolved_scheduled.clone(),
         end_date,
-        due_code,
+        series_due_rule,
         title.clone(),
         Some(project_name.clone()),
         priority.clone(),
@@ -3003,7 +3012,9 @@ mod tests {
             frequency,
             anchor_date.to_string(),
             None,
-            Some("next_day".to_string()),
+            DueRule::DefaultCode {
+                code: "next_day".to_string(),
+            },
             "Water the plants".to_string(),
             Some("Home".to_string()),
             "medium".to_string(),
@@ -3187,18 +3198,19 @@ mod tests {
 
         let task = build_series_occurrence(&series, &settings, None, date);
 
-        // due_code is "next_day", so due should be one day after *this* occurrence's
-        // own scheduled date (06-21), not one day after the series' anchor (06-16).
+        // due_rule is DefaultCode("next_day"), so due should be one day after *this*
+        // occurrence's own scheduled date (06-21), not one day after the series'
+        // anchor (06-16).
         assert_eq!(task.due, Some("2026-06-21".to_string()));
     }
 
     #[test]
-    fn build_series_occurrence_has_no_due_when_the_series_has_no_due_code() {
+    fn build_series_occurrence_has_no_due_when_the_series_due_rule_is_never() {
         let mut series = new_test_series(
             crate::series::RecurrenceFrequency::EveryNDays { interval: 1 },
             "2026-06-15",
         );
-        series.due_code = None;
+        series.due_rule = DueRule::Never;
         let settings = Settings::default();
         let date = chrono::NaiveDate::from_ymd_opt(2026, 6, 16).unwrap();
 

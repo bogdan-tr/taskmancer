@@ -319,6 +319,43 @@ describe("resolveTaskPreview", () => {
     expect(preview.due).toBe("Never");
   });
 
+  test("a dueRule of AfterScheduled resolves relative to the effective scheduled date", () => {
+    const preview = resolveTaskPreview({
+      parsed: parsed({ dueRule: { kind: "AfterScheduled", days: 5 }, scheduled: "2026-07-01" }),
+      defaultProjectName: "General",
+      globalDefaults: { tags: [], due: "same_day", scheduled: "today" },
+      priorities: PRIORITIES,
+      statuses: STATUSES,
+    });
+
+    expect(preview.due).toBe("2026-07-06");
+  });
+
+  test("a dueRule of Weekday resolves relative to the effective scheduled date", () => {
+    // 2026-07-01 is a Wednesday; the next Friday is 2026-07-03.
+    const preview = resolveTaskPreview({
+      parsed: parsed({ dueRule: { kind: "Weekday", weekday: 5, interval_weeks: 1 }, scheduled: "2026-07-01" }),
+      defaultProjectName: "General",
+      globalDefaults: { tags: [], due: "same_day", scheduled: "today" },
+      priorities: PRIORITIES,
+      statuses: STATUSES,
+    });
+
+    expect(preview.due).toBe("2026-07-03");
+  });
+
+  test("a dueRule takes precedence over the configured default due code", () => {
+    const preview = resolveTaskPreview({
+      parsed: parsed({ dueRule: { kind: "AfterScheduled", days: 0 }, scheduled: "2026-07-01" }),
+      defaultProjectName: "General",
+      globalDefaults: { tags: [], due: "in_1_week", scheduled: "today" },
+      priorities: PRIORITIES,
+      statuses: STATUSES,
+    });
+
+    expect(preview.due).toBe("2026-07-01");
+  });
+
   test("an est quick-add token overrides both project and global estimated-time defaults", () => {
     const preview = resolveTaskPreview({
       parsed: parsed({ estimatedMinutes: 15 }),

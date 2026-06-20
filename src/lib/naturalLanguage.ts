@@ -1,4 +1,4 @@
-import type { RecurrenceFrequency } from "./recurrence";
+import type { DueRule, RecurrenceFrequency } from "./recurrence";
 
 export interface ParsedTaskInput {
   title: string;
@@ -9,11 +9,27 @@ export interface ParsedTaskInput {
   /** The id of a `StatusDefinition` (see `Settings.statuses`), from an `@status` quick-add token. */
   status?: string;
   /**
-   * An absolute `YYYY-MM-DD` date from a `due:`/`due` quick-add token, or the
-   * `"none"` sentinel from `due:na`/`due na` meaning "never due". `undefined`
-   * if no due-date token was present.
+   * An absolute `YYYY-MM-DD` date from a `due:`/`due` quick-add token, or
+   * the `"none"` sentinel from `due:na`/`due na` meaning "never due".
+   * `undefined` if no due-date token was present, *or* if `dueRule` is set
+   * instead (see its own doc comment) — the two are mutually exclusive,
+   * never both set.
    */
   due?: string;
+  /**
+   * A structured due rule from a due phrase that can't resolve to an
+   * absolute date during parsing alone — `due in <n> days`, `due
+   * <weekday>s`/`due every <weekday>`, `due other <weekday>s`/`due every
+   * other <weekday>`, or the `{ kind: "Never" }` form of `due na`/`due:na`
+   * (set here *in addition to* `due: "none"` for that one case, since
+   * "never due" already has a usable absolute-date-free representation).
+   * Resolving `AfterScheduled`/`Weekday` to an actual date requires the
+   * task's own resolved scheduled date, which isn't necessarily known yet
+   * at the point `due` is parsed (`sch ...` might appear later in the same
+   * title) — so resolution is deferred to `resolveTaskPreview`, the same
+   * place every other default/fallback resolution already happens.
+   */
+  dueRule?: DueRule;
   scheduled?: string;
   /** Minutes from an `est <n>h <n>m` quick-add token. `undefined` if no estimate token was present. */
   estimatedMinutes?: number;
@@ -292,6 +308,121 @@ function tryResolveDatePhrase(
   return tryResolveAbsoluteDate(tokens, startIndex, now);
 }
 
+/**
+ * Whether `tokens` contains an "every ..." token, not immediately following
+ * "due", that actually resolves to a real recurrence phrase via
+ * `tryResolveRecurrencePhrase` — i.e. one that introduces the task's own
+ * recurrence, not a due phrase's own "every" (`due every <weekday>`) and
+ * not an ordinary English use of the word ("every time", "every week or
+ * so", "every now and then" — none of which form a valid recurrence
+ * phrase). Used to gate the weekday form of `tryResolveRecurringDuePhrase`
+ * ("recurring tasks only" per design — see its own doc comment), computed
+ * once up front since the due token can appear before the recurrence token
+ * in the same title, e.g. "gym due mondays every saturday". Actually
+ * attempting resolution (rather than just checking for the bare word
+ * "every") matters: "Call every day due mondays" is a real recurrence, but
+ * "Review every single PR due fridays" is not, and a bare-token check can't
+ * tell the two apart — a false positive there would let the weekday due
+ * rule consume `due fridays` on what's actually a non-recurring task, and
+ * that due information would then be silently dropped, since `createTask`
+ * (the non-recurring path) never reads `dueRule`.
+ */
+function hasStandaloneRecurrenceToken(tokens: string[], now: Date): boolean {
+  return tokens.some((token, index) => {
+    if (token.toLowerCase() !== "every") return false;
+    const precededByDue = index > 0 && tokens[index - 1].toLowerCase() === "due";
+    if (precededByDue) return false;
+    return tryResolveRecurrencePhrase(tokens, index + 1, now) !== undefined;
+  });
+}
+
+/**
+ * Attempts to resolve a recurring-due-rule phrase starting at
+ * `tokens[startIndex]`, for use after a `due` keyword. Unlike
+ * `tryResolveDatePhrase`, these forms never resolve to an absolute date
+ * here — `in <n> days` is relative to the task's own scheduled date (which
+ * might not be parsed yet, e.g. if `sch ...` appears later in the same
+ * title), and the weekday forms are recomputed per-occurrence once a
+ * series exists. Resolution to an actual date happens later, in
+ * `resolveTaskPreview`, once the scheduled date is fully known. Returns
+ * `undefined` (consuming nothing) if no recognized form matches.
+ *
+ * Recognized forms:
+ * - `in <n> day(s)` — `{ kind: "AfterScheduled", days: n }`. General
+ *   grammar, recognized regardless of `isRecurring`.
+ * - `<weekday>s` (plural) or `every <weekday>` — `{ kind: "Weekday",
+ *   interval_weeks: 1 }`. A bare singular weekday with neither plural nor
+ *   "every" is deliberately *not* matched here — that's
+ *   `tryResolveDatePhrase`'s existing "next literal occurrence from today"
+ *   phrase, left unchanged so it doesn't silently change meaning. Only
+ *   recognized when `isRecurring` — unlike `in <n> days`, a per-occurrence
+ *   weekday rule isn't a meaningful concept for a one-off task.
+ * - `other <weekday>s` or `every other <weekday>` — same as above with
+ *   `interval_weeks: 2`, mirroring "every other <weekday>" on the
+ *   scheduling side. Also gated on `isRecurring`.
+ */
+function tryResolveRecurringDuePhrase(
+  tokens: string[],
+  startIndex: number,
+  isRecurring: boolean,
+): { dueRule: DueRule; consumed: number } | undefined {
+  let i = startIndex;
+  const hasEvery = tokens[i]?.toLowerCase() === "every";
+  if (hasEvery) {
+    i += 1;
+  }
+
+  if (!hasEvery && tokens[i]?.toLowerCase() === "in") {
+    const numberToken = tokens[i + 1];
+    const unitToken = tokens[i + 2]?.toLowerCase();
+    if (
+      numberToken !== undefined &&
+      BARE_NUMBER_PATTERN.test(numberToken) &&
+      (unitToken === "day" || unitToken === "days")
+    ) {
+      return {
+        dueRule: { kind: "AfterScheduled", days: Number(numberToken) },
+        consumed: i + 3 - startIndex,
+      };
+    }
+    return undefined;
+  }
+
+  if (!isRecurring) {
+    return undefined;
+  }
+
+  let intervalWeeks = 1;
+  if (tokens[i]?.toLowerCase() === "other") {
+    intervalWeeks = 2;
+    i += 1;
+  }
+
+  const weekdayToken = tokens[i];
+  if (weekdayToken === undefined) {
+    return undefined;
+  }
+  const lower = stripTrailingComma(weekdayToken.toLowerCase());
+  const isPlural = lower.endsWith("s") && lower.slice(0, -1) in WEEKDAY_TOKENS;
+  const isSingular = lower in WEEKDAY_TOKENS;
+
+  // A plain singular weekday with neither "every" nor "other" isn't this
+  // mechanism at all — leave it for `tryResolveDatePhrase`'s existing
+  // absolute-date phrase instead.
+  if (!hasEvery && intervalWeeks === 1 && !isPlural) {
+    return undefined;
+  }
+  if (!isPlural && !isSingular) {
+    return undefined;
+  }
+
+  const weekday = isPlural ? WEEKDAY_TOKENS[lower.slice(0, -1)] : WEEKDAY_TOKENS[lower];
+  return {
+    dueRule: { kind: "Weekday", weekday, interval_weeks: intervalWeeks },
+    consumed: i + 1 - startIndex,
+  };
+}
+
 const HOUR_TOKEN_PATTERN = /^(\d+)h$/i;
 const MINUTE_TOKEN_PATTERN = /^(\d+)m$/i;
 const BARE_NUMBER_PATTERN = /^\d+$/;
@@ -514,12 +645,14 @@ export function parseTaskInput(
   let priority: string | undefined;
   let status: string | undefined;
   let due: string | undefined;
+  let dueRule: DueRule | undefined;
   let scheduled: string | undefined;
   let estimatedMinutes: number | undefined;
   let recurrence: { frequency: RecurrenceFrequency; endDate?: string } | undefined;
 
   const titleTokens: string[] = [];
   const tokens = input.trim().split(/\s+/).filter((token) => token !== "");
+  const isRecurring = hasStandaloneRecurrenceToken(tokens, now);
 
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
@@ -563,6 +696,7 @@ export function parseTaskInput(
       const value = token.slice(4);
       if (value.toLowerCase() === "na") {
         due = "none";
+        dueRule = { kind: "Never" };
         continue;
       }
       const resolved = resolveDateExpression(value, now);
@@ -583,7 +717,14 @@ export function parseTaskInput(
     if (lowerToken === "due") {
       if (tokens[i + 1]?.toLowerCase() === "na") {
         due = "none";
+        dueRule = { kind: "Never" };
         i += 1;
+        continue;
+      }
+      const ruleMatch = tryResolveRecurringDuePhrase(tokens, i + 1, isRecurring);
+      if (ruleMatch) {
+        dueRule = ruleMatch.dueRule;
+        i += ruleMatch.consumed;
         continue;
       }
       const phrase = tryResolveDatePhrase(tokens, i + 1, now);
@@ -638,6 +779,7 @@ export function parseTaskInput(
     priority,
     status,
     due,
+    dueRule,
     scheduled,
     estimatedMinutes,
     recurrence,

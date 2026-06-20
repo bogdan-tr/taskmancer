@@ -290,6 +290,7 @@
               onToggle={() => toggleBar(barKey(weekBar))}
               onClosePopover={closePopover}
               onEdit={openEdit}
+              muted={!inCurrentMonth}
             />
           {/each}
         </div>
@@ -403,8 +404,17 @@
     padding: var(--space-sm);
   }
 
+  /* No `opacity` here: this is an ancestor of each day's `WeekBarItem`,
+     and CSS `opacity` dims an entire descendant subtree regardless of
+     `position: fixed` — including a bar's *popover* once opened, which
+     should always render at normal opacity. The day number and each bar's
+     own summary are muted individually instead (`.day-number`'s own rule
+     below; `WeekBarItem`'s `muted` prop, scoped to just `.bar-summary`). */
   .day-cell.is-outside-month {
     background: var(--color-canvas);
+  }
+
+  .day-cell.is-outside-month .day-number {
     opacity: 0.6;
   }
 

@@ -1,5 +1,6 @@
 import type { ParsedTaskInput } from "./naturalLanguage";
 import { defaultPriorityId } from "./priorities.svelte";
+import { resolveDueRule } from "./recurrence";
 import {
   resolveDueRelativeDate,
   resolveScheduledRelativeDate,
@@ -141,9 +142,12 @@ export interface ResolveTaskPreviewOptions {
  * - `scheduledDate`: the same resolution as `scheduled`, but always resolved
  *   to an absolute date rather than a label — see [`TaskPreview`].
  * - `due`: the quick-add `due:` token, `"Never"` for the `due:na`/`due na`
- *   never-due token or a default due code of `"none"`, else the effective
- *   default due code resolved to an absolute date relative to the
- *   *effective scheduled date* above (not "today" — see [`TaskPreview`]).
+ *   never-due token, else (if a recurring-due-rule phrase like `due in 5
+ *   days`/`due mondays` was used) that rule resolved against the effective
+ *   scheduled date, else a default due code of `"none"` as `"Never"`, else
+ *   the effective default due code resolved to an absolute date relative to
+ *   the *effective scheduled date* above (not "today" — see
+ *   [`TaskPreview`]).
  * - `estimatedMinutes`: the quick-add `est`/bare duration token, else the
  *   project's `TaskDefaults.estimated_minutes` if set, else the global
  *   default, mirroring `effective_default_estimated_minutes` in the Rust
@@ -185,7 +189,13 @@ export function resolveTaskPreview(options: ResolveTaskPreviewOptions): TaskPrev
     parsed.due === "none"
       ? "Never"
       : parsed.due ??
-        (dueCode === "none" ? "Never" : dueCode ? resolveDueRelativeDate(dueCode, resolvedScheduledDate) : undefined);
+        (parsed.dueRule
+          ? resolveDueRule(parsed.dueRule, resolvedScheduledDate) ?? "Never"
+          : dueCode === "none"
+            ? "Never"
+            : dueCode
+              ? resolveDueRelativeDate(dueCode, resolvedScheduledDate)
+              : undefined);
 
   const estimatedMinutes = parsed.estimatedMinutes ?? projectDefaults?.estimated_minutes ?? globalDefaults.estimated_minutes;
 

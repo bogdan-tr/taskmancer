@@ -21,6 +21,16 @@
     onToggle: () => void;
     onClosePopover: () => void;
     onEdit: (task: Task) => void;
+    /**
+     * Visually mutes the bar (e.g. a calendar day outside the displayed
+     * month) without affecting its popover once opened — applied to
+     * `.bar-summary` specifically, never to `.bar` itself or any ancestor,
+     * since a plain CSS `opacity` on an ancestor would dim the popover too
+     * (it's a sibling-but-still-descendant-of-`.bar`, and `opacity`
+     * attenuates an entire subtree's rendering regardless of `position:
+     * fixed`). Defaults to `false`.
+     */
+    muted?: boolean;
   }
 
   let {
@@ -35,6 +45,7 @@
     onToggle,
     onClosePopover,
     onEdit,
+    muted = false,
   }: Props = $props();
 
   let task = $derived(weekBar.task);
@@ -116,6 +127,7 @@
 >
   <div
     class="bar-summary"
+    class:bar-muted={muted}
     role="button"
     tabindex="0"
     aria-label="{weekBar.type === 'scheduled' ? 'Scheduled' : 'Due'} – {task.title}"
@@ -251,6 +263,14 @@
 
   .bar-summary[aria-expanded="true"] {
     box-shadow: 0 0 0 2px var(--bar-color, var(--color-accent));
+  }
+
+  /* Scoped to `.bar-summary` specifically, never `.bar` or an ancestor —
+     `.bar-popover` below is `.bar-summary`'s *sibling*, not its descendant,
+     so muting only the summary leaves an opened popover's own content at
+     full, normal opacity rather than inheriting the dimming too. */
+  .bar-summary.bar-muted {
+    opacity: 0.6;
   }
 
   /* "Color code" mode: a vivid rendering of the project's hue/chroma at a

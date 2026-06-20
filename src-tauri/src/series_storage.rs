@@ -35,7 +35,7 @@ pub fn save_series(file: &Path, series: &[Series]) -> Result<(), StorageError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::series::RecurrenceFrequency;
+    use crate::series::{DueRule, RecurrenceFrequency};
     use tempfile::tempdir;
 
     fn new_series(title: &str) -> Series {
@@ -43,7 +43,7 @@ mod tests {
             RecurrenceFrequency::EveryNDays { interval: 1 },
             "2026-06-15".to_string(),
             None,
-            None,
+            DueRule::Never,
             title.to_string(),
             None,
             "medium".to_string(),
