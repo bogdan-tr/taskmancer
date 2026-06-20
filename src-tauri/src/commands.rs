@@ -8,8 +8,9 @@ use crate::project::{Project, ProjectBoard, DEFAULT_PROJECT_COLOR};
 use crate::project_storage;
 use crate::settings::{
     resolve_due_relative_date, resolve_scheduled_relative_date, validate_due_relative_date_code,
-    validate_lightness, validate_priority_id, validate_scheduled_relative_date_code,
-    validate_settings, validate_status_id, Settings, TaskDefaults,
+    validate_ink_mode, validate_lightness, validate_priority_id,
+    validate_scheduled_relative_date_code, validate_settings, validate_status_id, Settings,
+    TaskDefaults,
 };
 use crate::settings_storage;
 use crate::storage;
@@ -124,6 +125,18 @@ fn effective_default_tags(global: &TaskDefaults, project: Option<&TaskDefaults>)
     }
 }
 
+/// Resolves the effective `estimated_minutes` default for a new task that
+/// doesn't specify its own estimate: the project-level override if set,
+/// otherwise the global default, otherwise `None` (no estimate).
+fn effective_default_estimated_minutes(
+    global: &TaskDefaults,
+    project: Option<&TaskDefaults>,
+) -> Option<u32> {
+    project
+        .and_then(|p| p.estimated_minutes)
+        .or(global.estimated_minutes)
+}
+
 /// Resolves the effective relative-date code for a `due`/`scheduled`
 /// default: the project-level override if set, otherwise the global default.
 fn effective_default_code<'a>(
@@ -199,9 +212,11 @@ fn resolve_creation_defaults(
 }
 
 /// Applies optional overrides parsed from quick-add syntax onto a freshly
-/// created task. `project`/`tags`/`priority`/`due` left as `None` keep
-/// `Task::new`'s defaults (a `None` due means "never due"). `scheduled` is
-/// always set: every task must have a scheduled date.
+/// created task. `project`/`tags`/`priority`/`due`/`estimated_minutes` left
+/// as `None` keep `Task::new`'s defaults (a `None` due means "never due", a
+/// `None` estimate means no estimate). `scheduled` is always set: every task
+/// must have a scheduled date.
+#[allow(clippy::too_many_arguments)]
 fn apply_create_overrides(
     task: &mut Task,
     project: Option<String>,
@@ -209,6 +224,7 @@ fn apply_create_overrides(
     priority: Option<String>,
     due: Option<String>,
     scheduled: String,
+    estimated_minutes: Option<u32>,
 ) {
     if let Some(project) = project {
         task.project = Some(project);
@@ -223,6 +239,9 @@ fn apply_create_overrides(
         task.due = Some(due);
     }
     task.scheduled = Some(scheduled);
+    if let Some(estimated_minutes) = estimated_minutes {
+        task.estimated_minutes = Some(estimated_minutes);
+    }
 }
 
 /// Creates and saves a new task. An empty/missing `project` falls back to
@@ -239,6 +258,7 @@ pub fn create_task(
     status: Option<String>,
     due: Option<String>,
     scheduled: Option<String>,
+    estimated_minutes: Option<u32>,
 ) -> Result<Task, String> {
     let title = title.trim().to_string();
     if title.is_empty() {
@@ -278,6 +298,8 @@ pub fn create_task(
     let today = chrono::Local::now().date_naive();
     let (final_tags, resolved_due, resolved_scheduled) =
         resolve_creation_defaults(&settings, project_defaults, today, tags, due, scheduled);
+    let resolved_estimated_minutes = estimated_minutes
+        .or_else(|| effective_default_estimated_minutes(&settings.defaults, project_defaults));
 
     let mut task = Task::new(title);
     task.status = status;
@@ -288,6 +310,7 @@ pub fn create_task(
         Some(priority),
         resolved_due,
         resolved_scheduled,
+        resolved_estimated_minutes,
     );
 
     storage::save_task(&state.tasks_dir, &task).map_err(|e| e.to_string())?;
@@ -322,13 +345,15 @@ fn validate_due_creation_field(value: &Option<String>) -> Result<(), String> {
 /// `title` (already trimmed by the caller), `project_name` (the already
 /// project-fallback-resolved name — see [`resolve_project_name`] — rather
 /// than `task.project` directly), `tags`, `priority`, `status`, `due`,
-/// `scheduled`, and `notes`. `status` is a normal editable field on this
-/// path: `TaskEditDialog.svelte`'s status dropdown (used from the week
-/// view's "Edit" button) saves through `update_task`, not just the Kanban
-/// board's dedicated `reorder_task` command, so it must take effect here
-/// too. `existing.id`, `.created`, and `.depends_on` are left untouched —
-/// the request payload can never overwrite them or redirect the write to a
-/// different task's file.
+/// `scheduled`, `estimated_minutes`, and `notes`. `status` is a normal
+/// editable field on this path: `TaskEditDialog.svelte`'s status dropdown
+/// (used from the week view's "Edit" button) saves through `update_task`,
+/// not just the Kanban board's dedicated `reorder_task` command, so it must
+/// take effect here too. `existing.id`, `.created`, `.depends_on`, and
+/// `.tracked_minutes` are left untouched — the request payload can never
+/// overwrite them or redirect the write to a different task's file;
+/// `tracked_minutes` specifically has no user-facing edit control at all
+/// (only the future time-tracking infrastructure writes it).
 fn apply_task_update(existing: &mut Task, title: String, project_name: String, task: Task) {
     existing.title = title;
     existing.project = Some(project_name);
@@ -337,15 +362,16 @@ fn apply_task_update(existing: &mut Task, title: String, project_name: String, t
     existing.status = task.status;
     existing.due = task.due;
     existing.scheduled = task.scheduled;
+    existing.estimated_minutes = task.estimated_minutes;
     existing.notes = task.notes;
 }
 
 /// Updates the editable fields of an existing task (title, project, tags,
-/// priority, status, due/scheduled dates, notes — see
-/// [`apply_task_update`]). The task's `id`, `created`, and `depends_on` are
-/// loaded from disk and preserved, so a stale or malformed `task` payload
-/// from the frontend cannot corrupt these fields or redirect the write to a
-/// different task's file.
+/// priority, status, due/scheduled dates, estimated time, notes — see
+/// [`apply_task_update`]). The task's `id`, `created`, `depends_on`, and
+/// `tracked_minutes` are loaded from disk and preserved, so a stale or
+/// malformed `task` payload from the frontend cannot corrupt these fields or
+/// redirect the write to a different task's file.
 ///
 /// An empty/missing `task.project` falls back to `settings.default_project`
 /// (see [`resolve_project_name`]), so a task can never be saved without a
@@ -567,10 +593,11 @@ pub fn create_project(
 /// are recognized relative-date codes (mirroring the checks
 /// `validate_settings` applies to `Settings.defaults`), and that
 /// `update.board.card_lightness`/`.bar_lightness`, if set, are valid OKLCH
-/// lightness values (see [`validate_lightness`]). If `update.color` differs
-/// from the project's current color, it must be a 6-digit hex color (see
-/// [`validate_hex_color`]); an unchanged color is left as-is even if it
-/// predates that requirement.
+/// lightness values (see [`validate_lightness`]), and that
+/// `update.board.ink_mode`, if set, is a recognized ink mode (see
+/// [`validate_ink_mode`]). If `update.color` differs from the project's
+/// current color, it must be a 6-digit hex color (see [`validate_hex_color`]);
+/// an unchanged color is left as-is even if it predates that requirement.
 fn apply_project_update(
     projects: &mut [Project],
     index: usize,
@@ -612,6 +639,9 @@ fn apply_project_update(
     }
     if let Some(bar_lightness) = update.board.bar_lightness {
         validate_lightness(bar_lightness)?;
+    }
+    if let Some(ink_mode) = &update.board.ink_mode {
+        validate_ink_mode(ink_mode)?;
     }
 
     let existing = &projects[index];
@@ -1019,13 +1049,22 @@ mod tests {
         let mut task = Task::new("Buy milk".to_string());
         let defaults = task.clone();
 
-        apply_create_overrides(&mut task, None, None, None, None, "2026-06-14".to_string());
+        apply_create_overrides(
+            &mut task,
+            None,
+            None,
+            None,
+            None,
+            "2026-06-14".to_string(),
+            None,
+        );
 
         assert_eq!(task.project, defaults.project);
         assert_eq!(task.tags, defaults.tags);
         assert_eq!(task.priority, defaults.priority);
         assert_eq!(task.due, defaults.due);
         assert_eq!(task.scheduled, Some("2026-06-14".to_string()));
+        assert_eq!(task.estimated_minutes, defaults.estimated_minutes);
     }
 
     #[test]
@@ -1039,6 +1078,7 @@ mod tests {
             Some("high".to_string()),
             Some("2026-07-01".to_string()),
             "2026-06-25".to_string(),
+            Some(90),
         );
 
         assert_eq!(task.project, Some("Vacation".to_string()));
@@ -1046,6 +1086,7 @@ mod tests {
         assert_eq!(task.priority, "high");
         assert_eq!(task.due, Some("2026-07-01".to_string()));
         assert_eq!(task.scheduled, Some("2026-06-25".to_string()));
+        assert_eq!(task.estimated_minutes, Some(90));
     }
 
     #[test]
@@ -1059,6 +1100,7 @@ mod tests {
         incoming.priority = "high".to_string();
         incoming.due = Some("2026-07-01".to_string());
         incoming.scheduled = Some("2026-06-20".to_string());
+        incoming.estimated_minutes = Some(45);
         incoming.notes = "updated notes".to_string();
 
         apply_task_update(
@@ -1075,13 +1117,15 @@ mod tests {
         assert_eq!(existing.status, "done");
         assert_eq!(existing.due, Some("2026-07-01".to_string()));
         assert_eq!(existing.scheduled, Some("2026-06-20".to_string()));
+        assert_eq!(existing.estimated_minutes, Some(45));
         assert_eq!(existing.notes, "updated notes".to_string());
     }
 
     #[test]
-    fn apply_task_update_preserves_id_created_and_depends_on() {
+    fn apply_task_update_preserves_id_created_depends_on_and_tracked_minutes() {
         let mut existing = Task::new("Original title".to_string());
         existing.depends_on = vec!["blocker-id".to_string()];
+        existing.tracked_minutes = 120;
         let original_id = existing.id.clone();
         let original_created = existing.created.clone();
 
@@ -1089,6 +1133,7 @@ mod tests {
         incoming.id = "a-different-id".to_string();
         incoming.created = "2000-01-01T00:00:00Z".to_string();
         incoming.depends_on = vec!["should-not-apply".to_string()];
+        incoming.tracked_minutes = 9999;
 
         apply_task_update(
             &mut existing,
@@ -1100,6 +1145,7 @@ mod tests {
         assert_eq!(existing.id, original_id);
         assert_eq!(existing.created, original_created);
         assert_eq!(existing.depends_on, vec!["blocker-id".to_string()]);
+        assert_eq!(existing.tracked_minutes, 120);
     }
 
     #[test]
@@ -1155,6 +1201,44 @@ mod tests {
             effective_default_tags(&global, Some(&project)),
             vec!["global".to_string()]
         );
+    }
+
+    #[test]
+    fn effective_default_estimated_minutes_uses_project_override_when_set() {
+        let global = TaskDefaults {
+            estimated_minutes: Some(60),
+            ..Default::default()
+        };
+        let project = TaskDefaults {
+            estimated_minutes: Some(15),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            effective_default_estimated_minutes(&global, Some(&project)),
+            Some(15)
+        );
+    }
+
+    #[test]
+    fn effective_default_estimated_minutes_falls_back_to_global_when_project_unset() {
+        let global = TaskDefaults {
+            estimated_minutes: Some(60),
+            ..Default::default()
+        };
+        let project = TaskDefaults::default();
+
+        assert_eq!(
+            effective_default_estimated_minutes(&global, Some(&project)),
+            Some(60)
+        );
+    }
+
+    #[test]
+    fn effective_default_estimated_minutes_is_none_when_neither_set() {
+        let global = TaskDefaults::default();
+
+        assert_eq!(effective_default_estimated_minutes(&global, None), None);
     }
 
     #[test]
@@ -1674,6 +1758,7 @@ mod tests {
             status: None,
             due: Some("next_day".to_string()),
             scheduled: Some("in_1_week".to_string()),
+            estimated_minutes: Some(20),
         };
 
         let updated =
@@ -1727,6 +1812,46 @@ mod tests {
         let result = apply_project_update(&mut projects, 0, update, &Settings::default());
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn apply_project_update_persists_a_valid_ink_mode_override() {
+        let mut projects = vec![Project::new("Inbox".to_string(), "#abcdef".to_string(), 1)];
+        let mut update = projects[0].clone();
+        update.board = ProjectBoard {
+            ink_mode: Some("white".to_string()),
+            ..Default::default()
+        };
+
+        let updated =
+            apply_project_update(&mut projects, 0, update.clone(), &Settings::default()).unwrap();
+
+        assert_eq!(updated.board.ink_mode, Some("white".to_string()));
+    }
+
+    #[test]
+    fn apply_project_update_rejects_an_unknown_ink_mode_override() {
+        let mut projects = vec![Project::new("Inbox".to_string(), "#abcdef".to_string(), 1)];
+        let mut update = projects[0].clone();
+        update.board = ProjectBoard {
+            ink_mode: Some("sepia".to_string()),
+            ..Default::default()
+        };
+
+        let result = apply_project_update(&mut projects, 0, update, &Settings::default());
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("ink mode"));
+    }
+
+    #[test]
+    fn apply_project_update_allows_unset_ink_mode_to_inherit_the_global_default() {
+        let mut projects = vec![Project::new("Inbox".to_string(), "#abcdef".to_string(), 1)];
+        let update = projects[0].clone();
+
+        let updated = apply_project_update(&mut projects, 0, update, &Settings::default()).unwrap();
+
+        assert_eq!(updated.board.ink_mode, None);
     }
 
     #[test]

@@ -11,6 +11,7 @@
   import { isLightColor } from "$lib/colorPresets";
   import { displayState } from "$lib/displaySettings.svelte";
   import { formatDueDateDisplay } from "$lib/dueDateDisplay";
+  import { hoursAndMinutesFromMinutes, minutesFromHoursAndMinutes, normalizeHoursMinutes } from "$lib/estimatedTime";
   import { parseTaskInput, type ParsedTaskInput } from "$lib/naturalLanguage";
   import { FALLBACK_PRIORITIES, priorityColor, priorityLabel, sortedPriorities } from "$lib/priorities.svelte";
   import { resolveProjectColor } from "$lib/projectColor";
@@ -52,6 +53,42 @@
   );
   let parsed = $derived(parseTaskInput(title, undefined, knownPriorities, knownStatuses));
 
+  // Explicit estimated-time controls. Until the user actually edits one of
+  // these inputs, they stay in sync with the *fully resolved* estimate
+  // shown elsewhere in this preview (`preview.estimatedMinutes`, declared
+  // below) — not just the raw `est`/bare-duration quick-add token — so a
+  // configured project/global default shows up here too, the same as it
+  // already does in the read-only Due/Scheduled rows. The moment the user
+  // touches an input directly, `estimateManuallySet` flips to `true` and
+  // the boxes become authoritative instead — further title or default
+  // changes no longer overwrite them.
+  let draftEstimatedHours: number | undefined = $state(undefined);
+  let draftEstimatedMinutes: number | undefined = $state(undefined);
+  let estimateManuallySet = $state(false);
+
+  let explicitEstimatedMinutes = $derived(
+    draftEstimatedHours === undefined && draftEstimatedMinutes === undefined
+      ? undefined
+      : minutesFromHoursAndMinutes(draftEstimatedHours ?? 0, draftEstimatedMinutes ?? 0),
+  );
+  /** `parsed`, with the explicit estimated-time controls overriding the quick-add token once manually set. */
+  let effectiveParsed: ParsedTaskInput = $derived({
+    ...parsed,
+    estimatedMinutes: estimateManuallySet ? explicitEstimatedMinutes : parsed.estimatedMinutes,
+  });
+
+  function handleEstimateInput() {
+    estimateManuallySet = true;
+  }
+
+  /** Rolls minutes >= 60 over into hours, e.g. typing 90 into "mins" reads back as 1h 30m. */
+  function normalizeEstimateDraft() {
+    if (draftEstimatedHours === undefined && draftEstimatedMinutes === undefined) return;
+    const normalized = normalizeHoursMinutes(draftEstimatedHours ?? 0, draftEstimatedMinutes ?? 0);
+    draftEstimatedHours = normalized.hours;
+    draftEstimatedMinutes = normalized.minutes;
+  }
+
   let defaultProjectName = $derived(settingsState.current?.default_project ?? "General");
   let globalDefaults = $derived(settingsState.current?.defaults ?? { tags: [] });
 
@@ -66,10 +103,10 @@
     projectsState.items.find((project) => project.name.toLowerCase() === resolvedProjectName.toLowerCase()),
   );
 
-  /** The effective project, priority, status, tags, due, and scheduled this task will be created with. */
+  /** The effective project, priority, status, tags, due, scheduled, and estimated time this task will be created with. */
   let preview = $derived(
     resolveTaskPreview({
-      parsed,
+      parsed: effectiveParsed,
       projectFilter,
       defaultProjectName,
       globalDefaults,
@@ -80,6 +117,21 @@
       projectBoardDefaultStatus: matchedProject?.board.default_status,
     }),
   );
+
+  /**
+   * Mirrors `preview.estimatedMinutes` (quick-add token, else project
+   * default, else global default) into the editable boxes, live, as long as
+   * the user hasn't manually overridden them — this is what makes a
+   * configured default actually show up here instead of leaving the boxes
+   * looking empty/zero until you type something.
+   */
+  $effect(() => {
+    if (estimateManuallySet) return;
+    const resolved =
+      preview.estimatedMinutes !== undefined ? hoursAndMinutesFromMinutes(preview.estimatedMinutes) : undefined;
+    draftEstimatedHours = resolved?.hours;
+    draftEstimatedMinutes = resolved?.minutes;
+  });
 
   let previewProjectColor = $derived(resolveProjectColor(preview.project, projectsState.items));
   // Falls back to the standard ink color for very light project colors (e.g.
@@ -104,6 +156,9 @@
     if (open) {
       if (!dialogEl.open) {
         title = "";
+        draftEstimatedHours = undefined;
+        draftEstimatedMinutes = undefined;
+        estimateManuallySet = false;
         suggestions = [];
         activeToken = undefined;
         dialogEl.showModal();
@@ -215,7 +270,7 @@
   async function handleSubmit(event: Event) {
     event.preventDefault();
     if (!parsed.title) return;
-    await onSubmit({ ...parsed, project: preview.project });
+    await onSubmit({ ...effectiveParsed, project: preview.project });
   }
 </script>
 
@@ -290,6 +345,10 @@
             </li>
             <li><code>due na</code> — never due</li>
             <li><code>@status</code> — set the status, e.g. <code>@do</code></li>
+            <li>
+              <code>est &lt;n&gt;h &lt;n&gt;m</code> — estimated time, e.g. <code>est 1h 30m</code>
+              (<code>est</code> is optional; <code>m</code> is optional once <code>h</code> is present)
+            </li>
           </ul>
           <p class="syntax-help-note">
             "next weekday" skips the upcoming one — e.g. "next monday" is a week later than "monday".
@@ -309,22 +368,26 @@
     <dl class="field-list">
       <div class="field-row">
         <dt>Project</dt>
+        <span class="syntax-hint">+Project</span>
         <dd class="filled" style={`color: ${previewProjectTextColor}`}>
           {preview.project}
         </dd>
       </div>
       <div class="field-row">
         <dt>Priority</dt>
+        <span class="syntax-hint">high / medium / low</span>
         <dd class="filled" style={`color: ${priorityColor(priorities, preview.priorityId)}`}>
           {priorityLabel(priorities, preview.priorityId)}
         </dd>
       </div>
       <div class="field-row">
         <dt>Status</dt>
+        <span class="syntax-hint">@status</span>
         <dd class="filled">{statusLabel(statuses, preview.statusId)}</dd>
       </div>
       <div class="field-row">
         <dt>Tags</dt>
+        <span class="syntax-hint">#tag</span>
         <dd class="tags">
           {#if preview.tags.length > 0}
             {#each preview.tags as tag (tag)}
@@ -337,10 +400,12 @@
       </div>
       <div class="field-row">
         <dt>Scheduled</dt>
+        <span class="syntax-hint">sch &lt;phrase&gt;</span>
         <dd class:filled={!!preview.scheduled}>{preview.scheduled ?? "—"}</dd>
       </div>
       <div class="field-row">
         <dt>Due</dt>
+        <span class="syntax-hint">due &lt;phrase&gt; / due na</span>
         <dd class:filled={!!preview.due}>
           {#if preview.due && preview.due !== "Never"}
             {@const dueDisplay = formatDueDateDisplay(preview.due, new Date(), displayState.nlDueDates)}
@@ -350,6 +415,34 @@
           {:else}
             {preview.due ?? "—"}
           {/if}
+        </dd>
+      </div>
+      <div class="field-row">
+        <dt>Estimated time</dt>
+        <span class="syntax-hint">est &lt;n&gt;h &lt;n&gt;m</span>
+        <dd class="estimate-editable">
+          <input
+            type="number"
+            min="0"
+            step="1"
+            placeholder="0"
+            bind:value={draftEstimatedHours}
+            oninput={handleEstimateInput}
+            onblur={normalizeEstimateDraft}
+            aria-label="Estimated hours"
+          />
+          h
+          <input
+            type="number"
+            min="0"
+            step="1"
+            placeholder="0"
+            bind:value={draftEstimatedMinutes}
+            oninput={handleEstimateInput}
+            onblur={normalizeEstimateDraft}
+            aria-label="Estimated minutes"
+          />
+          m
         </dd>
       </div>
     </dl>
@@ -549,9 +642,9 @@
   }
 
   .field-row {
-    display: flex;
+    display: grid;
+    grid-template-columns: auto 1fr auto;
     align-items: baseline;
-    justify-content: space-between;
     gap: var(--space-md);
     padding: var(--space-2xs) var(--space-md);
   }
@@ -566,6 +659,14 @@
     text-transform: uppercase;
     letter-spacing: var(--tracking-wide);
     color: var(--color-ink-muted);
+  }
+
+  .syntax-hint {
+    font-family: monospace;
+    font-size: var(--text-xs);
+    color: var(--color-ink-faint);
+    text-align: center;
+    white-space: nowrap;
   }
 
   .field-row dd {
@@ -585,6 +686,31 @@
     flex-wrap: wrap;
     justify-content: flex-end;
     gap: var(--space-3xs);
+  }
+
+  .field-row dd.estimate-editable {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: var(--space-3xs);
+  }
+
+  .field-row dd.estimate-editable input {
+    width: 3rem;
+    padding: var(--space-3xs) var(--space-2xs);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--color-border);
+    background: var(--color-surface);
+    color: var(--color-ink);
+    font: inherit;
+    font-size: var(--text-sm);
+    text-align: right;
+  }
+
+  .field-row dd.estimate-editable input:focus-visible {
+    border-color: var(--color-accent);
+    box-shadow: 0 0 0 3px var(--color-accent-soft);
+    outline: none;
   }
 
   .chip {

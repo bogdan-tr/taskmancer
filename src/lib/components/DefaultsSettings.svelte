@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { hoursAndMinutesFromMinutes, minutesFromHoursAndMinutes, normalizeHoursMinutes } from "$lib/estimatedTime";
   import { DUE_RELATIVE_DATE_OPTIONS, SCHEDULED_RELATIVE_DATE_OPTIONS } from "$lib/relativeDates";
   import { persistSettings, settingsState } from "$lib/settings.svelte";
   import { formatTags, parseTags } from "$lib/taskFields";
@@ -8,6 +9,8 @@
   let draftTags = $state("");
   let draftDue = $state("");
   let draftScheduled = $state("");
+  let draftEstimatedHours: number | undefined = $state(undefined);
+  let draftEstimatedMinutes: number | undefined = $state(undefined);
   let initialized = $state(false);
   let errorMessage = $state("");
   let isSaving = $state(false);
@@ -16,6 +19,7 @@
   let baselineTags = $derived(formatTags(settingsState.current?.defaults.tags ?? []));
   let baselineDue = $derived(settingsState.current?.defaults.due ?? "");
   let baselineScheduled = $derived(settingsState.current?.defaults.scheduled ?? "");
+  let baselineEstimatedMinutes = $derived(settingsState.current?.defaults.estimated_minutes);
 
   /** Seeds the draft from settings once they finish loading; later edits live only in the draft. */
   $effect(() => {
@@ -24,15 +28,26 @@
       draftTags = baselineTags;
       draftDue = baselineDue;
       draftScheduled = baselineScheduled;
+      const resolvedEstimate =
+        baselineEstimatedMinutes !== undefined ? hoursAndMinutesFromMinutes(baselineEstimatedMinutes) : undefined;
+      draftEstimatedHours = resolvedEstimate?.hours;
+      draftEstimatedMinutes = resolvedEstimate?.minutes;
       initialized = true;
     }
   });
+
+  let draftEstimatedTotal = $derived(
+    draftEstimatedHours === undefined && draftEstimatedMinutes === undefined
+      ? undefined
+      : minutesFromHoursAndMinutes(draftEstimatedHours ?? 0, draftEstimatedMinutes ?? 0),
+  );
 
   let isDirty = $derived(
     draftDefaultProject !== baselineDefaultProject ||
       draftTags !== baselineTags ||
       draftDue !== baselineDue ||
-      draftScheduled !== baselineScheduled,
+      draftScheduled !== baselineScheduled ||
+      draftEstimatedTotal !== baselineEstimatedMinutes,
   );
 
   function discardChanges() {
@@ -40,7 +55,19 @@
     draftTags = baselineTags;
     draftDue = baselineDue;
     draftScheduled = baselineScheduled;
+    const resolvedEstimate =
+      baselineEstimatedMinutes !== undefined ? hoursAndMinutesFromMinutes(baselineEstimatedMinutes) : undefined;
+    draftEstimatedHours = resolvedEstimate?.hours;
+    draftEstimatedMinutes = resolvedEstimate?.minutes;
     errorMessage = "";
+  }
+
+  /** Rolls minutes >= 60 over into hours, e.g. typing 90 into "mins" reads back as 1h 30m. */
+  function normalizeEstimateDraft() {
+    if (draftEstimatedHours === undefined && draftEstimatedMinutes === undefined) return;
+    const normalized = normalizeHoursMinutes(draftEstimatedHours ?? 0, draftEstimatedMinutes ?? 0);
+    draftEstimatedHours = normalized.hours;
+    draftEstimatedMinutes = normalized.minutes;
   }
 
   async function save() {
@@ -57,6 +84,7 @@
       tags: parseTags(draftTags),
       due: draftDue,
       scheduled: draftScheduled,
+      estimated_minutes: draftEstimatedTotal,
     };
 
     isSaving = true;
@@ -126,6 +154,33 @@
       <p class="hint">Relative to the task's scheduled date, not today.</p>
     </div>
 
+    <div class="field">
+      <span class="field-label">Default estimated time</span>
+      <span class="estimate-inputs">
+        <input
+          type="number"
+          min="0"
+          step="1"
+          placeholder="0"
+          bind:value={draftEstimatedHours}
+          onblur={normalizeEstimateDraft}
+          aria-label="Default estimated hours"
+        />
+        hrs
+        <input
+          type="number"
+          min="0"
+          step="1"
+          placeholder="0"
+          bind:value={draftEstimatedMinutes}
+          onblur={normalizeEstimateDraft}
+          aria-label="Default estimated minutes"
+        />
+        mins
+      </span>
+      <p class="hint">Leave both blank for no default estimate.</p>
+    </div>
+
     {#if errorMessage}
       <p class="error" role="alert">{errorMessage}</p>
     {/if}
@@ -174,10 +229,22 @@
     max-width: 20rem;
   }
 
-  .field label {
+  .field label,
+  .field-label {
     font-size: var(--text-sm);
     font-weight: 600;
     color: var(--color-ink-muted);
+  }
+
+  .estimate-inputs {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3xs);
+  }
+
+  .estimate-inputs input {
+    width: 3.5rem;
+    flex: none;
   }
 
   .field input,

@@ -185,27 +185,29 @@ function contrastRatio(luminanceA: number, luminanceB: number): number {
 const DARK_INK = "oklch(20% 0.014 50)";
 const LIGHT_INK = "oklch(96% 0.01 0)";
 
+/** Mirrors the backend's `settings::INK_MODES` — keep both lists in sync. */
+export type InkMode = "auto" | "white" | "black";
+
 /**
  * Returns whichever of two literal ink colors (not theme tokens — the
  * color-coded background's brightness has nothing to do with which theme
  * is active, so a theme-variant token like `--color-ink` would pick the
  * wrong color in plenty of cases) has the higher WCAG contrast ratio
  * against `backgroundColor` (any CSS color `cssColorToHex` understands,
- * e.g. a `neonCardColor` result).
+ * e.g. a `neonCardColor` result), unless `mode` forces a specific choice.
  *
- * Deliberately uses real contrast math against the *resolved* color, not a
- * lightness-only heuristic: chroma and hue both affect a color's actual
- * luminance just as much as its OKLCH lightness does. For example, a
- * vivid, fully-saturated blue at 50% OKLCH lightness (the original
- * `NEON_CARD_LIGHTNESS` default) has a WCAG luminance around 0.11 — far
- * darker than the 50% lightness figure alone suggests, since blue
- * contributes very little to perceived brightness (the WCAG formula
- * weights it at 0.0722, versus green's 0.7152) — so light ink wins there,
- * not dark. An earlier version of this function picked purely off the
- * lightness channel and got exactly this case wrong for the app's actual
- * default project color.
+ * `mode` defaults to `"auto"` (real contrast math against the *resolved*
+ * color, not a lightness-only heuristic: chroma and hue both affect a
+ * color's actual luminance just as much as its OKLCH lightness does — see
+ * the regression test pinned to the app's default project color/lightness
+ * for the exact case an earlier lightness-only heuristic got wrong).
+ * `"white"`/`"black"` force that choice regardless of contrast, for users
+ * who'd rather pick a fixed ink color than have it computed per-task.
  */
-export function legibleInkColor(backgroundColor: string): string {
+export function legibleInkColor(backgroundColor: string, mode: InkMode = "auto"): string {
+  if (mode === "white") return LIGHT_INK;
+  if (mode === "black") return DARK_INK;
+
   const backgroundLuminance = relativeLuminance(cssColorToHex(backgroundColor));
   const darkInkLuminance = relativeLuminance(cssColorToHex(DARK_INK));
   const lightInkLuminance = relativeLuminance(cssColorToHex(LIGHT_INK));

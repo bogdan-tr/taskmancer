@@ -24,6 +24,10 @@ pub const DEFAULT_PROJECT_COLOR: &str = "#3b82f6";
 /// cards and week/calendar-view bars, respectively, when set — each `None`
 /// independently inherits its own global default. Must be a valid OKLCH
 /// lightness (`0.0..=1.0`, see `settings::validate_lightness`) when set.
+///
+/// `ink_mode` overrides `Settings::ink_mode` for this project's color-coded
+/// card/bar text when set (one of [`crate::settings::INK_MODES`]); `None`
+/// inherits the global default.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct ProjectBoard {
     #[serde(default)]
@@ -36,6 +40,8 @@ pub struct ProjectBoard {
     pub card_lightness: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bar_lightness: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ink_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -124,5 +130,21 @@ mod tests {
         assert!(project.board.statuses.is_empty());
         assert_eq!(project.board.default_status, None);
         assert_eq!(project.defaults, TaskDefaults::default());
+    }
+
+    #[test]
+    fn new_project_has_no_ink_mode_override() {
+        let project = Project::new("Homework".to_string(), "#ff0000".to_string(), 1);
+
+        assert_eq!(project.board.ink_mode, None);
+    }
+
+    #[test]
+    fn board_ink_mode_is_none_when_absent_from_json() {
+        let json = r##"{"id":"abc","name":"Inbox","color":"#000000","created":"2026-06-11T10:00:00+00:00"}"##;
+
+        let project: Project = serde_json::from_str(json).expect("parsing should succeed");
+
+        assert_eq!(project.board.ink_mode, None);
     }
 }

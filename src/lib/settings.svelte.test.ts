@@ -21,6 +21,7 @@ const sampleSettings: Settings = {
   show_previous_weeks_column: false,
   card_lightness: 0.5,
   bar_lightness: 0.38,
+  ink_mode: "auto",
 };
 
 vi.mock("./api", () => ({

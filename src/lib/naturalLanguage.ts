@@ -13,6 +13,8 @@ export interface ParsedTaskInput {
    */
   due?: string;
   scheduled?: string;
+  /** Minutes from an `est <n>h <n>m` quick-add token. `undefined` if no estimate token was present. */
+  estimatedMinutes?: number;
 }
 
 /** The subset of `PriorityLevel` needed to match quick-add priority tokens. */
@@ -286,6 +288,62 @@ function tryResolveDatePhrase(
   return tryResolveAbsoluteDate(tokens, startIndex, now);
 }
 
+const HOUR_TOKEN_PATTERN = /^(\d+)h$/i;
+const MINUTE_TOKEN_PATTERN = /^(\d+)m$/i;
+const BARE_NUMBER_PATTERN = /^\d+$/;
+
+/**
+ * Attempts to resolve an estimated-time duration phrase starting at
+ * `tokens[startIndex]`, for use after an `est` keyword or as a bare token.
+ * Returns `undefined` (consuming nothing) if `tokens[startIndex]` isn't
+ * itself unit-suffixed (`<num>h` or `<num>m`) — a bare unitless number (e.g.
+ * `30`) is never recognized, since it's too ambiguous with ordinary numbers
+ * elsewhere in a title.
+ *
+ * Recognized forms (the `h` token, if present, must come first):
+ * - `<num>h` — hours alone.
+ * - `<num>h <num>m` — hours and minutes.
+ * - `<num>h <num>` — hours, with a trailing bare number defaulting to
+ *   minutes once the `h` anchor has established this is a duration.
+ * - `<num>m` — minutes alone.
+ */
+function tryResolveDurationPhrase(
+  tokens: string[],
+  startIndex: number,
+): { minutes: number; consumed: number } | undefined {
+  const first = tokens[startIndex];
+  if (first === undefined) {
+    return undefined;
+  }
+
+  const hourMatch = HOUR_TOKEN_PATTERN.exec(first);
+  if (hourMatch) {
+    let minutes = Number(hourMatch[1]) * 60;
+    let consumed = 1;
+
+    const second = tokens[startIndex + 1];
+    if (second !== undefined) {
+      const minuteMatch = MINUTE_TOKEN_PATTERN.exec(second);
+      if (minuteMatch) {
+        minutes += Number(minuteMatch[1]);
+        consumed = 2;
+      } else if (BARE_NUMBER_PATTERN.test(second)) {
+        minutes += Number(second);
+        consumed = 2;
+      }
+    }
+
+    return { minutes, consumed };
+  }
+
+  const minuteMatch = MINUTE_TOKEN_PATTERN.exec(first);
+  if (minuteMatch) {
+    return { minutes: Number(minuteMatch[1]), consumed: 1 };
+  }
+
+  return undefined;
+}
+
 /**
  * Parses quick-add syntax out of a free-text task title:
  * - `#tag` adds a tag
@@ -309,6 +367,13 @@ function tryResolveDatePhrase(
  *   `@word` that doesn't match a known status is left in the title, since
  *   status ids are fully user-defined — there's no built-in fallback set to
  *   guess against (unlike priority's high/medium/low).
+ * - `est <n>h <n>m` (or just `<n>h <n>m` — the `est` keyword is optional)
+ *   sets the estimated time. The trailing `m`/its value can be dropped once
+ *   an `h` anchors the phrase (`est 1h 30` works the same as `est 1h 30m`),
+ *   and either unit alone is recognized on its own (`est 1h`, `est 30m`,
+ *   `1h`, `30m`). A bare number with no `h`/`m` suffix at all (e.g. `30`) is
+ *   never treated as a duration — too ambiguous with ordinary numbers
+ *   elsewhere in a title — even when prefixed with `est`.
  *
  * Tokens that don't match a recognized pattern are left in the title
  * unchanged. The remaining words become the task title, with extra
@@ -326,6 +391,7 @@ export function parseTaskInput(
   let status: string | undefined;
   let due: string | undefined;
   let scheduled: string | undefined;
+  let estimatedMinutes: number | undefined;
 
   const titleTokens: string[] = [];
   const tokens = input.trim().split(/\s+/).filter((token) => token !== "");
@@ -412,6 +478,22 @@ export function parseTaskInput(
       }
     }
 
+    if (lowerToken === "est") {
+      const phrase = tryResolveDurationPhrase(tokens, i + 1);
+      if (phrase) {
+        estimatedMinutes = phrase.minutes;
+        i += phrase.consumed;
+        continue;
+      }
+    }
+
+    const bareDuration = tryResolveDurationPhrase(tokens, i);
+    if (bareDuration) {
+      estimatedMinutes = bareDuration.minutes;
+      i += bareDuration.consumed - 1;
+      continue;
+    }
+
     titleTokens.push(token);
   }
 
@@ -423,5 +505,6 @@ export function parseTaskInput(
     status,
     due,
     scheduled,
+    estimatedMinutes,
   };
 }

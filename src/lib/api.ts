@@ -22,6 +22,7 @@ export async function createTask(input: ParsedTaskInput): Promise<Task> {
     status: input.status,
     due: input.due,
     scheduled: input.scheduled,
+    estimatedMinutes: input.estimatedMinutes,
   });
 }
 

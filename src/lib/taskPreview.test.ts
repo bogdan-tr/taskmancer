@@ -315,4 +315,55 @@ describe("resolveTaskPreview", () => {
 
     expect(preview.due).toBe("Never");
   });
+
+  test("an est quick-add token overrides both project and global estimated-time defaults", () => {
+    const preview = resolveTaskPreview({
+      parsed: parsed({ estimatedMinutes: 15 }),
+      defaultProjectName: "General",
+      globalDefaults: { tags: [], estimated_minutes: 60 },
+      projectDefaults: { tags: [], estimated_minutes: 30 },
+      priorities: PRIORITIES,
+      statuses: STATUSES,
+    });
+
+    expect(preview.estimatedMinutes).toBe(15);
+  });
+
+  test("falls back to the project's estimated-time default when no token is given", () => {
+    const preview = resolveTaskPreview({
+      parsed: parsed(),
+      defaultProjectName: "General",
+      globalDefaults: { tags: [], estimated_minutes: 60 },
+      projectDefaults: { tags: [], estimated_minutes: 30 },
+      priorities: PRIORITIES,
+      statuses: STATUSES,
+    });
+
+    expect(preview.estimatedMinutes).toBe(30);
+  });
+
+  test("falls back to the global estimated-time default when the project has none", () => {
+    const preview = resolveTaskPreview({
+      parsed: parsed(),
+      defaultProjectName: "General",
+      globalDefaults: { tags: [], estimated_minutes: 60 },
+      projectDefaults: { tags: [] },
+      priorities: PRIORITIES,
+      statuses: STATUSES,
+    });
+
+    expect(preview.estimatedMinutes).toBe(60);
+  });
+
+  test("estimatedMinutes is undefined when no token or default is set", () => {
+    const preview = resolveTaskPreview({
+      parsed: parsed(),
+      defaultProjectName: "General",
+      globalDefaults: EMPTY_DEFAULTS,
+      priorities: PRIORITIES,
+      statuses: STATUSES,
+    });
+
+    expect(preview.estimatedMinutes).toBeUndefined();
+  });
 });

@@ -316,6 +316,88 @@ describe("parseTaskInput", () => {
   });
 });
 
+describe("parseTaskInput estimated time", () => {
+  test("extracts hours and minutes with the 'est' keyword", () => {
+    const result = parseTaskInput("Read book est 1h 30m", NOW);
+
+    expect(result.title).toBe("Read book");
+    expect(result.estimatedMinutes).toBe(90);
+  });
+
+  test("the 'est' keyword is optional", () => {
+    const result = parseTaskInput("Read book 1h 30m", NOW);
+
+    expect(result.title).toBe("Read book");
+    expect(result.estimatedMinutes).toBe(90);
+  });
+
+  test("'m' is optional once an 'h' anchors the phrase", () => {
+    const result = parseTaskInput("Read book 1h 30", NOW);
+
+    expect(result.title).toBe("Read book");
+    expect(result.estimatedMinutes).toBe(90);
+  });
+
+  test("'est' plus a bare hour-anchored number without 'm' also works", () => {
+    const result = parseTaskInput("Read book est 1h 30", NOW);
+
+    expect(result.title).toBe("Read book");
+    expect(result.estimatedMinutes).toBe(90);
+  });
+
+  test("hours alone, with no trailing minutes", () => {
+    const result = parseTaskInput("Read book est 2h", NOW);
+
+    expect(result.title).toBe("Read book");
+    expect(result.estimatedMinutes).toBe(120);
+  });
+
+  test("minutes alone, with no hours", () => {
+    const result = parseTaskInput("Read book est 45m", NOW);
+
+    expect(result.title).toBe("Read book");
+    expect(result.estimatedMinutes).toBe(45);
+  });
+
+  test("minutes alone without 'est'", () => {
+    const result = parseTaskInput("Read book 45m", NOW);
+
+    expect(result.title).toBe("Read book");
+    expect(result.estimatedMinutes).toBe(45);
+  });
+
+  test("a bare unitless number is never treated as a duration, with or without 'est'", () => {
+    const withoutEst = parseTaskInput("Buy 30 stamps", NOW);
+    expect(withoutEst.title).toBe("Buy 30 stamps");
+    expect(withoutEst.estimatedMinutes).toBeUndefined();
+
+    const withEst = parseTaskInput("Read book est 30", NOW);
+    expect(withEst.title).toBe("Read book est 30");
+    expect(withEst.estimatedMinutes).toBeUndefined();
+  });
+
+  test("'est' with no recognizable duration after it is left in the title", () => {
+    const result = parseTaskInput("Read book est", NOW);
+
+    expect(result.title).toBe("Read book est");
+    expect(result.estimatedMinutes).toBeUndefined();
+  });
+
+  test("the unit suffix is case-insensitive", () => {
+    const result = parseTaskInput("Read book est 1H 30M", NOW);
+
+    expect(result.title).toBe("Read book");
+    expect(result.estimatedMinutes).toBe(90);
+  });
+
+  test("last 'est' token wins when repeated", () => {
+    const result = parseTaskInput("Read book est 1h est 30m", NOW);
+
+    expect(result.title).toBe("Read book");
+    expect(result.estimatedMinutes).toBe(30);
+  });
+});
+
 describe("parseTaskInput with knownPriorities", () => {
   const KNOWN_PRIORITIES: KnownPriority[] = [
     { id: "urgent", label: "Urgent" },

@@ -47,6 +47,19 @@ pub struct Task {
     pub created: String,
     #[serde(default)]
     pub depends_on: Vec<String>,
+    /// User-editable estimate of how long this task will take, in minutes.
+    /// `None` means no estimate has been set. Settable via `create_task`/
+    /// `update_task`, mirroring `priority`/`due`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_minutes: Option<u32>,
+    /// Total time tracked against this task so far, in minutes. Always
+    /// present (defaults to `0`, not `None`, since "no time tracked yet" is
+    /// itself a meaningful value to display) and not settable through
+    /// `update_task` — only the (future) time-tracking infrastructure writes
+    /// this, mirroring how `id`/`created`/`depends_on` are preserved from
+    /// disk rather than taken from the request payload.
+    #[serde(default)]
+    pub tracked_minutes: u32,
     #[serde(skip)]
     pub notes: String,
 }
@@ -80,6 +93,8 @@ impl Task {
             order: Utc::now().timestamp_millis(),
             created: Utc::now().to_rfc3339(),
             depends_on: Vec::new(),
+            estimated_minutes: None,
+            tracked_minutes: 0,
             notes: String::new(),
         }
     }
@@ -132,6 +147,8 @@ mod tests {
         task.scheduled = Some("2026-06-10".to_string());
         task.order = 1234567890;
         task.depends_on = vec!["other-task-id".to_string()];
+        task.estimated_minutes = Some(90);
+        task.tracked_minutes = 45;
         task.notes = "Some free-form notes about the assignment.".to_string();
 
         let markdown = task.to_markdown().expect("serialization should succeed");
@@ -162,6 +179,36 @@ mod tests {
         assert!(task.depends_on.is_empty());
         assert!(task.project.is_none());
         assert_eq!(task.order, 0);
+        assert_eq!(task.estimated_minutes, None);
+        assert_eq!(task.tracked_minutes, 0);
+    }
+
+    #[test]
+    fn new_task_has_no_estimate_and_zero_tracked_minutes() {
+        let task = Task::new("Write report".to_string());
+
+        assert_eq!(task.estimated_minutes, None);
+        assert_eq!(task.tracked_minutes, 0);
+    }
+
+    #[test]
+    fn to_markdown_omits_estimated_minutes_when_unset() {
+        let task = Task::new("Demo".to_string());
+
+        let markdown = task.to_markdown().expect("serialization should succeed");
+
+        assert!(!markdown.contains("estimated_minutes"));
+    }
+
+    #[test]
+    fn to_markdown_then_from_markdown_round_trips_an_estimate_of_zero() {
+        let mut task = Task::new("Demo".to_string());
+        task.estimated_minutes = Some(0);
+
+        let markdown = task.to_markdown().expect("serialization should succeed");
+        let parsed = Task::from_markdown(&markdown).expect("parsing should succeed");
+
+        assert_eq!(parsed.estimated_minutes, Some(0));
     }
 
     #[test]

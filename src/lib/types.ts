@@ -1,3 +1,5 @@
+import type { InkMode } from "./colorPresets";
+
 export interface Task {
   id: string;
   title: string;
@@ -12,6 +14,10 @@ export interface Task {
   order: number;
   created: string;
   depends_on: string[];
+  /** User-editable estimate of how long this task will take, in minutes. `undefined` means no estimate has been set. */
+  estimated_minutes?: number;
+  /** Total time tracked against this task so far, in minutes. Always present; not user-editable. */
+  tracked_minutes: number;
   notes: string;
 }
 
@@ -34,6 +40,8 @@ export interface ProjectBoard {
   card_lightness?: number;
   /** Overrides `Settings.bar_lightness` for this project's week/calendar-view bars. `undefined` inherits the global default. */
   bar_lightness?: number;
+  /** Overrides `Settings.ink_mode` for this project's color-coded card/bar text. `undefined` inherits the global default. */
+  ink_mode?: InkMode;
 }
 
 /**
@@ -55,6 +63,9 @@ export interface ProjectBoard {
  * (see `relativeDates.ts`) rather than an absolute date: it's resolved to an
  * absolute date relative to the task's *scheduled* date (not "today") at
  * task-creation time. `"none"` means "never due".
+ *
+ * `estimated_minutes`, if set, seeds `Task.estimated_minutes` for a newly
+ * created task that doesn't specify its own estimate.
  */
 export interface TaskDefaults {
   tags: string[];
@@ -62,6 +73,7 @@ export interface TaskDefaults {
   status?: string;
   due?: string;
   scheduled?: string;
+  estimated_minutes?: number;
 }
 
 export interface Project {
@@ -129,6 +141,8 @@ export interface Settings {
   card_lightness: number;
   /** Global OKLCH lightness for "color code" mode's week/calendar-view bar background. See `ProjectBoard.bar_lightness`. */
   bar_lightness: number;
+  /** Global default text-color mode for "color code" mode's card/bar text. See `ProjectBoard.ink_mode`. */
+  ink_mode: InkMode;
 }
 
 /**

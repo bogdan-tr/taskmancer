@@ -9,6 +9,12 @@
   } from "$lib/colorPresets";
   import { displayState } from "$lib/displaySettings.svelte";
   import { formatDueDateDisplay } from "$lib/dueDateDisplay";
+  import {
+    formatMinutes,
+    hoursAndMinutesFromMinutes,
+    minutesFromHoursAndMinutes,
+    normalizeHoursMinutes,
+  } from "$lib/estimatedTime";
   import { generalState } from "$lib/generalSettings.svelte";
   import {
     FALLBACK_PRIORITIES,
@@ -16,7 +22,7 @@
     priorityLabel,
     sortedPriorities,
   } from "$lib/priorities.svelte";
-  import { resolveCardLightness, resolveProjectColor } from "$lib/projectColor";
+  import { resolveCardLightness, resolveInkMode, resolveProjectColor } from "$lib/projectColor";
   import { projectsState } from "$lib/projects.svelte";
   import { settingsState } from "$lib/settings.svelte";
   import { FALLBACK_STATUSES, statusColor } from "$lib/statuses.svelte";
@@ -57,7 +63,15 @@
   const colorCodeBackground = $derived(
     isColorCoded ? neonCardColor(projectColor, cardLightness, NEON_CARD_CHROMA_BOOST) : undefined,
   );
-  const colorCodeTextColor = $derived(colorCodeBackground ? legibleInkColor(colorCodeBackground) : undefined);
+  // The project's own override (Project.board.ink_mode) takes precedence
+  // over the global default (Settings.ink_mode); falls back to "auto"
+  // (contrast-computed, the original behavior) while settings are loading.
+  const inkMode = $derived(
+    resolveInkMode(task.project, projectsState.items, settingsState.current?.ink_mode ?? "auto"),
+  );
+  const colorCodeTextColor = $derived(
+    colorCodeBackground ? legibleInkColor(colorCodeBackground, inkMode) : undefined,
+  );
   // The urgency category (overdue/today/tomorrow/normal) doesn't depend on
   // the natural-language-phrasing setting, so `nlEnabled` is irrelevant here.
   const dueUrgency = $derived(formatDueDateDisplay(task.due, new Date(), false)?.variant);
@@ -82,6 +96,8 @@
   let draftPriority = $state("medium");
   let draftDue = $state("");
   let draftScheduled = $state("");
+  let draftEstimatedHours: number | undefined = $state(undefined);
+  let draftEstimatedMinutes: number | undefined = $state(undefined);
   let draftNotes = $state("");
   let editError = $state("");
   let showDeleteConfirm = $state(false);
@@ -98,11 +114,23 @@
     draftPriority = task.priority;
     draftDue = task.due ?? "";
     draftScheduled = task.scheduled ?? "";
+    const resolvedEstimate =
+      task.estimated_minutes !== undefined ? hoursAndMinutesFromMinutes(task.estimated_minutes) : undefined;
+    draftEstimatedHours = resolvedEstimate?.hours;
+    draftEstimatedMinutes = resolvedEstimate?.minutes;
     draftNotes = task.notes;
     editError = "";
     projectSuggestions = [];
     tagSuggestions = [];
     isEditing = true;
+  }
+
+  /** Rolls minutes >= 60 over into hours, e.g. typing 90 into "mins" reads back as 1h 30m. */
+  function normalizeEstimateDraft() {
+    if (draftEstimatedHours === undefined && draftEstimatedMinutes === undefined) return;
+    const normalized = normalizeHoursMinutes(draftEstimatedHours ?? 0, draftEstimatedMinutes ?? 0);
+    draftEstimatedHours = normalized.hours;
+    draftEstimatedMinutes = normalized.minutes;
   }
 
   function cancelEdit() {
@@ -191,6 +219,11 @@
       return;
     }
 
+    const estimatedMinutes =
+      draftEstimatedHours === undefined && draftEstimatedMinutes === undefined
+        ? undefined
+        : minutesFromHoursAndMinutes(draftEstimatedHours ?? 0, draftEstimatedMinutes ?? 0);
+
     onUpdate({
       ...task,
       title: draftTitle,
@@ -199,6 +232,7 @@
       priority: draftPriority,
       due: emptyToUndefined(draftDue),
       scheduled: emptyToUndefined(draftScheduled),
+      estimated_minutes: estimatedMinutes,
       notes: draftNotes,
     });
     isEditing = false;
@@ -326,6 +360,31 @@
         <input type="text" bind:value={draftScheduled} placeholder="YYYY-MM-DD" />
       </label>
       <label>
+        Estimated time
+        <span class="estimate-inputs">
+          <input
+            type="number"
+            min="0"
+            step="1"
+            placeholder="0"
+            bind:value={draftEstimatedHours}
+            onblur={normalizeEstimateDraft}
+            aria-label="Estimated hours"
+          />
+          hrs
+          <input
+            type="number"
+            min="0"
+            step="1"
+            placeholder="0"
+            bind:value={draftEstimatedMinutes}
+            onblur={normalizeEstimateDraft}
+            aria-label="Estimated minutes"
+          />
+          mins
+        </span>
+      </label>
+      <label>
         Notes
         <textarea bind:value={draftNotes} rows="3"></textarea>
       </label>
@@ -396,6 +455,12 @@
             {dueDisplay.label}
           </span>
         {/if}
+      {/if}
+      {#if task.estimated_minutes !== undefined}
+        <span class="chip estimated" title="Estimated time">{formatMinutes(task.estimated_minutes)}</span>
+      {/if}
+      {#if task.tracked_minutes > 0}
+        <span class="chip tracked" title="Tracked time">{formatMinutes(task.tracked_minutes)} tracked</span>
       {/if}
       {#each task.tags as tag (tag)}
         <span class="chip tag">#{tag}</span>
@@ -666,6 +731,20 @@
 
   .field-with-suggestions input {
     width: 100%;
+  }
+
+  .estimate-inputs {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3xs);
+    text-transform: none;
+    letter-spacing: normal;
+    font-weight: 400;
+  }
+
+  .estimate-inputs input {
+    width: 3.5rem;
+    flex: none;
   }
 
   .edit-form input,

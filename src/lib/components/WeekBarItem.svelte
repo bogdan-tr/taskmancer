@@ -1,7 +1,8 @@
 <script lang="ts">
   import { legibleInkColor, WEEK_BAR_CHROMA_BOOST, WEEK_BAR_LIGHTNESS, neonCardColor } from "$lib/colorPresets";
+  import { computeClampedPopoverPosition } from "$lib/popoverPosition";
   import { priorityColor, priorityLabel } from "$lib/priorities.svelte";
-  import { resolveBarLightness, resolveProjectColor } from "$lib/projectColor";
+  import { resolveBarLightness, resolveInkMode, resolveProjectColor } from "$lib/projectColor";
   import { projectsState } from "$lib/projects.svelte";
   import { settingsState } from "$lib/settings.svelte";
   import { statusColor, statusLabel } from "$lib/statuses.svelte";
@@ -51,13 +52,14 @@
   let barColorCodeBg = $derived(
     colorCoded ? neonCardColor(barColor, barLightness, WEEK_BAR_CHROMA_BOOST) : undefined,
   );
+  /** The project's own override (Project.board.ink_mode) takes precedence over the global default. */
+  let barInkMode = $derived(
+    resolveInkMode(task.project, projectsState.items, settingsState.current?.ink_mode ?? "auto"),
+  );
   /** Adapts to the resolved background color so text/icons stay legible across the lightness slider's full range. */
-  let barColorCodeText = $derived(barColorCodeBg ? legibleInkColor(barColorCodeBg) : undefined);
+  let barColorCodeText = $derived(barColorCodeBg ? legibleInkColor(barColorCodeBg, barInkMode) : undefined);
   let done = $derived(task.status === doneStatus);
   let cancelled = $derived(!done && cancelledStatus !== undefined && task.status === cancelledStatus);
-
-  const VIEWPORT_MARGIN_PX = 8;
-  const POPOVER_GAP_PX = 6;
 
   let summaryEl: HTMLDivElement | undefined = $state(undefined);
   let popoverEl: HTMLDivElement | undefined = $state(undefined);
@@ -65,16 +67,12 @@
   let popoverPosition: { top: number; left: number } | undefined = $state(undefined);
 
   /**
-   * A first attempt at keeping the popover on-screen flipped it between two
-   * fixed CSS positions (`top` below the bar, or `bottom` above it) based on
-   * a "does it fit" check — but that's still just a heuristic, and any case
-   * where it guessed wrong (or where *neither* side fully fit) left the
-   * popover overflowing the window exactly like before, still requiring a
-   * scroll. This instead computes exact `position: fixed` pixel coordinates
-   * every time it opens, then *clamps* them into the visible viewport as a
-   * final, unconditional step — so even in a worst case (a very short
-   * window, a very tall popover) it's pinned fully on-screen, just possibly
-   * overlapping the bar, rather than ever extending past the window edge.
+   * Computes exact `position: fixed` pixel coordinates every time the
+   * popover opens, then clamps them into the visible viewport as a final,
+   * unconditional step — see `computeClampedPopoverPosition`'s doc comment
+   * for why a clamp beats a "flip between two fixed sides" heuristic (the
+   * approach this originally shipped with, which still overflowed whenever
+   * neither side fully fit).
    */
   $effect(() => {
     if (!isOpen || !summaryEl || !popoverEl) {
@@ -84,17 +82,11 @@
     const summaryRect = summaryEl.getBoundingClientRect();
     const popoverRect = popoverEl.getBoundingClientRect();
 
-    let top = summaryRect.bottom + POPOVER_GAP_PX;
-    if (top + popoverRect.height > window.innerHeight - VIEWPORT_MARGIN_PX) {
-      const above = summaryRect.top - POPOVER_GAP_PX - popoverRect.height;
-      if (above >= VIEWPORT_MARGIN_PX) top = above;
-    }
-    top = Math.max(VIEWPORT_MARGIN_PX, Math.min(top, window.innerHeight - popoverRect.height - VIEWPORT_MARGIN_PX));
-
-    let left = rightAlignPopover ? summaryRect.right - popoverRect.width : summaryRect.left;
-    left = Math.max(VIEWPORT_MARGIN_PX, Math.min(left, window.innerWidth - popoverRect.width - VIEWPORT_MARGIN_PX));
-
-    popoverPosition = { top, left };
+    popoverPosition = computeClampedPopoverPosition(summaryRect, popoverRect, {
+      rightAlign: rightAlignPopover,
+      viewportWidth: window.innerWidth,
+      viewportHeight: window.innerHeight,
+    });
   });
 
   /**

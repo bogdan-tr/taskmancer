@@ -206,4 +206,21 @@ describe("legibleInkColor", () => {
     const { l } = hexToOklch(cssColorToHex(legibleInkColor("#ffffff")));
     expect(l).toBeLessThan(0.5);
   });
+
+  test("defaults to auto contrast when no mode is given", () => {
+    const background = neonCardColor("#3b82f6", NEON_CARD_LIGHTNESS, NEON_CARD_CHROMA_BOOST);
+    expect(legibleInkColor(background)).toEqual(legibleInkColor(background, "auto"));
+  });
+
+  test("mode 'white' forces light ink even against a background where dark ink would win on contrast", () => {
+    const background = "oklch(95% 0.02 90)";
+    const { l } = hexToOklch(cssColorToHex(legibleInkColor(background, "white")));
+    expect(l).toBeGreaterThan(0.5);
+  });
+
+  test("mode 'black' forces dark ink even against a background where light ink would win on contrast", () => {
+    const background = "oklch(5% 0.02 250)";
+    const { l } = hexToOklch(cssColorToHex(legibleInkColor(background, "black")));
+    expect(l).toBeLessThan(0.5);
+  });
 });

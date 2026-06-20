@@ -41,6 +41,19 @@ fn default_bar_lightness() -> f64 {
     0.38
 }
 
+/// The fixed set of values accepted by `Settings.ink_mode` and
+/// `crate::project::ProjectBoard.ink_mode`. `"auto"` picks whichever of a
+/// dark/light ink color has the higher real WCAG contrast against the
+/// resolved background (see the frontend's `legibleInkColor`); `"white"`/
+/// `"black"` force that choice regardless of contrast.
+pub const INK_MODES: &[&str] = &["auto", "white", "black"];
+
+/// Default `Settings.ink_mode`: preserves the contrast-computed behavior
+/// this shipped with before the setting existed.
+fn default_ink_mode() -> String {
+    "auto".to_string()
+}
+
 /// A user-defined priority level: an id stored in `Task.priority`, a display
 /// label, a `color` used to render that priority throughout the UI, and a
 /// `rank` used to sort tasks by priority (lower `rank` sorts first / is
@@ -80,6 +93,9 @@ pub struct StatusDefinition {
 /// absolute date: it's resolved to an absolute date relative to the task's
 /// *scheduled* date (not "today") at task-creation time (see
 /// [`resolve_due_relative_date`]). `"none"` means "never due".
+///
+/// `estimated_minutes`, if set, seeds `Task.estimated_minutes` for a newly
+/// created task that doesn't specify its own estimate.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct TaskDefaults {
     #[serde(default)]
@@ -92,6 +108,8 @@ pub struct TaskDefaults {
     pub due: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scheduled: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_minutes: Option<u32>,
 }
 
 /// Global, app-wide settings: the available priority levels, the global list
@@ -120,6 +138,10 @@ pub struct TaskDefaults {
 /// since the bar treatment is deliberately darker by default. A project's
 /// `ProjectBoard.card_lightness`/`.bar_lightness` overrides these
 /// individually when set.
+///
+/// `ink_mode` is the global default text-color mode (one of [`INK_MODES`])
+/// for "color code" mode's Kanban card/bar text. A project's
+/// `ProjectBoard.ink_mode` overrides this when set.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Settings {
     #[serde(default)]
@@ -140,6 +162,8 @@ pub struct Settings {
     pub card_lightness: f64,
     #[serde(default = "default_bar_lightness")]
     pub bar_lightness: f64,
+    #[serde(default = "default_ink_mode")]
+    pub ink_mode: String,
 }
 
 impl Default for Settings {
@@ -209,6 +233,7 @@ impl Default for Settings {
                 status: Some("backlog".to_string()),
                 due: Some("none".to_string()),
                 scheduled: Some("today".to_string()),
+                estimated_minutes: None,
             },
             done_status: "done".to_string(),
             cancelled_status: None,
@@ -216,6 +241,7 @@ impl Default for Settings {
             show_previous_weeks_column: false,
             card_lightness: default_card_lightness(),
             bar_lightness: default_bar_lightness(),
+            ink_mode: default_ink_mode(),
         }
     }
 }
@@ -405,6 +431,17 @@ pub fn validate_lightness(value: f64) -> Result<(), String> {
     }
 }
 
+/// Returns `Ok(())` if `value` is one of [`INK_MODES`], or an error naming
+/// the unrecognized value otherwise. Used for `Settings.ink_mode` and its
+/// per-project `ProjectBoard` override — see [`crate::project::ProjectBoard`].
+pub fn validate_ink_mode(value: &str) -> Result<(), String> {
+    if INK_MODES.contains(&value) {
+        Ok(())
+    } else {
+        Err(format!("'{value}' is not a recognized ink mode"))
+    }
+}
+
 /// Validates settings before they're persisted: `priorities` and `statuses`
 /// must each be non-empty with unique ids (an empty or duplicate-id list
 /// would make `validate_priority_id`/`validate_status_id` reject every task
@@ -479,6 +516,7 @@ pub fn validate_settings(settings: &Settings) -> Result<(), String> {
 
     validate_lightness(settings.card_lightness)?;
     validate_lightness(settings.bar_lightness)?;
+    validate_ink_mode(&settings.ink_mode)?;
 
     Ok(())
 }
@@ -888,6 +926,59 @@ mod tests {
     }
 
     #[test]
+    fn default_settings_seed_has_an_ink_mode_of_auto() {
+        let settings = Settings::default();
+
+        assert_eq!(settings.ink_mode, "auto");
+    }
+
+    #[test]
+    fn deserializing_settings_without_ink_mode_defaults_to_auto() {
+        let settings: Settings = serde_json::from_str("{}").unwrap();
+
+        assert_eq!(settings.ink_mode, "auto");
+    }
+
+    #[test]
+    fn validate_ink_mode_accepts_every_defined_mode() {
+        for mode in INK_MODES {
+            assert!(validate_ink_mode(mode).is_ok(), "{mode} should be valid");
+        }
+    }
+
+    #[test]
+    fn validate_ink_mode_rejects_an_unknown_mode() {
+        let err = validate_ink_mode("sepia").unwrap_err();
+        assert!(err.contains("sepia"));
+    }
+
+    #[test]
+    fn validate_settings_rejects_an_unknown_ink_mode() {
+        let settings = Settings {
+            ink_mode: "sepia".to_string(),
+            ..Settings::default()
+        };
+
+        let err = validate_settings(&settings).unwrap_err();
+        assert!(err.contains("ink mode"));
+    }
+
+    #[test]
+    fn validate_settings_accepts_every_defined_ink_mode() {
+        for mode in INK_MODES {
+            let settings = Settings {
+                ink_mode: mode.to_string(),
+                ..Settings::default()
+            };
+
+            assert!(
+                validate_settings(&settings).is_ok(),
+                "{mode} should be valid"
+            );
+        }
+    }
+
+    #[test]
     fn validate_scheduled_relative_date_code_accepts_every_defined_code() {
         for code in SCHEDULED_RELATIVE_DATE_CODES {
             assert!(
@@ -1198,6 +1289,16 @@ mod tests {
         assert_eq!(defaults.status, None);
         assert_eq!(defaults.due, None);
         assert_eq!(defaults.scheduled, None);
+        assert_eq!(defaults.estimated_minutes, None);
+    }
+
+    #[test]
+    fn task_defaults_deserializes_an_estimated_minutes_override() {
+        let json = r#"{"estimated_minutes": 30}"#;
+
+        let defaults: TaskDefaults = serde_json::from_str(json).expect("parsing should succeed");
+
+        assert_eq!(defaults.estimated_minutes, Some(30));
     }
 
     #[test]

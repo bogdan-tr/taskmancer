@@ -4,6 +4,7 @@
     NEON_CARD_CHROMA_BOOST,
     WEEK_BAR_CHROMA_BOOST,
     neonCardColor,
+    type InkMode,
   } from "$lib/colorPresets";
   import { persistSettings, settingsState } from "$lib/settings.svelte";
   import { DEFAULT_PROJECT_COLOR } from "$lib/types";
@@ -11,36 +12,48 @@
   /** A representative project color for the live preview swatches below — not tied to any real project. */
   const PREVIEW_COLOR = DEFAULT_PROJECT_COLOR;
 
+  const INK_MODE_OPTIONS: { value: InkMode; label: string }[] = [
+    { value: "auto", label: "Auto" },
+    { value: "white", label: "White" },
+    { value: "black", label: "Black" },
+  ];
+
   let draftCardLightness = $state(50);
   let draftBarLightness = $state(38);
+  let draftInkMode: InkMode = $state("auto");
   let initialized = $state(false);
   let errorMessage = $state("");
   let isSaving = $state(false);
 
   let baselineCardLightness = $derived(Math.round((settingsState.current?.card_lightness ?? 0.5) * 100));
   let baselineBarLightness = $derived(Math.round((settingsState.current?.bar_lightness ?? 0.38) * 100));
+  let baselineInkMode = $derived(settingsState.current?.ink_mode ?? "auto");
 
   /** Seeds the draft from settings once they finish loading; later edits live only in the draft. */
   $effect(() => {
     if (settingsState.current && !initialized) {
       draftCardLightness = baselineCardLightness;
       draftBarLightness = baselineBarLightness;
+      draftInkMode = baselineInkMode;
       initialized = true;
     }
   });
 
   let isDirty = $derived(
-    draftCardLightness !== baselineCardLightness || draftBarLightness !== baselineBarLightness,
+    draftCardLightness !== baselineCardLightness ||
+      draftBarLightness !== baselineBarLightness ||
+      draftInkMode !== baselineInkMode,
   );
 
   let cardPreviewBg = $derived(neonCardColor(PREVIEW_COLOR, draftCardLightness / 100, NEON_CARD_CHROMA_BOOST));
-  let cardPreviewText = $derived(legibleInkColor(cardPreviewBg));
+  let cardPreviewText = $derived(legibleInkColor(cardPreviewBg, draftInkMode));
   let barPreviewBg = $derived(neonCardColor(PREVIEW_COLOR, draftBarLightness / 100, WEEK_BAR_CHROMA_BOOST));
-  let barPreviewText = $derived(legibleInkColor(barPreviewBg));
+  let barPreviewText = $derived(legibleInkColor(barPreviewBg, draftInkMode));
 
   function discardChanges() {
     draftCardLightness = baselineCardLightness;
     draftBarLightness = baselineBarLightness;
+    draftInkMode = baselineInkMode;
     errorMessage = "";
   }
 
@@ -53,6 +66,7 @@
         ...settingsState.current,
         card_lightness: draftCardLightness / 100,
         bar_lightness: draftBarLightness / 100,
+        ink_mode: draftInkMode,
       });
       errorMessage = "";
     } catch (error) {
@@ -69,9 +83,9 @@
   </div>
   <p class="description">
     Only applies in "Color code" card mode (see Display settings above). Controls how bright/dark
-    the project-color background is on Kanban cards, and separately on week/calendar-view bars.
-    Text color always adjusts automatically to stay readable. Any project can override either value
-    individually from its own settings page.
+    the project-color background is on Kanban cards, and separately on week/calendar-view bars, plus
+    whether the text on top of it is computed for contrast ("Auto") or always one fixed color. Any
+    project can override these individually from its own settings page.
   </p>
 
   {#if !settingsState.current}
@@ -122,6 +136,25 @@
         >
           Sample
         </span>
+      </div>
+    </div>
+
+    <div class="control-row">
+      <div class="control-label">
+        <span id="ink-mode-label">Card &amp; bar text color</span>
+      </div>
+      <div class="ink-mode-group" role="radiogroup" aria-labelledby="ink-mode-label">
+        {#each INK_MODE_OPTIONS as option (option.value)}
+          <button
+            type="button"
+            role="radio"
+            aria-checked={draftInkMode === option.value}
+            class:selected={draftInkMode === option.value}
+            onclick={() => (draftInkMode = option.value)}
+          >
+            {option.label}
+          </button>
+        {/each}
       </div>
     </div>
 
@@ -203,6 +236,38 @@
   .control-with-preview input[type="range"] {
     flex: 1;
     accent-color: var(--color-accent);
+  }
+
+  .ink-mode-group {
+    display: flex;
+    gap: var(--space-2xs);
+  }
+
+  .ink-mode-group button {
+    flex: 1;
+    padding: var(--space-2xs) var(--space-sm);
+    border-radius: var(--radius-md);
+    border: 1px solid var(--color-border);
+    background: var(--color-surface);
+    color: var(--color-ink-muted);
+    font-size: var(--text-sm);
+    font-weight: 600;
+    cursor: pointer;
+    transition:
+      background var(--duration-fast) var(--ease-out-expo),
+      color var(--duration-fast) var(--ease-out-expo),
+      border-color var(--duration-fast) var(--ease-out-expo);
+  }
+
+  .ink-mode-group button.selected {
+    background: var(--color-accent);
+    border-color: var(--color-accent);
+    color: var(--color-accent-ink);
+  }
+
+  .ink-mode-group button:not(.selected):hover {
+    background: var(--color-canvas);
+    color: var(--color-ink);
   }
 
   .preview-swatch {

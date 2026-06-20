@@ -14,6 +14,7 @@ function makeTask(overrides: Partial<Task> & { id: string }): Task {
     order: 0,
     created: "2024-01-01T00:00:00Z",
     depends_on: [],
+    tracked_minutes: 0,
     notes: "",
     ...overrides,
   };

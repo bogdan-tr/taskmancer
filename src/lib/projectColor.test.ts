@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { resolveBarLightness, resolveCardLightness, resolveProjectColor } from "./projectColor";
+import { resolveBarLightness, resolveCardLightness, resolveInkMode, resolveProjectColor } from "./projectColor";
 import { DEFAULT_PROJECT_COLOR, type Project, type ProjectBoard } from "./types";
 
 const project = (name: string, color: string, board: Partial<ProjectBoard> = {}): Project => ({
@@ -75,5 +75,30 @@ describe("resolveBarLightness", () => {
     const projects = [project("Work", "#ef4444", { card_lightness: 0.7 })];
     expect(resolveCardLightness("Work", projects, 0.5)).toBe(0.7);
     expect(resolveBarLightness("Work", projects, 0.38)).toBe(0.38);
+  });
+});
+
+describe("resolveInkMode", () => {
+  test("returns the matching project's override when set", () => {
+    const projects = [project("Work", "#ef4444", { ink_mode: "white" })];
+    expect(resolveInkMode("Work", projects, "auto")).toBe("white");
+  });
+
+  test("falls back to the global value when the project has no override", () => {
+    const projects = [project("Work", "#ef4444")];
+    expect(resolveInkMode("Work", projects, "auto")).toBe("auto");
+  });
+
+  test("falls back to the global value when projectName is undefined", () => {
+    expect(resolveInkMode(undefined, [project("Work", "#ef4444", { ink_mode: "black" })], "auto")).toBe("auto");
+  });
+
+  test("falls back to the global value when no project matches the name", () => {
+    expect(resolveInkMode("Unknown", [project("Work", "#ef4444", { ink_mode: "black" })], "auto")).toBe("auto");
+  });
+
+  test("a project override of 'auto' is respected even when the global default is forced", () => {
+    const projects = [project("Work", "#ef4444", { ink_mode: "auto" })];
+    expect(resolveInkMode("Work", projects, "white")).toBe("auto");
   });
 });

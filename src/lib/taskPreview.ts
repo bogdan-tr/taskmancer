@@ -88,6 +88,7 @@ export interface TaskPreview {
   tags: string[];
   due?: string;
   scheduled?: string;
+  estimatedMinutes?: number;
 }
 
 export interface ResolveTaskPreviewOptions {
@@ -134,6 +135,10 @@ export interface ResolveTaskPreviewOptions {
  *   never-due token or a default due code of `"none"`, else the effective
  *   default due code resolved to an absolute date relative to the
  *   *effective scheduled date* above (not "today" — see [`TaskPreview`]).
+ * - `estimatedMinutes`: the quick-add `est`/bare duration token, else the
+ *   project's `TaskDefaults.estimated_minutes` if set, else the global
+ *   default, mirroring `effective_default_estimated_minutes` in the Rust
+ *   command layer.
  */
 export function resolveTaskPreview(options: ResolveTaskPreviewOptions): TaskPreview {
   const {
@@ -173,6 +178,8 @@ export function resolveTaskPreview(options: ResolveTaskPreviewOptions): TaskPrev
       : parsed.due ??
         (dueCode === "none" ? "Never" : dueCode ? resolveDueRelativeDate(dueCode, resolvedScheduledDate) : undefined);
 
+  const estimatedMinutes = parsed.estimatedMinutes ?? projectDefaults?.estimated_minutes ?? globalDefaults.estimated_minutes;
+
   return {
     project,
     priorityId,
@@ -180,5 +187,6 @@ export function resolveTaskPreview(options: ResolveTaskPreviewOptions): TaskPrev
     tags,
     due,
     scheduled: parsed.scheduled ?? (scheduledCode ? scheduledRelativeDateLabel(scheduledCode) : undefined),
+    estimatedMinutes,
   };
 }

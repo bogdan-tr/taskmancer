@@ -69,12 +69,19 @@ task entry, and (eventually) time tracking and analytics — built with
   Settings page.
 - **Subtasks, dependencies, notes** — every task supports a markdown notes
   body and a `depends_on` list of other task IDs.
+- **Estimated & tracked time** — an optional estimated-time attribute (`est
+  <n>h <n>m` quick-add token, or the hrs/mins fields when editing/creating a
+  task), with a global default and per-project override from Settings. A
+  tracked-time attribute also exists on every task (shown as a chip on the
+  Kanban card once non-zero) but isn't user-editable yet — it's a placeholder
+  for the real time-tracking infrastructure, still planned.
 
 ### Planned
 
-Time tracking, Pomodoro/focus mode, idle detection, recurring tasks, habit
-tracking, analytics dashboards, plugin system, calendar sync, and
-import/export. See the in-app roadmap for current priorities.
+Time-tracking infrastructure (start/stop timers, time logs), Pomodoro/focus
+mode, idle detection, recurring tasks, habit tracking, analytics dashboards,
+plugin system, calendar sync, and import/export. See the in-app roadmap for
+current priorities.
 
 ## Tech stack
 
@@ -186,11 +193,15 @@ the field list:
 | `@status`          | Sets the status (exact match against configured statuses) | `@do` |
 | `due <phrase>` / `due:<token>` | Sets the due date    | `due next friday`, `due:tomorrow` |
 | `sch <phrase>` / `sch:<token>` | Sets the scheduled date | `sch next monday` |
+| `est <n>h <n>m` | Sets the estimated time. `est` is optional; `m` is optional once `h` is present. A bare number with no `h`/`m` suffix is never treated as a duration | `est 1h 30m`, `1h 30`, `45m` |
 
 Anything left over becomes the task title. Typing a bare `#`, `+`, `!`, or
 `@` with nothing after it lists every available tag, project, priority, or
 status to pick from (tag listing is disabled once you have more than 10
-distinct tags — spell it out instead).
+distinct tags — spell it out instead). The Add Task modal's field list shows
+a syntax reminder next to each attribute, plus dedicated hrs/mins inputs for
+estimated time (the one new attribute that also gets an explicit editable
+control there, not just a quick-add token).
 
 #### Date phrases
 
@@ -269,7 +280,7 @@ Also on the **Settings** page, under "Display":
 | Status column width | 200px–400px (10px steps) | Width of each Kanban status column. Columns scroll horizontally as a single row instead of wrapping. |
 | Group tasks by priority | on/off | When on, each status column is divided into labeled priority sections. When off, tasks stay sorted by priority but the column isn't visually divided — a small priority badge on each card still shows its level. |
 | Week starts on | Monday / Sunday | Controls which day is the first column in the [Week view](#week-view). |
-| Card color mode | Project tag / Color code | "Project tag" shows a colored project chip on each card (default). "Color code" hides the chip and tints the whole card/bar in the project's color instead, at the lightness configured under "Card & bar appearance" (see below) — text color always adjusts automatically (real WCAG contrast against the resolved background, not a fixed assumption) to stay readable regardless of the source color or chosen lightness. |
+| Card color mode | Project tag / Color code | "Project tag" shows a colored project chip on each card (default). "Color code" hides the chip and tints the whole card/bar in the project's color instead, at the lightness configured under "Card & bar appearance" (see below). Text color follows that same section's Auto/White/Black setting — "Auto" (the default) computes real WCAG contrast against the resolved background rather than assuming a fixed color. |
 | Due-date glow | on/off | Adds a soft red halo around cards/bars that are overdue or due today. |
 | Natural language due dates | on/off | Shows due dates as relative phrases ("due this Wednesday", "due next Saturday") instead of `due YYYY-MM-DD`, falling back to the absolute date outside a ~2-week window. |
 | Deduplicate completed/cancelled tasks | on/off, + keep due/scheduled | In the Week view, keeps only one bar (instead of two) for a finished task that has both a scheduled and due date in the visible week. |
@@ -286,10 +297,13 @@ readable by the Rust backend too: the "Previous" week-view column toggle
 Also on the Settings page: two sliders (0–100%) control how bright/dark the
 "Color code" card mode's background is — one for Kanban cards, one shared by
 week-view and calendar-view bars (bars default darker, by design). A live
-swatch previews the result, including the automatically-adjusted text color,
-before you save. Any project can override either value independently from
-its own settings page (a checkbox reveals that project's own slider); leaving
-it unchecked inherits the global default.
+swatch previews the result. Alongside the sliders, an Auto/White/Black
+control picks the text color: "Auto" (default) computes real WCAG contrast
+against the resolved background; "White"/"Black" force that choice
+regardless of contrast. Any project can override the lightness values and/or
+the text-color mode independently from its own settings page (a checkbox
+reveals that project's own control); leaving a control unchecked inherits
+the global default.
 
 ## Testing
 

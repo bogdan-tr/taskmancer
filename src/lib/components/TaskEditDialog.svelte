@@ -2,6 +2,7 @@
   import { applyTagsSuggestion, filterSuggestions, splitTagsInput } from "$lib/autocomplete";
   import { displayState } from "$lib/displaySettings.svelte";
   import { formatDueDateDisplay } from "$lib/dueDateDisplay";
+  import { hoursAndMinutesFromMinutes, minutesFromHoursAndMinutes, normalizeHoursMinutes } from "$lib/estimatedTime";
   import { FALLBACK_PRIORITIES, sortedPriorities } from "$lib/priorities.svelte";
   import { projectsState } from "$lib/projects.svelte";
   import { settingsState } from "$lib/settings.svelte";
@@ -32,6 +33,8 @@
   let draftStatus = $state("");
   let draftDue = $state("");
   let draftScheduled = $state("");
+  let draftEstimatedHours: number | undefined = $state(undefined);
+  let draftEstimatedMinutes: number | undefined = $state(undefined);
   let draftNotes = $state("");
   let editError = $state("");
 
@@ -51,6 +54,10 @@
       draftStatus = task.status;
       draftDue = task.due ?? "";
       draftScheduled = task.scheduled ?? "";
+      const resolvedEstimate =
+        task.estimated_minutes !== undefined ? hoursAndMinutesFromMinutes(task.estimated_minutes) : undefined;
+      draftEstimatedHours = resolvedEstimate?.hours;
+      draftEstimatedMinutes = resolvedEstimate?.minutes;
       draftNotes = task.notes;
       editError = "";
       projectSuggestions = [];
@@ -60,6 +67,14 @@
       dialogEl.close();
     }
   });
+
+  /** Rolls minutes >= 60 over into hours, e.g. typing 90 into "mins" reads back as 1h 30m. */
+  function normalizeEstimateDraft() {
+    if (draftEstimatedHours === undefined && draftEstimatedMinutes === undefined) return;
+    const normalized = normalizeHoursMinutes(draftEstimatedHours ?? 0, draftEstimatedMinutes ?? 0);
+    draftEstimatedHours = normalized.hours;
+    draftEstimatedMinutes = normalized.minutes;
+  }
 
   /** Closes the dialog when a click lands on the `::backdrop`, not its content box. */
   function handleBackdropClick(event: MouseEvent) {
@@ -160,6 +175,11 @@
       return;
     }
 
+    const estimatedMinutes =
+      draftEstimatedHours === undefined && draftEstimatedMinutes === undefined
+        ? undefined
+        : minutesFromHoursAndMinutes(draftEstimatedHours ?? 0, draftEstimatedMinutes ?? 0);
+
     onSave({
       ...task,
       title: draftTitle,
@@ -169,6 +189,7 @@
       status: draftStatus,
       due: emptyToUndefined(draftDue),
       scheduled: emptyToUndefined(draftScheduled),
+      estimated_minutes: estimatedMinutes,
       notes: draftNotes,
     });
   }
@@ -277,6 +298,33 @@
           <input type="text" bind:value={draftScheduled} placeholder="YYYY-MM-DD" />
         </label>
       </div>
+      <div class="field-row">
+        <label>
+          Estimated time
+          <span class="estimate-inputs">
+            <input
+              type="number"
+              min="0"
+              step="1"
+              placeholder="0"
+              bind:value={draftEstimatedHours}
+              onblur={normalizeEstimateDraft}
+              aria-label="Estimated hours"
+            />
+            hrs
+            <input
+              type="number"
+              min="0"
+              step="1"
+              placeholder="0"
+              bind:value={draftEstimatedMinutes}
+              onblur={normalizeEstimateDraft}
+              aria-label="Estimated minutes"
+            />
+            mins
+          </span>
+        </label>
+      </div>
       <label>
         Notes
         <textarea bind:value={draftNotes} rows="3"></textarea>
@@ -346,6 +394,20 @@
 
   .field-with-suggestions {
     position: relative;
+  }
+
+  .estimate-inputs {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3xs);
+    text-transform: none;
+    letter-spacing: normal;
+    font-weight: 400;
+  }
+
+  .estimate-inputs input {
+    width: 3.5rem;
+    flex: none;
   }
 
   .field-with-suggestions input {

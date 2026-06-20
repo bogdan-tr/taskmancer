@@ -11,6 +11,7 @@ function makeTask(tags: string[]): Task {
     order: 1,
     created: "2026-06-11T00:00:00+00:00",
     depends_on: [],
+    tracked_minutes: 0,
     notes: "",
   };
 }

@@ -5,6 +5,7 @@
     NEON_CARD_CHROMA_BOOST,
     WEEK_BAR_CHROMA_BOOST,
     neonCardColor,
+    type InkMode,
   } from "$lib/colorPresets";
   import { boardsEqual, effectiveBoardStatuses } from "$lib/projectBoardSettings";
   import { refreshProjects } from "$lib/projects.svelte";
@@ -35,6 +36,8 @@
   let baselineBarLightness = $derived(
     Math.round((project.board.bar_lightness ?? settingsState.current?.bar_lightness ?? 0.38) * 100),
   );
+  let baselineInkModeOverride = $derived(project.board.ink_mode !== undefined);
+  let baselineInkMode = $derived(project.board.ink_mode ?? settingsState.current?.ink_mode ?? "auto");
 
   let draftStatuses = $state<string[]>([]);
   let draftDefault = $state("");
@@ -43,6 +46,8 @@
   let draftCardLightness = $state(50);
   let draftBarLightnessOverride = $state(false);
   let draftBarLightness = $state(38);
+  let draftInkModeOverride = $state(false);
+  let draftInkMode: InkMode = $state("auto");
   let initialized = $state(false);
   let errorMessage = $state("");
   let isSaving = $state(false);
@@ -57,6 +62,8 @@
       draftCardLightness = baselineCardLightness;
       draftBarLightnessOverride = baselineBarLightnessOverride;
       draftBarLightness = baselineBarLightness;
+      draftInkModeOverride = baselineInkModeOverride;
+      draftInkMode = baselineInkMode;
       initialized = true;
     }
   });
@@ -70,13 +77,19 @@
       draftCardLightnessOverride !== baselineCardLightnessOverride ||
       (draftCardLightnessOverride && draftCardLightness !== baselineCardLightness) ||
       draftBarLightnessOverride !== baselineBarLightnessOverride ||
-      (draftBarLightnessOverride && draftBarLightness !== baselineBarLightness),
+      (draftBarLightnessOverride && draftBarLightness !== baselineBarLightness) ||
+      draftInkModeOverride !== baselineInkModeOverride ||
+      (draftInkModeOverride && draftInkMode !== baselineInkMode),
   );
 
+  /** The ink mode that would actually apply if saved right now, for the preview swatches below. */
+  let effectiveInkMode = $derived(
+    draftInkModeOverride ? draftInkMode : settingsState.current?.ink_mode ?? "auto",
+  );
   let cardPreviewBg = $derived(neonCardColor(project.color, draftCardLightness / 100, NEON_CARD_CHROMA_BOOST));
-  let cardPreviewText = $derived(legibleInkColor(cardPreviewBg));
+  let cardPreviewText = $derived(legibleInkColor(cardPreviewBg, effectiveInkMode));
   let barPreviewBg = $derived(neonCardColor(project.color, draftBarLightness / 100, WEEK_BAR_CHROMA_BOOST));
-  let barPreviewText = $derived(legibleInkColor(barPreviewBg));
+  let barPreviewText = $derived(legibleInkColor(barPreviewBg, effectiveInkMode));
 
   let availableStatusIds = $derived(allStatusIds.filter((id) => !draftStatuses.includes(id)));
 
@@ -110,6 +123,8 @@
     draftCardLightness = baselineCardLightness;
     draftBarLightnessOverride = baselineBarLightnessOverride;
     draftBarLightness = baselineBarLightness;
+    draftInkModeOverride = baselineInkModeOverride;
+    draftInkMode = baselineInkMode;
     errorMessage = "";
   }
 
@@ -124,6 +139,7 @@
           show_previous_weeks: draftShowPreviousWeeks === "" ? undefined : draftShowPreviousWeeks === "true",
           card_lightness: draftCardLightnessOverride ? draftCardLightness / 100 : undefined,
           bar_lightness: draftBarLightnessOverride ? draftBarLightness / 100 : undefined,
+          ink_mode: draftInkModeOverride ? draftInkMode : undefined,
         },
       });
       await refreshProjects();
@@ -281,6 +297,20 @@
           Sample
         </span>
       </div>
+    {/if}
+  </div>
+
+  <div class="field lightness-field">
+    <label class="checkbox-row" for="ink-mode-override">
+      <input id="ink-mode-override" type="checkbox" bind:checked={draftInkModeOverride} />
+      Override card &amp; bar text color for this project
+    </label>
+    {#if draftInkModeOverride}
+      <select bind:value={draftInkMode} aria-label="Card & bar text color">
+        <option value="auto">Auto</option>
+        <option value="white">White</option>
+        <option value="black">Black</option>
+      </select>
     {/if}
   </div>
 

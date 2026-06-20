@@ -1,3 +1,4 @@
+import type { InkMode } from "./colorPresets";
 import { DEFAULT_PROJECT_COLOR, type Project } from "./types";
 
 /** The project's stored color, or `DEFAULT_PROJECT_COLOR` for tasks with no project or an unrecognized one. */
@@ -29,4 +30,14 @@ export function resolveBarLightness(
 ): number {
   if (!projectName) return globalLightness;
   return projects.find((project) => project.name === projectName)?.board.bar_lightness ?? globalLightness;
+}
+
+/** Same as `resolveCardLightness`, but for `board.ink_mode` (color-coded card/bar text). */
+export function resolveInkMode(
+  projectName: string | undefined,
+  projects: Project[],
+  globalInkMode: InkMode,
+): InkMode {
+  if (!projectName) return globalInkMode;
+  return projects.find((project) => project.name === projectName)?.board.ink_mode ?? globalInkMode;
 }
