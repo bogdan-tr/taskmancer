@@ -28,9 +28,16 @@
     /** Tasks to place on the month grid (project-filtered, but not Kanban-visibility-filtered). */
     tasks: Task[];
     onUpdate: (task: Task) => void | Promise<void>;
+    /**
+     * Called whenever the visible month grid's last date changes (navigating
+     * forward, jumping to today, or the week-start-day setting realigning
+     * the grid), with that date (`YYYY-MM-DD`) — see `WeekView.svelte`'s
+     * matching prop for the full rationale.
+     */
+    onEnsureOccurrences?: (through: string) => void;
   }
 
-  let { tasks, onUpdate }: Props = $props();
+  let { tasks, onUpdate, onEnsureOccurrences }: Props = $props();
 
   const priorities = $derived(settingsState.current?.priorities ?? FALLBACK_PRIORITIES);
   const statuses = $derived(sortedStatuses(settingsState.current?.statuses ?? FALLBACK_STATUSES));
@@ -55,6 +62,12 @@
 
   let dates = $derived(monthDates(monthStart, displayState.weekStartsOn));
   let dateStrings = $derived(dates.map(formatDateISO));
+
+  $effect(() => {
+    const lastDate = dateStrings[dateStrings.length - 1];
+    if (lastDate) onEnsureOccurrences?.(lastDate);
+  });
+
   let todayString = $derived(formatDateISO(new Date()));
   let weekdayLabels = $derived(dates.slice(0, COLUMNS_PER_ROW).map((date) => dayName(date)));
 

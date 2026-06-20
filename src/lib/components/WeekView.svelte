@@ -32,9 +32,19 @@
     onUpdate: (task: Task) => void | Promise<void>;
     /** Whether to show the leading "Previous" column of unfinished tasks scheduled/due before this week. */
     showPreviousWeeksColumn: boolean;
+    /**
+     * Called whenever the visible week's end date changes (navigating
+     * forward, jumping to today, or the week-start-day setting realigning
+     * the grid), with that date (`YYYY-MM-DD`) — the recurrence
+     * lookahead-extension trigger: any recurring series with tasks already
+     * loaded gets `ensure_occurrences_until` called up to this date, so
+     * scrolling far enough into the future always finds occurrences
+     * already generated rather than a gap.
+     */
+    onEnsureOccurrences?: (through: string) => void;
   }
 
-  let { tasks, onUpdate, showPreviousWeeksColumn }: Props = $props();
+  let { tasks, onUpdate, showPreviousWeeksColumn, onEnsureOccurrences }: Props = $props();
 
   const priorities = $derived(settingsState.current?.priorities ?? FALLBACK_PRIORITIES);
   const statuses = $derived(sortedStatuses(settingsState.current?.statuses ?? FALLBACK_STATUSES));
@@ -57,6 +67,11 @@
   });
 
   let weekEnd = $derived(addDays(weekStart, 6));
+
+  $effect(() => {
+    onEnsureOccurrences?.(formatDateISO(weekEnd));
+  });
+
   let dates = $derived(weekDates(weekStart));
   let dateStrings = $derived(dates.map(formatDateISO));
   let todayString = $derived(formatDateISO(new Date()));

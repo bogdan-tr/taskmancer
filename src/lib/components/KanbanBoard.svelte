@@ -5,6 +5,7 @@
     createRecurringTask,
     createTask,
     deleteTask,
+    ensureOccurrencesUntil,
     finishDay,
     listTasks,
     reorderTask,
@@ -180,6 +181,40 @@
       void refreshTags();
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : "Failed to create task";
+    }
+  }
+
+  /**
+   * Extends every recurring series with at least one currently-loaded task
+   * so it has occurrences generated through `through` — the scroll-
+   * triggered lookahead, called from `WeekView`/`CalendarView` whenever the
+   * visible range's end date changes. Each call is independently
+   * idempotent on the backend (a `through` at or before what's already
+   * generated is a no-op, and a series with recurrence removed is also a
+   * no-op), so this doesn't need its own "have we already asked for this
+   * date" cache.
+   *
+   * Series discovery relies entirely on `series_id`s already present in
+   * `visibleTasks` — there's no separate "list all series" command yet. A
+   * series whose *only* loaded occurrences are currently filtered out of
+   * `visibleTasks` (e.g. a different project filter) silently stops being
+   * extended. Acceptable today since `visibleTasks` is the full
+   * project-filtered task list, not a windowed/paginated one, but would
+   * need a real series list if loading ever becomes more selective.
+   */
+  async function ensureOccurrencesThrough(through: string) {
+    const seriesIds = new Set(visibleTasks.map((task) => task.series_id).filter((id): id is string => !!id));
+    if (seriesIds.size === 0) return;
+
+    try {
+      const results = await Promise.all(
+        [...seriesIds].map((seriesId) => ensureOccurrencesUntil(seriesId, through)),
+      );
+      for (const tasks of results) {
+        for (const task of tasks) replaceTask(task);
+      }
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : "Failed to extend recurring tasks";
     }
   }
 
@@ -501,9 +536,14 @@
   {#if isLoading}
     <p class="loading">Loading tasks…</p>
   {:else if activeView === "week"}
-    <WeekView tasks={visibleTasks} onUpdate={handleUpdate} {showPreviousWeeksColumn} />
+    <WeekView
+      tasks={visibleTasks}
+      onUpdate={handleUpdate}
+      {showPreviousWeeksColumn}
+      onEnsureOccurrences={ensureOccurrencesThrough}
+    />
   {:else if activeView === "calendar"}
-    <CalendarView tasks={visibleTasks} onUpdate={handleUpdate} />
+    <CalendarView tasks={visibleTasks} onUpdate={handleUpdate} onEnsureOccurrences={ensureOccurrencesThrough} />
   {:else}
     <KanbanGrid
       {boardColumns}
