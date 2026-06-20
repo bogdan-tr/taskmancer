@@ -1,6 +1,10 @@
 import { describe, expect, test } from "vitest";
 import {
+  clampDayOfMonth,
+  clampNonNegativeInteger,
+  clampPositiveInteger,
   daysBetween,
+  dueRuleFromDefaultCode,
   formatDueRule,
   formatRecurrenceFrequency,
   resolveDueRule,
@@ -241,5 +245,86 @@ describe("resolveNonRecurringDue", () => {
 
   test("neither due nor dueRule set resolves to undefined", () => {
     expect(resolveNonRecurringDue(undefined, undefined, "2026-06-15")).toBeUndefined();
+  });
+});
+
+describe("dueRuleFromDefaultCode", () => {
+  test("wraps a resolved code as DefaultCode", () => {
+    expect(dueRuleFromDefaultCode("next_day")).toEqual({ kind: "DefaultCode", code: "next_day" });
+  });
+
+  test("resolves to Never when there's no configured default at all", () => {
+    expect(dueRuleFromDefaultCode(undefined)).toEqual({ kind: "Never" });
+  });
+});
+
+describe("clampPositiveInteger", () => {
+  test("passes through an already-valid positive integer", () => {
+    expect(clampPositiveInteger(5)).toBe(5);
+  });
+
+  test("truncates a fractional value", () => {
+    expect(clampPositiveInteger(2.7)).toBe(2);
+  });
+
+  test("defaults to 1 for NaN (e.g. a cleared number input)", () => {
+    expect(clampPositiveInteger(NaN)).toBe(1);
+  });
+
+  test("defaults to 1 for zero", () => {
+    expect(clampPositiveInteger(0)).toBe(1);
+  });
+
+  test("defaults to 1 for a negative value", () => {
+    expect(clampPositiveInteger(-3)).toBe(1);
+  });
+
+  test("defaults to 1 for Infinity", () => {
+    expect(clampPositiveInteger(Infinity)).toBe(1);
+  });
+});
+
+describe("clampNonNegativeInteger", () => {
+  test("passes through an already-valid non-negative integer", () => {
+    expect(clampNonNegativeInteger(5)).toBe(5);
+  });
+
+  test("passes through zero", () => {
+    expect(clampNonNegativeInteger(0)).toBe(0);
+  });
+
+  test("truncates a fractional value", () => {
+    expect(clampNonNegativeInteger(2.7)).toBe(2);
+  });
+
+  test("defaults to 0 for NaN", () => {
+    expect(clampNonNegativeInteger(NaN)).toBe(0);
+  });
+
+  test("defaults to 0 for a negative value", () => {
+    expect(clampNonNegativeInteger(-3)).toBe(0);
+  });
+});
+
+describe("clampDayOfMonth", () => {
+  test("passes through an already-valid day", () => {
+    expect(clampDayOfMonth(15)).toBe(15);
+  });
+
+  test("clamps a value above 31 down to 31", () => {
+    expect(clampDayOfMonth(45)).toBe(31);
+  });
+
+  test("clamps a value below 1 up to 1", () => {
+    expect(clampDayOfMonth(0)).toBe(1);
+    expect(clampDayOfMonth(-5)).toBe(1);
+  });
+
+  test("truncates a fractional value", () => {
+    expect(clampDayOfMonth(15.9)).toBe(15);
+  });
+
+  test("defaults to 1 for NaN", () => {
+    expect(clampDayOfMonth(NaN)).toBe(1);
   });
 });

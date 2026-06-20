@@ -17,17 +17,22 @@
   import { resolveProjectColor } from "$lib/projectColor";
   import { projectsState } from "$lib/projects.svelte";
   import {
+    dueRuleFromDefaultCode,
     formatDueRule,
     formatRecurrenceFrequency,
     resolveNonRecurringDue,
     resolveSeriesDueRule,
+    type DueRule,
+    type RecurrenceBuilderValue,
+    type RecurrenceFrequency,
   } from "$lib/recurrence";
   import { settingsState } from "$lib/settings.svelte";
   import { FALLBACK_STATUSES, sortedStatuses, statusLabel } from "$lib/statuses.svelte";
   import { tagsState } from "$lib/tags.svelte";
-  import { resolveTaskPreview } from "$lib/taskPreview";
+  import { effectiveDefaultCode, resolveTaskPreview } from "$lib/taskPreview";
   import Autocomplete from "./Autocomplete.svelte";
   import DatePickerPopover from "./DatePickerPopover.svelte";
+  import RecurrenceBuilderDialog from "./RecurrenceBuilderDialog.svelte";
 
   interface Props {
     open: boolean;
@@ -96,11 +101,16 @@
   function handleDueSelect(iso: string) {
     draftDueOverride = iso;
     dueManuallySet = true;
+    // Most-recently-used override wins — the calendar-popup pick must beat
+    // a stale due-rule choice from the recurrence builder, the same way
+    // either one already beats a stale typed phrase.
+    dueRuleManuallySet = false;
   }
 
   function handleDueNever() {
     draftDueOverride = "none";
     dueManuallySet = true;
+    dueRuleManuallySet = false;
   }
 
   function handleScheduledSelect(iso: string) {
@@ -115,19 +125,56 @@
   }
 
   /**
-   * `parsed`, with the explicit estimated-time/due/scheduled controls
-   * overriding their quick-add tokens once manually set. A manual due
-   * override also clears `dueRule` — the user's most recent, most explicit
-   * action (picking a specific date, or "Never") must win over a possibly-
-   * stale `due in <n> days`/weekday-rule phrase still sitting in the title,
-   * not be silently overridden by it.
+   * Recurrence-builder overrides. Mirrors the due/scheduled calendar-popup
+   * pattern above: a manual builder selection wins over whatever "every
+   * ..." phrase (and, for the due rule specifically, whatever due phrase)
+   * is typed in the title, until cleared.
+   */
+  let draftRecurrenceOverride: { frequency: RecurrenceFrequency; endDate?: string } | undefined =
+    $state(undefined);
+  let recurrenceManuallySet = $state(false);
+  let draftDueRuleOverride: DueRule | undefined = $state(undefined);
+  let dueRuleManuallySet = $state(false);
+
+  function handleRecurrenceApply(value: RecurrenceBuilderValue) {
+    draftRecurrenceOverride = { frequency: value.frequency, endDate: value.endDate };
+    recurrenceManuallySet = true;
+
+    // The builder's due-rule section also sets the due override — most-
+    // recently-used wins, the same as the calendar-popup pick. "Use the
+    // default" is itself an explicit choice (not "leave whatever's typed
+    // alone"): it resolves the configured default *now* and forces it,
+    // mirroring create_recurring_task's own DefaultCode/Never fallback, so
+    // it actively overrides a due phrase still sitting in the title rather
+    // than silently doing nothing.
+    draftDueRuleOverride =
+      value.dueRule ?? dueRuleFromDefaultCode(effectiveDefaultCode(globalDefaults.due, matchedProject?.defaults.due));
+    dueRuleManuallySet = true;
+    dueManuallySet = false;
+  }
+
+  function handleRecurrenceClear() {
+    recurrenceManuallySet = false;
+    draftRecurrenceOverride = undefined;
+    dueRuleManuallySet = false;
+    draftDueRuleOverride = undefined;
+  }
+
+  /**
+   * `parsed`, with the explicit estimated-time/due/scheduled/recurrence
+   * controls overriding their quick-add tokens once manually set. A manual
+   * due override (either the calendar-popup's literal date or the
+   * recurrence builder's due-rule section) also clears whichever other
+   * due override exists — the user's most recent, most explicit action
+   * must win, not be silently overridden by a stale one.
    */
   let effectiveParsed: ParsedTaskInput = $derived({
     ...parsed,
-    due: dueManuallySet ? draftDueOverride : parsed.due,
-    dueRule: dueManuallySet ? undefined : parsed.dueRule,
+    due: dueRuleManuallySet ? undefined : dueManuallySet ? draftDueOverride : parsed.due,
+    dueRule: dueRuleManuallySet ? draftDueRuleOverride : dueManuallySet ? undefined : parsed.dueRule,
     scheduled: scheduledManuallySet ? draftScheduledOverride : parsed.scheduled,
     estimatedMinutes: estimateManuallySet ? explicitEstimatedMinutes : parsed.estimatedMinutes,
+    recurrence: recurrenceManuallySet ? draftRecurrenceOverride : parsed.recurrence,
   });
 
   function handleEstimateInput() {
@@ -182,7 +229,7 @@
    * shows something different from what gets created.
    */
   let seriesDueRule = $derived(
-    parsed.recurrence
+    effectiveParsed.recurrence
       ? resolveSeriesDueRule(effectiveParsed.due, effectiveParsed.dueRule, preview.scheduledDate)
       : undefined,
   );
@@ -246,6 +293,10 @@
         dueManuallySet = false;
         draftScheduledOverride = undefined;
         scheduledManuallySet = false;
+        draftRecurrenceOverride = undefined;
+        recurrenceManuallySet = false;
+        draftDueRuleOverride = undefined;
+        dueRuleManuallySet = false;
         suggestions = [];
         activeToken = undefined;
         dialogEl.showModal();
@@ -357,7 +408,7 @@
   async function handleSubmit(event: Event) {
     event.preventDefault();
     if (!parsed.title) return;
-    if (parsed.recurrence) {
+    if (effectiveParsed.recurrence) {
       await onSubmit({
         ...effectiveParsed,
         project: preview.project,
@@ -515,7 +566,7 @@
       <div class="field-row">
         <dt>Due</dt>
         <span class="syntax-hint">
-          {parsed.recurrence ? "due <phrase> / due in <n> days / due <weekday>s" : "due <phrase> / due na"}
+          {effectiveParsed.recurrence ? "due <phrase> / due in <n> days / due <weekday>s" : "due <phrase> / due na"}
         </span>
         <dd class="date-value" class:filled={!!preview.due}>
           <span>
@@ -570,14 +621,24 @@
       <div class="field-row">
         <dt>Recurrence</dt>
         <span class="syntax-hint">every &lt;phrase&gt; [until &lt;phrase&gt;]</span>
-        <dd class:filled={!!parsed.recurrence}>
-          {#if parsed.recurrence}
-            {formatRecurrenceFrequency(parsed.recurrence.frequency)}{parsed.recurrence.endDate
-              ? ` until ${parsed.recurrence.endDate}`
-              : ""}
-          {:else}
-            —
-          {/if}
+        <dd class="date-value" class:filled={!!effectiveParsed.recurrence}>
+          <span>
+            {#if effectiveParsed.recurrence}
+              {formatRecurrenceFrequency(effectiveParsed.recurrence.frequency)}{effectiveParsed.recurrence.endDate
+                ? ` until ${effectiveParsed.recurrence.endDate}`
+                : ""}
+            {:else}
+              —
+            {/if}
+          </span>
+          <RecurrenceBuilderDialog
+            value={effectiveParsed.recurrence
+              ? { frequency: effectiveParsed.recurrence.frequency, endDate: effectiveParsed.recurrence.endDate, dueRule: seriesDueRule }
+              : undefined}
+            triggerLabel="Build"
+            onApply={handleRecurrenceApply}
+            onClear={handleRecurrenceClear}
+          />
         </dd>
       </div>
     </dl>

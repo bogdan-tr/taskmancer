@@ -37,7 +37,20 @@ export type DueRule =
   | { kind: "AfterScheduled"; days: number }
   | { kind: "Weekday"; weekday: number; interval_weeks: number };
 
-const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+/**
+ * The full configuration `RecurrenceBuilderDialog` produces: a frequency,
+ * an optional end date, and an optional due rule (`undefined` meaning "use
+ * the configured project/global default", the same as not typing any due
+ * phrase at all).
+ */
+export interface RecurrenceBuilderValue {
+  frequency: RecurrenceFrequency;
+  endDate?: string;
+  dueRule?: DueRule;
+}
+
+/** `0` (Sunday) through `6` (Saturday) — matches `RecurrenceFrequency.weekdays`/`DueRule.Weekday`'s own convention. */
+export const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 function ordinal(day: number): string {
   if (day % 100 >= 11 && day % 100 <= 13) return `${day}th`;
@@ -181,6 +194,52 @@ export function resolveSeriesDueRule(
   if (due === "none") return { kind: "Never" };
   if (due !== undefined) return { kind: "AfterScheduled", days: daysBetween(scheduledIso, due) };
   return undefined;
+}
+
+/**
+ * Wraps an already-resolved effective default due-code (see
+ * `effectiveDefaultCode` in `taskPreview.ts` — not imported here directly,
+ * to avoid a circular dependency, since that module already imports from
+ * this one) into a `DueRule`, mirroring `create_recurring_task`'s own
+ * `DefaultCode`/`Never` fallback in `commands.rs`. Used by
+ * `RecurrenceBuilderDialog`'s "Use the default" option, which must resolve
+ * an explicit, active rule right away rather than just deferring — see its
+ * caller's own doc comment for why "use the default" needs to actively
+ * override a due phrase still typed in the title, not just do nothing.
+ */
+export function dueRuleFromDefaultCode(code: string | undefined): DueRule {
+  return code ? { kind: "DefaultCode", code } : { kind: "Never" };
+}
+
+/**
+ * Clamps a raw numeric input to a positive integer (`>= 1`), defaulting to
+ * `1` for non-finite or non-positive input — e.g. a cleared `<input
+ * type="number">` reads as `NaN`, and `Math.max(NaN, 1)` is itself `NaN`,
+ * not `1`, so a plain `Math.max` clamp silently lets `NaN` through. Used by
+ * `RecurrenceBuilderDialog` for any "every N ..." interval.
+ */
+export function clampPositiveInteger(raw: number): number {
+  return Number.isFinite(raw) && raw >= 1 ? Math.trunc(raw) : 1;
+}
+
+/**
+ * Clamps a raw numeric input to a non-negative integer (`>= 0`), defaulting
+ * to `0` for non-finite or negative input. Used by
+ * `RecurrenceBuilderDialog` for the day-offset due rule, which the builder
+ * restricts to `0` and up (see `DueRule.AfterScheduled`'s own doc comment
+ * for why negative offsets, though the data model allows them, aren't
+ * exposed in the builder).
+ */
+export function clampNonNegativeInteger(raw: number): number {
+  return Number.isFinite(raw) && raw >= 0 ? Math.trunc(raw) : 0;
+}
+
+/**
+ * Clamps a raw day-of-month input to `1..31`, defaulting to `1` for
+ * non-finite input. Used by `RecurrenceBuilderDialog`'s Monthly frequency.
+ */
+export function clampDayOfMonth(raw: number): number {
+  return Number.isFinite(raw) ? Math.min(Math.max(Math.trunc(raw), 1), 31) : 1;
 }
 
 /**
