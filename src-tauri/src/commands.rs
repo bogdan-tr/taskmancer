@@ -19,18 +19,29 @@ use crate::task::Task;
 /// Shared application state holding the directory where task markdown
 /// files are stored, the directory where archived task markdown files are
 /// moved (see [`finish_day`] and [`delete_project`]), the file where project
-/// metadata is stored, and the file where global settings are stored.
+/// metadata is stored, the file where global settings are stored, and the
+/// file where recurrence series are stored.
 ///
 /// `projects_lock` serializes the read-modify-write cycles in
 /// [`list_projects`] (which may backfill), [`create_project`],
 /// [`update_project`], and [`delete_project`] so concurrent commands can't
 /// read a stale project list and overwrite each other's changes.
+/// `series_lock` does the same for series read-modify-write cycles.
+///
+/// `series_file`/`series_lock` aren't read by any command yet — that's the
+/// next increment (creating a recurring task, the edit/delete "this and
+/// future" prompts, and the scroll-triggered lookahead command). Remove
+/// this `allow` once that command-layer work lands and makes them
+/// reachable.
+#[allow(dead_code)]
 pub struct AppState {
     pub tasks_dir: PathBuf,
     pub archive_dir: PathBuf,
     pub projects_file: PathBuf,
     pub settings_file: PathBuf,
+    pub series_file: PathBuf,
     pub projects_lock: Mutex<()>,
+    pub series_lock: Mutex<()>,
 }
 
 #[tauri::command]

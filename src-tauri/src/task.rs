@@ -60,6 +60,12 @@ pub struct Task {
     /// disk rather than taken from the request payload.
     #[serde(default)]
     pub tracked_minutes: u32,
+    /// The id of the `Series` (see `crate::series`) this task was generated
+    /// from, if any. `None` for a normal, non-recurring task. Set once at
+    /// generation time and otherwise only cleared (never reassigned) — see
+    /// `apply_task_update`'s "just this one" handling in the command layer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub series_id: Option<String>,
     #[serde(skip)]
     pub notes: String,
 }
@@ -95,6 +101,7 @@ impl Task {
             depends_on: Vec::new(),
             estimated_minutes: None,
             tracked_minutes: 0,
+            series_id: None,
             notes: String::new(),
         }
     }
@@ -149,6 +156,7 @@ mod tests {
         task.depends_on = vec!["other-task-id".to_string()];
         task.estimated_minutes = Some(90);
         task.tracked_minutes = 45;
+        task.series_id = Some("series-abc123".to_string());
         task.notes = "Some free-form notes about the assignment.".to_string();
 
         let markdown = task.to_markdown().expect("serialization should succeed");
@@ -181,6 +189,7 @@ mod tests {
         assert_eq!(task.order, 0);
         assert_eq!(task.estimated_minutes, None);
         assert_eq!(task.tracked_minutes, 0);
+        assert_eq!(task.series_id, None);
     }
 
     #[test]
@@ -189,6 +198,42 @@ mod tests {
 
         assert_eq!(task.estimated_minutes, None);
         assert_eq!(task.tracked_minutes, 0);
+    }
+
+    #[test]
+    fn new_task_has_no_series_id() {
+        let task = Task::new("Write report".to_string());
+
+        assert_eq!(task.series_id, None);
+    }
+
+    #[test]
+    fn to_markdown_omits_series_id_when_unset() {
+        let task = Task::new("Demo".to_string());
+
+        let markdown = task.to_markdown().expect("serialization should succeed");
+
+        assert!(!markdown.contains("series_id"));
+    }
+
+    #[test]
+    fn to_markdown_then_from_markdown_round_trips_a_series_id() {
+        let mut task = Task::new("Water the plants".to_string());
+        task.series_id = Some("series-abc123".to_string());
+
+        let markdown = task.to_markdown().expect("serialization should succeed");
+        let parsed = Task::from_markdown(&markdown).expect("parsing should succeed");
+
+        assert_eq!(parsed.series_id, Some("series-abc123".to_string()));
+    }
+
+    #[test]
+    fn from_markdown_defaults_series_id_to_none_when_absent() {
+        let markdown = "---\nid: abc123\ntitle: Demo\ncreated: 2026-06-11T10:00:00+00:00\n---\n\n";
+
+        let task = Task::from_markdown(markdown).expect("parsing should succeed");
+
+        assert_eq!(task.series_id, None);
     }
 
     #[test]
