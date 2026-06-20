@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { ParsedTaskInput } from "./naturalLanguage";
+import type { RecurrenceFrequency } from "./recurrence";
 import type {
   DeleteProjectResult,
   FinishDayResult,
@@ -24,6 +25,35 @@ export async function createTask(input: ParsedTaskInput): Promise<Task> {
     scheduled: input.scheduled,
     estimatedMinutes: input.estimatedMinutes,
   });
+}
+
+/**
+ * Creates a recurring task: a first occurrence plus a `Series`, with
+ * occurrences immediately generated for the next 60 days. Returns every
+ * task created (the first occurrence, then any generated ones).
+ */
+export async function createRecurringTask(
+  input: ParsedTaskInput,
+  frequency: RecurrenceFrequency,
+  endDate: string | undefined,
+): Promise<Task[]> {
+  return invoke<Task[]>("create_recurring_task", {
+    title: input.title,
+    project: input.project,
+    tags: input.tags.length > 0 ? input.tags : undefined,
+    priority: input.priority,
+    status: input.status,
+    due: input.due,
+    scheduled: input.scheduled,
+    estimatedMinutes: input.estimatedMinutes,
+    frequency,
+    endDate,
+  });
+}
+
+/** Extends a series' generated occurrences up through `through` (`YYYY-MM-DD`). Returns the newly created tasks. */
+export async function ensureOccurrencesUntil(seriesId: string, through: string): Promise<Task[]> {
+  return invoke<Task[]>("ensure_occurrences_until", { seriesId, through });
 }
 
 export async function updateTask(task: Task): Promise<Task> {

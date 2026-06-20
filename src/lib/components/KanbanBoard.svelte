@@ -1,7 +1,15 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import type { DndEvent } from "svelte-dnd-action";
-  import { createTask, deleteTask, finishDay, listTasks, reorderTask, updateTask } from "$lib/api";
+  import {
+    createRecurringTask,
+    createTask,
+    deleteTask,
+    finishDay,
+    listTasks,
+    reorderTask,
+    updateTask,
+  } from "$lib/api";
   import { isVisibleOnBoard } from "$lib/boardVisibility";
   import AddTaskModal from "$lib/components/AddTaskModal.svelte";
   import CalendarView from "$lib/components/CalendarView.svelte";
@@ -159,8 +167,13 @@
 
   async function handleAddTask(parsed: ParsedTaskInput) {
     try {
-      const task = await createTask(parsed);
-      replaceTask(task);
+      if (parsed.recurrence) {
+        const tasks = await createRecurringTask(parsed, parsed.recurrence.frequency, parsed.recurrence.endDate);
+        for (const task of tasks) replaceTask(task);
+      } else {
+        const task = await createTask(parsed);
+        replaceTask(task);
+      }
       errorMessage = "";
       finishDayMessage = "";
       modalOpen = false;

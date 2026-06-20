@@ -1,9 +1,3 @@
-// Not yet wired into any `#[tauri::command]` — that's the next increment
-// (creating a recurring task, the edit/delete "this and future" prompts,
-// and the scroll-triggered lookahead command). Remove this once that
-// command-layer work lands and makes these reachable.
-#![allow(dead_code)]
-
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;

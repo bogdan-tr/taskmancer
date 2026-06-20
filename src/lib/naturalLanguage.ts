@@ -1,3 +1,5 @@
+import type { RecurrenceFrequency } from "./recurrence";
+
 export interface ParsedTaskInput {
   title: string;
   tags: string[];
@@ -15,6 +17,8 @@ export interface ParsedTaskInput {
   scheduled?: string;
   /** Minutes from an `est <n>h <n>m` quick-add token. `undefined` if no estimate token was present. */
   estimatedMinutes?: number;
+  /** From an `every ...` quick-add token. `undefined` if no recurrence token was present. */
+  recurrence?: { frequency: RecurrenceFrequency; endDate?: string };
 }
 
 /** The subset of `PriorityLevel` needed to match quick-add priority tokens. */
@@ -344,6 +348,119 @@ function tryResolveDurationPhrase(
   return undefined;
 }
 
+/** A day-of-month token that *requires* an ordinal suffix (`4th`, `31st`) — unlike `DAY_TOKEN_PATTERN`, a bare number alone doesn't match, so "every 5 days" (an interval) is never mistaken for "every 5th" (a day-of-month). */
+const ORDINAL_DAY_PATTERN = /^([1-9]|[12]\d|3[01])(?:st|nd|rd|th)$/i;
+
+/** Strips a trailing comma, for matching a weekday in a comma-separated list like "monday, wednesday, friday" where the comma sticks to the preceding word during whitespace-only tokenizing. */
+function stripTrailingComma(token: string): string {
+  return token.endsWith(",") ? token.slice(0, -1) : token;
+}
+
+/**
+ * Attempts to resolve a recurrence phrase starting at `tokens[startIndex]`,
+ * for use after an `every` keyword. Returns `undefined` (consuming nothing)
+ * if no recognized form is found, so the caller can leave `every` in the
+ * title as an ordinary word.
+ *
+ * Recognized forms:
+ * - `day` — daily.
+ * - `other day` — every 2 days.
+ * - `<n> days` — every `n` days (`n` must be a whole number greater than 0).
+ * - `weekend` — every Saturday and Sunday.
+ * - `weekday` — every Monday through Friday.
+ * - `<ordinal>` (e.g. `4th`, `31st`) — that day of every month. The ordinal
+ *   suffix is required, distinguishing this from `<n> days` above.
+ * - `<weekday>` (e.g. `monday`) — every week on that day.
+ * - `other <weekday>` — every other week on that day.
+ * - `<weekday>[,] <weekday>[,] ...` — every week, on all of those days
+ *   (e.g. `monday, wednesday, friday` or `monday wednesday friday`).
+ *
+ * Any of the above may be followed by `until <date-phrase>` (the same
+ * phrase grammar `due`/`sch` accept — see `tryResolveDatePhrase`) to set an
+ * end date.
+ */
+function tryResolveRecurrencePhrase(
+  tokens: string[],
+  startIndex: number,
+  now: Date,
+): { frequency: RecurrenceFrequency; endDate?: string; consumed: number } | undefined {
+  const first = tokens[startIndex]?.toLowerCase();
+  if (first === undefined) {
+    return undefined;
+  }
+
+  let frequency: RecurrenceFrequency | undefined;
+  let consumed = 0;
+
+  if (first === "day") {
+    frequency = { kind: "EveryNDays", interval: 1 };
+    consumed = 1;
+  } else if (first === "weekend") {
+    frequency = { kind: "Weekly", weekdays: [0, 6], interval_weeks: 1 };
+    consumed = 1;
+  } else if (first === "weekday") {
+    frequency = { kind: "Weekly", weekdays: [1, 2, 3, 4, 5], interval_weeks: 1 };
+    consumed = 1;
+  } else if (first === "other") {
+    const second = tokens[startIndex + 1]?.toLowerCase();
+    const secondWeekday = second !== undefined ? stripTrailingComma(second) : undefined;
+    if (second === "day") {
+      frequency = { kind: "EveryNDays", interval: 2 };
+      consumed = 2;
+    } else if (secondWeekday !== undefined && secondWeekday in WEEKDAY_TOKENS) {
+      frequency = { kind: "Weekly", weekdays: [WEEKDAY_TOKENS[secondWeekday]], interval_weeks: 2 };
+      consumed = 2;
+    }
+  } else {
+    const ordinalMatch = ORDINAL_DAY_PATTERN.exec(first);
+    if (ordinalMatch) {
+      frequency = { kind: "MonthlyByDay", day: Number(ordinalMatch[1]) };
+      consumed = 1;
+    } else if (BARE_NUMBER_PATTERN.test(first) && tokens[startIndex + 1]?.toLowerCase() === "days") {
+      const interval = Number(first);
+      if (interval > 0) {
+        frequency = { kind: "EveryNDays", interval };
+        consumed = 2;
+      }
+    } else if (stripTrailingComma(first) in WEEKDAY_TOKENS) {
+      const weekdays = [WEEKDAY_TOKENS[stripTrailingComma(first)]];
+      let count = 1;
+      for (;;) {
+        const next = tokens[startIndex + count];
+        if (next === undefined) {
+          break;
+        }
+        const candidate = stripTrailingComma(next.toLowerCase());
+        if (!(candidate in WEEKDAY_TOKENS)) {
+          break;
+        }
+        const day = WEEKDAY_TOKENS[candidate];
+        if (!weekdays.includes(day)) {
+          weekdays.push(day);
+        }
+        count += 1;
+      }
+      frequency = { kind: "Weekly", weekdays, interval_weeks: 1 };
+      consumed = count;
+    }
+  }
+
+  if (frequency === undefined) {
+    return undefined;
+  }
+
+  let endDate: string | undefined;
+  if (tokens[startIndex + consumed]?.toLowerCase() === "until") {
+    const phrase = tryResolveDatePhrase(tokens, startIndex + consumed + 1, now);
+    if (phrase) {
+      endDate = phrase.resolved;
+      consumed += 1 + phrase.consumed;
+    }
+  }
+
+  return { frequency, endDate, consumed };
+}
+
 /**
  * Parses quick-add syntax out of a free-text task title:
  * - `#tag` adds a tag
@@ -374,6 +491,13 @@ function tryResolveDurationPhrase(
  *   `1h`, `30m`). A bare number with no `h`/`m` suffix at all (e.g. `30`) is
  *   never treated as a duration — too ambiguous with ordinary numbers
  *   elsewhere in a title — even when prefixed with `est`.
+ * - `every <phrase>` sets a recurrence rule — see
+ *   `tryResolveRecurrencePhrase` for the full grammar (`every day`,
+ *   `every other day`, `every <n> days`, `every weekend`, `every weekday`,
+ *   `every <ordinal>` for a day of the month, `every <weekday>`,
+ *   `every other <weekday>`, and `every <weekday>, <weekday>, ...` for
+ *   multiple weekdays), optionally followed by `until <date-phrase>` for an
+ *   end date.
  *
  * Tokens that don't match a recognized pattern are left in the title
  * unchanged. The remaining words become the task title, with extra
@@ -392,6 +516,7 @@ export function parseTaskInput(
   let due: string | undefined;
   let scheduled: string | undefined;
   let estimatedMinutes: number | undefined;
+  let recurrence: { frequency: RecurrenceFrequency; endDate?: string } | undefined;
 
   const titleTokens: string[] = [];
   const tokens = input.trim().split(/\s+/).filter((token) => token !== "");
@@ -487,6 +612,15 @@ export function parseTaskInput(
       }
     }
 
+    if (lowerToken === "every") {
+      const phrase = tryResolveRecurrencePhrase(tokens, i + 1, now);
+      if (phrase) {
+        recurrence = { frequency: phrase.frequency, endDate: phrase.endDate };
+        i += phrase.consumed;
+        continue;
+      }
+    }
+
     const bareDuration = tryResolveDurationPhrase(tokens, i);
     if (bareDuration) {
       estimatedMinutes = bareDuration.minutes;
@@ -506,5 +640,6 @@ export function parseTaskInput(
     due,
     scheduled,
     estimatedMinutes,
+    recurrence,
   };
 }

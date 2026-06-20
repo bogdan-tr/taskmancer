@@ -6,6 +6,9 @@ use tauri::State;
 
 use crate::project::{Project, ProjectBoard, DEFAULT_PROJECT_COLOR};
 use crate::project_storage;
+use crate::recurrence::occurrence_dates_in_range;
+use crate::series::{validate_series, RecurrenceFrequency, Series};
+use crate::series_storage;
 use crate::settings::{
     resolve_due_relative_date, resolve_scheduled_relative_date, validate_due_relative_date_code,
     validate_ink_mode, validate_lightness, validate_priority_id,
@@ -15,6 +18,11 @@ use crate::settings::{
 use crate::settings_storage;
 use crate::storage;
 use crate::task::Task;
+
+/// How many days into the future a newly created series generates
+/// occurrences immediately, before any scroll-triggered extension —
+/// the user's chosen baseline window.
+const RECURRENCE_BASELINE_LOOKAHEAD_DAYS: i64 = 60;
 
 /// Shared application state holding the directory where task markdown
 /// files are stored, the directory where archived task markdown files are
@@ -27,13 +35,6 @@ use crate::task::Task;
 /// [`update_project`], and [`delete_project`] so concurrent commands can't
 /// read a stale project list and overwrite each other's changes.
 /// `series_lock` does the same for series read-modify-write cycles.
-///
-/// `series_file`/`series_lock` aren't read by any command yet — that's the
-/// next increment (creating a recurring task, the edit/delete "this and
-/// future" prompts, and the scroll-triggered lookahead command). Remove
-/// this `allow` once that command-layer work lands and makes them
-/// reachable.
-#[allow(dead_code)]
 pub struct AppState {
     pub tasks_dir: PathBuf,
     pub archive_dir: PathBuf,
@@ -326,6 +327,250 @@ pub fn create_task(
 
     storage::save_task(&state.tasks_dir, &task).map_err(|e| e.to_string())?;
     Ok(task)
+}
+
+/// Builds the single occurrence task for `date` from `series`'s template,
+/// resolving status the same way any freshly created task does (never
+/// copied from the template — see `Series`'s own doc comment for why) and
+/// due relative to `date` itself via `series.due_code`.
+fn build_series_occurrence(
+    series: &Series,
+    settings: &Settings,
+    project_board: Option<&ProjectBoard>,
+    date: chrono::NaiveDate,
+) -> Task {
+    let mut task = Task::new(series.title.clone());
+    task.status = resolve_default_status(settings, project_board);
+    task.project = series.project.clone();
+    task.tags = series.tags.clone();
+    task.priority = series.priority.clone();
+    task.estimated_minutes = series.estimated_minutes;
+    task.scheduled = Some(date.format("%Y-%m-%d").to_string());
+    task.due = series
+        .due_code
+        .as_deref()
+        .and_then(|code| resolve_due_relative_date(code, date))
+        .map(|d| d.format("%Y-%m-%d").to_string());
+    task.series_id = Some(series.id.clone());
+    task
+}
+
+/// Generates and saves any new occurrences for `series` in
+/// `(series.generated_until, through]` (clamped to the series' own
+/// `end_date`, if any), then advances `series.generated_until` in place to
+/// the highest date actually processed — the last occurrence generated, or
+/// the clamped horizon itself if none were (e.g. the window landed entirely
+/// in a gap, or past `end_date`), so a later call never re-examines a
+/// range that's already been fully accounted for. Returns the newly
+/// created tasks. Does not persist `series` itself — the caller does that
+/// alongside whatever else it's saving in the same operation.
+fn generate_series_occurrences(
+    tasks_dir: &Path,
+    settings: &Settings,
+    project_board: Option<&ProjectBoard>,
+    series: &mut Series,
+    through: chrono::NaiveDate,
+) -> Result<Vec<Task>, String> {
+    let generated_until = chrono::NaiveDate::parse_from_str(&series.generated_until, "%Y-%m-%d")
+        .map_err(|_| "series has an invalid generated_until date".to_string())?;
+
+    let dates = occurrence_dates_in_range(series, generated_until, through);
+    let mut created = Vec::with_capacity(dates.len());
+    for date in &dates {
+        let task = build_series_occurrence(series, settings, project_board, *date);
+        storage::save_task(tasks_dir, &task).map_err(|e| e.to_string())?;
+        created.push(task);
+    }
+
+    let effective_horizon = series
+        .end_date
+        .as_deref()
+        .and_then(|s| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
+        .map(|end| through.min(end))
+        .unwrap_or(through);
+    series.generated_until = dates
+        .last()
+        .map(|d| d.format("%Y-%m-%d").to_string())
+        .unwrap_or_else(|| effective_horizon.format("%Y-%m-%d").to_string());
+
+    Ok(created)
+}
+
+/// Creates a recurring task: a first occurrence (created the same way
+/// [`create_task`] creates any task) plus a `Series` template + rule, with
+/// occurrences immediately generated for the next
+/// [`RECURRENCE_BASELINE_LOOKAHEAD_DAYS`] days (see [`ensure_occurrences_until`]
+/// for extending further as the user scrolls). Returns every task created
+/// (the first occurrence, then any generated ones, in date order).
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn create_recurring_task(
+    state: State<AppState>,
+    title: String,
+    project: Option<String>,
+    tags: Option<Vec<String>>,
+    priority: Option<String>,
+    status: Option<String>,
+    due: Option<String>,
+    scheduled: Option<String>,
+    estimated_minutes: Option<u32>,
+    frequency: RecurrenceFrequency,
+    end_date: Option<String>,
+) -> Result<Vec<Task>, String> {
+    let title = title.trim().to_string();
+    if title.is_empty() {
+        return Err("task title must not be empty".to_string());
+    }
+    validate_due_creation_field(&due)?;
+    validate_date_field(&scheduled, "scheduled")?;
+    validate_date_field(&end_date, "end date")?;
+
+    let settings =
+        settings_storage::load_settings(&state.settings_file).map_err(|e| e.to_string())?;
+    let priority = match priority {
+        Some(id) => {
+            validate_priority_id(&settings, &id)?;
+            id
+        }
+        None => resolve_default_priority(&settings),
+    };
+
+    let project_name = resolve_project_name(project, &settings);
+
+    let projects =
+        project_storage::list_projects(&state.projects_file).map_err(|e| e.to_string())?;
+    let matched_project = find_project(&projects, &project_name);
+    let project_board = matched_project.map(|p| &p.board);
+    let project_defaults = matched_project.map(|p| &p.defaults);
+    let status = match status {
+        Some(id) => {
+            validate_status_id(&settings, &id)?;
+            id
+        }
+        None => resolve_default_status(&settings, project_board),
+    };
+
+    let today = chrono::Local::now().date_naive();
+    let (final_tags, resolved_due, resolved_scheduled) =
+        resolve_creation_defaults(&settings, project_defaults, today, tags, due, scheduled);
+    let resolved_estimated_minutes = estimated_minutes
+        .or_else(|| effective_default_estimated_minutes(&settings.defaults, project_defaults));
+    let due_code =
+        effective_default_code(&settings.defaults.due, project_defaults.map(|d| &d.due)).cloned();
+
+    if let Some(end) = &end_date {
+        let end_date = chrono::NaiveDate::parse_from_str(end, "%Y-%m-%d")
+            .map_err(|_| "end date must be a valid date in YYYY-MM-DD format".to_string())?;
+        let anchor = chrono::NaiveDate::parse_from_str(&resolved_scheduled, "%Y-%m-%d")
+            .map_err(|e| e.to_string())?;
+        if end_date < anchor {
+            return Err("end date must be on or after the scheduled date".to_string());
+        }
+    }
+
+    let mut series = Series::new(
+        frequency,
+        resolved_scheduled.clone(),
+        end_date,
+        due_code,
+        title.clone(),
+        Some(project_name.clone()),
+        priority.clone(),
+        final_tags.clone(),
+        resolved_estimated_minutes,
+        String::new(),
+    );
+    validate_series(&series)?;
+
+    let mut first_task = Task::new(title);
+    first_task.status = status.clone();
+    apply_create_overrides(
+        &mut first_task,
+        Some(project_name),
+        Some(final_tags),
+        Some(priority),
+        resolved_due,
+        resolved_scheduled.clone(),
+        resolved_estimated_minutes,
+    );
+    first_task.series_id = Some(series.id.clone());
+
+    let _guard = state
+        .series_lock
+        .lock()
+        .map_err(|_| "series lock poisoned".to_string())?;
+
+    storage::save_task(&state.tasks_dir, &first_task).map_err(|e| e.to_string())?;
+
+    let anchor = chrono::NaiveDate::parse_from_str(&resolved_scheduled, "%Y-%m-%d")
+        .map_err(|e| e.to_string())?;
+    let horizon = anchor + chrono::Duration::days(RECURRENCE_BASELINE_LOOKAHEAD_DAYS);
+    let mut created = generate_series_occurrences(
+        &state.tasks_dir,
+        &settings,
+        project_board,
+        &mut series,
+        horizon,
+    )?;
+
+    let mut all_series =
+        series_storage::list_series(&state.series_file).map_err(|e| e.to_string())?;
+    all_series.push(series);
+    series_storage::save_series(&state.series_file, &all_series).map_err(|e| e.to_string())?;
+
+    created.insert(0, first_task);
+    Ok(created)
+}
+
+/// Extends a series' generated occurrences up through `through`
+/// (`YYYY-MM-DD`) — called as the user scrolls a calendar/week view further
+/// into the future than what's already been generated. A no-op (returns no
+/// tasks) if the series is no longer active (recurrence was removed from
+/// it) or `through` is at or before what's already generated.
+#[tauri::command]
+pub fn ensure_occurrences_until(
+    state: State<AppState>,
+    series_id: String,
+    through: String,
+) -> Result<Vec<Task>, String> {
+    let through_date = chrono::NaiveDate::parse_from_str(&through, "%Y-%m-%d")
+        .map_err(|_| "through must be a valid date in YYYY-MM-DD format".to_string())?;
+
+    let settings =
+        settings_storage::load_settings(&state.settings_file).map_err(|e| e.to_string())?;
+    let projects =
+        project_storage::list_projects(&state.projects_file).map_err(|e| e.to_string())?;
+
+    let _guard = state
+        .series_lock
+        .lock()
+        .map_err(|_| "series lock poisoned".to_string())?;
+
+    let mut all_series =
+        series_storage::list_series(&state.series_file).map_err(|e| e.to_string())?;
+    let Some(series) = all_series.iter_mut().find(|s| s.id == series_id) else {
+        return Err(format!("series '{series_id}' not found"));
+    };
+    if !series.active {
+        return Ok(Vec::new());
+    }
+
+    let project_board = series
+        .project
+        .as_deref()
+        .and_then(|name| find_project(&projects, name))
+        .map(|p| &p.board);
+
+    let created = generate_series_occurrences(
+        &state.tasks_dir,
+        &settings,
+        project_board,
+        series,
+        through_date,
+    )?;
+
+    series_storage::save_series(&state.series_file, &all_series).map_err(|e| e.to_string())?;
+    Ok(created)
 }
 
 /// Rejects `Some(date)` values that aren't `YYYY-MM-DD`. `None` is always valid.
@@ -2522,5 +2767,178 @@ mod tests {
         task.status = "cancelled".to_string();
 
         assert!(!is_finished(&task, &settings));
+    }
+
+    fn new_test_series(frequency: crate::series::RecurrenceFrequency, anchor_date: &str) -> Series {
+        let mut series = Series::new(
+            frequency,
+            anchor_date.to_string(),
+            None,
+            Some("next_day".to_string()),
+            "Water the plants".to_string(),
+            Some("Home".to_string()),
+            "medium".to_string(),
+            vec!["chore".to_string()],
+            Some(15),
+            String::new(),
+        );
+        series.generated_until = anchor_date.to_string();
+        series
+    }
+
+    #[test]
+    fn build_series_occurrence_copies_template_fields() {
+        let series = new_test_series(
+            crate::series::RecurrenceFrequency::EveryNDays { interval: 1 },
+            "2026-06-15",
+        );
+        let settings = Settings::default();
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 6, 16).unwrap();
+
+        let task = build_series_occurrence(&series, &settings, None, date);
+
+        assert_eq!(task.title, "Water the plants");
+        assert_eq!(task.project, Some("Home".to_string()));
+        assert_eq!(task.priority, "medium");
+        assert_eq!(task.tags, vec!["chore".to_string()]);
+        assert_eq!(task.estimated_minutes, Some(15));
+        assert_eq!(task.scheduled, Some("2026-06-16".to_string()));
+        assert_eq!(task.series_id, Some(series.id.clone()));
+    }
+
+    #[test]
+    fn build_series_occurrence_resolves_due_relative_to_its_own_date_not_the_anchor() {
+        let series = new_test_series(
+            crate::series::RecurrenceFrequency::EveryNDays { interval: 1 },
+            "2026-06-15",
+        );
+        let settings = Settings::default();
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 6, 20).unwrap();
+
+        let task = build_series_occurrence(&series, &settings, None, date);
+
+        // due_code is "next_day", so due should be one day after *this* occurrence's
+        // own scheduled date (06-21), not one day after the series' anchor (06-16).
+        assert_eq!(task.due, Some("2026-06-21".to_string()));
+    }
+
+    #[test]
+    fn build_series_occurrence_has_no_due_when_the_series_has_no_due_code() {
+        let mut series = new_test_series(
+            crate::series::RecurrenceFrequency::EveryNDays { interval: 1 },
+            "2026-06-15",
+        );
+        series.due_code = None;
+        let settings = Settings::default();
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 6, 16).unwrap();
+
+        let task = build_series_occurrence(&series, &settings, None, date);
+
+        assert_eq!(task.due, None);
+    }
+
+    #[test]
+    fn build_series_occurrence_uses_default_status_resolution_not_a_template_status() {
+        let series = new_test_series(
+            crate::series::RecurrenceFrequency::EveryNDays { interval: 1 },
+            "2026-06-15",
+        );
+        let settings = Settings::default();
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 6, 16).unwrap();
+
+        let task = build_series_occurrence(&series, &settings, None, date);
+
+        assert_eq!(task.status, resolve_default_status(&settings, None));
+    }
+
+    #[test]
+    fn generate_series_occurrences_creates_and_saves_each_occurrence() {
+        let dir = tempdir().unwrap();
+        let settings = Settings::default();
+        let mut series = new_test_series(
+            crate::series::RecurrenceFrequency::EveryNDays { interval: 1 },
+            "2026-06-15",
+        );
+        let through = chrono::NaiveDate::from_ymd_opt(2026, 6, 18).unwrap();
+
+        let created =
+            generate_series_occurrences(dir.path(), &settings, None, &mut series, through).unwrap();
+
+        assert_eq!(created.len(), 3);
+        let saved = storage::list_tasks(dir.path()).unwrap();
+        assert_eq!(saved.len(), 3);
+        assert_eq!(series.generated_until, "2026-06-18");
+    }
+
+    #[test]
+    fn generate_series_occurrences_resumes_from_the_existing_watermark() {
+        let dir = tempdir().unwrap();
+        let settings = Settings::default();
+        let mut series = new_test_series(
+            crate::series::RecurrenceFrequency::EveryNDays { interval: 1 },
+            "2026-06-15",
+        );
+        series.generated_until = "2026-06-17".to_string();
+        let through = chrono::NaiveDate::from_ymd_opt(2026, 6, 19).unwrap();
+
+        let created =
+            generate_series_occurrences(dir.path(), &settings, None, &mut series, through).unwrap();
+
+        assert_eq!(created.len(), 2);
+        assert_eq!(created[0].scheduled, Some("2026-06-18".to_string()));
+        assert_eq!(created[1].scheduled, Some("2026-06-19".to_string()));
+    }
+
+    #[test]
+    fn generate_series_occurrences_advances_generated_until_to_the_horizon_when_nothing_is_generated(
+    ) {
+        let dir = tempdir().unwrap();
+        let settings = Settings::default();
+        let mut series = new_test_series(
+            crate::series::RecurrenceFrequency::EveryNDays { interval: 10 },
+            "2026-06-15",
+        );
+        // Nothing falls in (06-15, 06-17] for an every-10-days rule.
+        let through = chrono::NaiveDate::from_ymd_opt(2026, 6, 17).unwrap();
+
+        let created =
+            generate_series_occurrences(dir.path(), &settings, None, &mut series, through).unwrap();
+
+        assert!(created.is_empty());
+        assert_eq!(series.generated_until, "2026-06-17");
+    }
+
+    #[test]
+    fn generate_series_occurrences_clamps_generated_until_to_the_series_end_date() {
+        let dir = tempdir().unwrap();
+        let settings = Settings::default();
+        let mut series = new_test_series(
+            crate::series::RecurrenceFrequency::EveryNDays { interval: 1 },
+            "2026-06-15",
+        );
+        series.end_date = Some("2026-06-16".to_string());
+        let through = chrono::NaiveDate::from_ymd_opt(2026, 6, 30).unwrap();
+
+        let created =
+            generate_series_occurrences(dir.path(), &settings, None, &mut series, through).unwrap();
+
+        assert_eq!(created.len(), 1);
+        assert_eq!(series.generated_until, "2026-06-16");
+    }
+
+    #[test]
+    fn generate_series_occurrences_rejects_an_invalid_generated_until() {
+        let dir = tempdir().unwrap();
+        let settings = Settings::default();
+        let mut series = new_test_series(
+            crate::series::RecurrenceFrequency::EveryNDays { interval: 1 },
+            "2026-06-15",
+        );
+        series.generated_until = "not-a-date".to_string();
+        let through = chrono::NaiveDate::from_ymd_opt(2026, 6, 20).unwrap();
+
+        let result = generate_series_occurrences(dir.path(), &settings, None, &mut series, through);
+
+        assert!(result.is_err());
     }
 }

@@ -1,7 +1,3 @@
-// Not yet wired into any `#[tauri::command]` — see the matching note atop
-// `series.rs`. Remove once that command-layer work lands.
-#![allow(dead_code)]
-
 use std::fs;
 use std::path::Path;
 

@@ -37,6 +37,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::list_tasks,
             commands::create_task,
+            commands::create_recurring_task,
+            commands::ensure_occurrences_until,
             commands::update_task,
             commands::delete_task,
             commands::reorder_task,

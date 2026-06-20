@@ -5,7 +5,8 @@ task entry, and (eventually) time tracking and analytics — built with
 [Tauri](https://tauri.app/) and [SvelteKit](https://kit.svelte.dev/).
 
 > **Status:** early development. Core task/project management and theming are
-> working; time tracking, recurring tasks, and analytics are on the roadmap.
+> working; recurring tasks are creatable via quick-add (a non-NL builder UI
+> is still planned); time tracking and analytics are on the roadmap.
 
 ## Why taskmancer?
 
@@ -81,12 +82,21 @@ task entry, and (eventually) time tracking and analytics — built with
   sitting alongside the existing typed `YYYY-MM-DD`/quick-add phrase entry
   rather than replacing it. Hand-built rather than a native `<input
   type="date">`, which freezes the window under webkit2gtk on Linux.
+- **Recurring tasks** — an `every <phrase>` quick-add token (daily, every N
+  days, weekly on one or more weekdays, every-other-week, monthly by day of
+  month, optional end date) creates a series: a first occurrence plus a
+  rolling 60-day window of further independent, normal tasks, extended
+  automatically as you scroll further into the future. See [Recurring
+  tasks](#recurring-tasks) for the full grammar. A non-NL builder UI and
+  editing/removing recurrence on an existing task are still planned.
 
 ### Planned
 
-Time-tracking infrastructure (start/stop timers, time logs), a recurrence
-system (recurring tasks), Pomodoro/focus mode, idle detection, habit
-tracking, analytics dashboards, plugin system, calendar sync, and
+Time-tracking infrastructure (start/stop timers, time logs), the recurrence
+builder UI (non-NL creation, editing/removing recurrence on an existing
+task, "just this one vs. this and future" prompts), Pomodoro/focus mode,
+idle detection, habit tracking, analytics dashboards, plugin system, calendar
+sync, and
 import/export. See the in-app roadmap for current priorities.
 
 ## Tech stack
@@ -200,6 +210,7 @@ the field list:
 | `due <phrase>` / `due:<token>` | Sets the due date    | `due next friday`, `due:tomorrow` |
 | `sch <phrase>` / `sch:<token>` | Sets the scheduled date | `sch next monday` |
 | `est <n>h <n>m` | Sets the estimated time. `est` is optional; `m` is optional once `h` is present. A bare number with no `h`/`m` suffix is never treated as a duration | `est 1h 30m`, `1h 30`, `45m` |
+| `every <phrase>` | Sets a recurrence rule. See [Recurring tasks](#recurring-tasks) for the full grammar | `every monday, wednesday, friday`, `every other day until jul 31` |
 
 Anything left over becomes the task title. Typing a bare `#`, `+`, `!`, or
 `@` with nothing after it lists every available tag, project, priority, or
@@ -246,6 +257,35 @@ touches the title text in the Add Task modal, and the existing typed
 × in the top corner, by clicking outside it, or Escape — being a real
 dialog, it always renders on top of whatever task-edit or Add Task dialog
 it was opened from, regardless of where on screen the calendar icon sits.
+
+### Recurring tasks
+
+Typing `every <phrase>` in the Add Task modal creates a recurring task: a
+first occurrence right away, plus the next 60 days' worth of further
+occurrences generated immediately (more get generated automatically as you
+scroll a calendar/week view further into the future). Each occurrence is a
+completely normal, independent task — editing or completing one never
+affects any other.
+
+| Phrase | Meaning | Example |
+|--------|---------|---------|
+| `every day` | Daily | `Water plants every day` |
+| `every other day` | Every 2 days | `Take out trash every other day` |
+| `every <n> days` | Every `n` days | `Rotate stock every 5 days` |
+| `every weekend` | Every Saturday and Sunday | `Clean garage every weekend` |
+| `every weekday` | Every Monday through Friday | `Check email every weekday` |
+| `every <ordinal>` | That day of every month (e.g. `every 4th`, `every 31st`) — a month without that day (like February for the 31st) is skipped, never clamped to the month's last day | `Pay rent every 4th` |
+| `every <weekday>` | Every week on that day | `Take out trash every monday` |
+| `every other <weekday>` | Every other week on that day | `Water plants every other saturday` |
+| `every <weekday>, <weekday>, ...` | Every week, on all of those days | `Gym every monday, wednesday, friday` |
+
+Add `until <date-phrase>` (the same phrase grammar as `due`/`sch`) to any of
+the above for an end date, e.g. `every monday until jul 31`. With no end
+date, the series continues indefinitely.
+
+The recurrence builder dialog (for setting recurrence non-NL, and for
+editing/removing it on an existing task) is still planned — for now,
+recurrence is only settable via the quick-add phrase when creating a task.
 
 ### Week view
 

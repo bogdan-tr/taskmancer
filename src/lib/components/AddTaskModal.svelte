@@ -16,6 +16,7 @@
   import { FALLBACK_PRIORITIES, priorityColor, priorityLabel, sortedPriorities } from "$lib/priorities.svelte";
   import { resolveProjectColor } from "$lib/projectColor";
   import { projectsState } from "$lib/projects.svelte";
+  import { formatRecurrenceFrequency } from "$lib/recurrence";
   import { settingsState } from "$lib/settings.svelte";
   import { FALLBACK_STATUSES, sortedStatuses, statusLabel } from "$lib/statuses.svelte";
   import { tagsState } from "$lib/tags.svelte";
@@ -518,6 +519,19 @@
             aria-label="Estimated minutes"
           />
           m
+        </dd>
+      </div>
+      <div class="field-row">
+        <dt>Recurrence</dt>
+        <span class="syntax-hint">every &lt;phrase&gt; [until &lt;phrase&gt;]</span>
+        <dd class:filled={!!parsed.recurrence}>
+          {#if parsed.recurrence}
+            {formatRecurrenceFrequency(parsed.recurrence.frequency)}{parsed.recurrence.endDate
+              ? ` until ${parsed.recurrence.endDate}`
+              : ""}
+          {:else}
+            —
+          {/if}
         </dd>
       </div>
     </dl>

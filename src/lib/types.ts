@@ -18,6 +18,8 @@ export interface Task {
   estimated_minutes?: number;
   /** Total time tracked against this task so far, in minutes. Always present; not user-editable. */
   tracked_minutes: number;
+  /** The id of the `Series` this task was generated from, if any. `undefined` for a normal, non-recurring task. */
+  series_id?: string;
   notes: string;
 }
 

@@ -398,6 +398,171 @@ describe("parseTaskInput estimated time", () => {
   });
 });
 
+describe("parseTaskInput recurrence", () => {
+  test("'every day' sets a daily recurrence", () => {
+    const result = parseTaskInput("Water plants every day", NOW);
+
+    expect(result.title).toBe("Water plants");
+    expect(result.recurrence).toEqual({ frequency: { kind: "EveryNDays", interval: 1 } });
+  });
+
+  test("'every other day' sets an every-2-days recurrence", () => {
+    const result = parseTaskInput("Water plants every other day", NOW);
+
+    expect(result.title).toBe("Water plants");
+    expect(result.recurrence).toEqual({ frequency: { kind: "EveryNDays", interval: 2 } });
+  });
+
+  test("'every <n> days' sets an every-n-days recurrence", () => {
+    const result = parseTaskInput("Water plants every 5 days", NOW);
+
+    expect(result.title).toBe("Water plants");
+    expect(result.recurrence).toEqual({ frequency: { kind: "EveryNDays", interval: 5 } });
+  });
+
+  test("'every weekend' sets a Saturday+Sunday weekly recurrence", () => {
+    const result = parseTaskInput("Clean garage every weekend", NOW);
+
+    expect(result.title).toBe("Clean garage");
+    expect(result.recurrence).toEqual({
+      frequency: { kind: "Weekly", weekdays: [0, 6], interval_weeks: 1 },
+    });
+  });
+
+  test("'every weekday' sets a Monday-Friday weekly recurrence", () => {
+    const result = parseTaskInput("Check email every weekday", NOW);
+
+    expect(result.title).toBe("Check email");
+    expect(result.recurrence).toEqual({
+      frequency: { kind: "Weekly", weekdays: [1, 2, 3, 4, 5], interval_weeks: 1 },
+    });
+  });
+
+  test("'every <ordinal>' sets a monthly-by-day recurrence", () => {
+    const result = parseTaskInput("Pay rent every 4th", NOW);
+
+    expect(result.title).toBe("Pay rent");
+    expect(result.recurrence).toEqual({ frequency: { kind: "MonthlyByDay", day: 4 } });
+  });
+
+  test("'every <ordinal>' recognizes the 31st", () => {
+    const result = parseTaskInput("Pay rent every 31st", NOW);
+
+    expect(result.recurrence).toEqual({ frequency: { kind: "MonthlyByDay", day: 31 } });
+  });
+
+  test("'every <weekday>' sets a single-weekday weekly recurrence", () => {
+    const result = parseTaskInput("Take out trash every monday", NOW);
+
+    expect(result.title).toBe("Take out trash");
+    expect(result.recurrence).toEqual({
+      frequency: { kind: "Weekly", weekdays: [1], interval_weeks: 1 },
+    });
+  });
+
+  test("'every other <weekday>' sets a biweekly single-weekday recurrence", () => {
+    const result = parseTaskInput("Water plants every other saturday", NOW);
+
+    expect(result.title).toBe("Water plants");
+    expect(result.recurrence).toEqual({
+      frequency: { kind: "Weekly", weekdays: [6], interval_weeks: 2 },
+    });
+  });
+
+  test("multiple comma-separated weekdays are all collected", () => {
+    const result = parseTaskInput("Gym every monday, wednesday, friday", NOW);
+
+    expect(result.title).toBe("Gym");
+    expect(result.recurrence).toEqual({
+      frequency: { kind: "Weekly", weekdays: [1, 3, 5], interval_weeks: 1 },
+    });
+  });
+
+  test("multiple weekdays work without commas too", () => {
+    const result = parseTaskInput("Gym every monday wednesday friday", NOW);
+
+    expect(result.recurrence).toEqual({
+      frequency: { kind: "Weekly", weekdays: [1, 3, 5], interval_weeks: 1 },
+    });
+  });
+
+  test("a duplicate weekday in the list is not added twice", () => {
+    const result = parseTaskInput("Gym every monday, monday", NOW);
+
+    expect(result.recurrence).toEqual({
+      frequency: { kind: "Weekly", weekdays: [1], interval_weeks: 1 },
+    });
+  });
+
+  test("'until <date-phrase>' sets an end date on any recurrence form", () => {
+    const result = parseTaskInput("Gym every monday until july 31", NOW);
+
+    expect(result.title).toBe("Gym");
+    expect(result.recurrence).toEqual({
+      frequency: { kind: "Weekly", weekdays: [1], interval_weeks: 1 },
+      endDate: "2026-07-31",
+    });
+  });
+
+  test("'every other <weekday>' followed directly by 'until' still parses despite the trailing comma it leaves behind", () => {
+    const result = parseTaskInput("Gym every other monday, until july 31", NOW);
+
+    expect(result.title).toBe("Gym");
+    expect(result.recurrence).toEqual({
+      frequency: { kind: "Weekly", weekdays: [1], interval_weeks: 2 },
+      endDate: "2026-07-31",
+    });
+  });
+
+  test("'until' with no recognizable date phrase after it is left in the title", () => {
+    const result = parseTaskInput("Gym every monday until whenever", NOW);
+
+    expect(result.title).toBe("Gym until whenever");
+    expect(result.recurrence).toEqual({
+      frequency: { kind: "Weekly", weekdays: [1], interval_weeks: 1 },
+    });
+  });
+
+  test("'every' with no recognizable phrase after it is left in the title", () => {
+    const result = parseTaskInput("Water plants every now and then", NOW);
+
+    expect(result.title).toBe("Water plants every now and then");
+    expect(result.recurrence).toBeUndefined();
+  });
+
+  test("a bare 'every' with nothing after it is left in the title", () => {
+    const result = parseTaskInput("Water plants every", NOW);
+
+    expect(result.title).toBe("Water plants every");
+    expect(result.recurrence).toBeUndefined();
+  });
+
+  test("'every 0 days' is rejected (a non-positive interval doesn't make sense)", () => {
+    const result = parseTaskInput("Water plants every 0 days", NOW);
+
+    expect(result.title).toBe("Water plants every 0 days");
+    expect(result.recurrence).toBeUndefined();
+  });
+
+  test("last 'every' token wins when repeated", () => {
+    const result = parseTaskInput("Gym every day every monday", NOW);
+
+    expect(result.title).toBe("Gym");
+    expect(result.recurrence).toEqual({
+      frequency: { kind: "Weekly", weekdays: [1], interval_weeks: 1 },
+    });
+  });
+
+  test("recurrence keywords are case-insensitive", () => {
+    const result = parseTaskInput("Gym EVERY MONDAY", NOW);
+
+    expect(result.title).toBe("Gym");
+    expect(result.recurrence).toEqual({
+      frequency: { kind: "Weekly", weekdays: [1], interval_weeks: 1 },
+    });
+  });
+});
+
 describe("parseTaskInput with knownPriorities", () => {
   const KNOWN_PRIORITIES: KnownPriority[] = [
     { id: "urgent", label: "Urgent" },
