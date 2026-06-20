@@ -777,7 +777,13 @@
 
   .field-row {
     display: grid;
-    grid-template-columns: auto 1fr auto;
+    /* `minmax(0, 1fr)`, not bare `1fr` — a bare `1fr` track won't shrink
+       below its content's min-content size, and `.syntax-hint`'s
+       `white-space: nowrap` makes that the full unwrapped text width. A
+       long hint (e.g. the recurring-task variant) would then force the
+       grid wider than the dialog, pushing the due-date value in the third
+       column off-screen instead of the hint simply wrapping. */
+    grid-template-columns: auto minmax(0, 1fr) auto;
     align-items: baseline;
     gap: var(--space-md);
     padding: var(--space-2xs) var(--space-md);
@@ -800,7 +806,11 @@
     font-size: var(--text-xs);
     color: var(--color-ink-faint);
     text-align: center;
-    white-space: nowrap;
+    /* No `white-space: nowrap`: most hints comfortably fit on one line
+       within their `minmax(0, 1fr)` column anyway, so this has no visual
+       effect for them — but the longer recurring-task due-hint now wraps
+       onto a second line instead of overflowing. */
+    overflow-wrap: break-word;
   }
 
   .field-row dd {

@@ -464,7 +464,14 @@ pub fn create_recurring_task(
     };
 
     let today = chrono::Local::now().date_naive();
-    let (final_tags, resolved_due, resolved_scheduled) =
+    // `resolve_creation_defaults`'s own due resolution is discarded here —
+    // it only knows about the literal `due` string, not `due_rule`, and
+    // would otherwise resolve the first occurrence's due from the
+    // configured default code regardless of what `due_rule` says, while
+    // every later occurrence correctly uses `series.due_rule` (see
+    // `build_series_occurrence`) — the exact inconsistency this whole
+    // feature exists to fix, just one occurrence later than before.
+    let (final_tags, _due_resolution_unused_for_recurring_tasks, resolved_scheduled) =
         resolve_creation_defaults(&settings, project_defaults, today, tags, due, scheduled);
     let resolved_estimated_minutes = estimated_minutes
         .or_else(|| effective_default_estimated_minutes(&settings.defaults, project_defaults));
@@ -474,11 +481,14 @@ pub fn create_recurring_task(
             .unwrap_or(DueRule::Never)
     });
 
+    let anchor = chrono::NaiveDate::parse_from_str(&resolved_scheduled, "%Y-%m-%d")
+        .map_err(|e| e.to_string())?;
+    let resolved_due =
+        resolve_due_rule(&series_due_rule, anchor).map(|d| d.format("%Y-%m-%d").to_string());
+
     if let Some(end) = &end_date {
         let end_date = chrono::NaiveDate::parse_from_str(end, "%Y-%m-%d")
             .map_err(|_| "end date must be a valid date in YYYY-MM-DD format".to_string())?;
-        let anchor = chrono::NaiveDate::parse_from_str(&resolved_scheduled, "%Y-%m-%d")
-            .map_err(|e| e.to_string())?;
         if end_date < anchor {
             return Err("end date must be on or after the scheduled date".to_string());
         }
@@ -518,8 +528,6 @@ pub fn create_recurring_task(
 
     storage::save_task(&state.tasks_dir, &first_task).map_err(|e| e.to_string())?;
 
-    let anchor = chrono::NaiveDate::parse_from_str(&resolved_scheduled, "%Y-%m-%d")
-        .map_err(|e| e.to_string())?;
     let horizon = anchor + chrono::Duration::days(RECURRENCE_BASELINE_LOOKAHEAD_DAYS);
     let mut created = generate_series_occurrences(
         &state.tasks_dir,
