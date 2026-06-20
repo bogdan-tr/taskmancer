@@ -237,6 +237,24 @@
           />
         </div>
       </label>
+      <div class="field-row">
+        <label>
+          Priority
+          <select bind:value={draftPriority}>
+            {#each sortedPriorities(priorities) as level (level.id)}
+              <option value={level.id}>{level.label}</option>
+            {/each}
+          </select>
+        </label>
+        <label>
+          Status
+          <select bind:value={draftStatus}>
+            {#each statuses as status (status.id)}
+              <option value={status.id}>{status.label}</option>
+            {/each}
+          </select>
+        </label>
+      </div>
       <label>
         Tags
         <div class="field-with-suggestions">
@@ -265,58 +283,38 @@
           />
         </div>
       </label>
-      <div class="field-row">
-        <label>
-          Priority
-          <select bind:value={draftPriority}>
-            {#each sortedPriorities(priorities) as level (level.id)}
-              <option value={level.id}>{level.label}</option>
-            {/each}
-          </select>
-        </label>
-        <label>
-          Status
-          <select bind:value={draftStatus}>
-            {#each statuses as status (status.id)}
-              <option value={status.id}>{status.label}</option>
-            {/each}
-          </select>
-        </label>
-      </div>
-      <div class="field-row">
-        <label>
-          Due
-          <span class="date-input-row">
-            <input type="text" bind:value={draftDue} placeholder="YYYY-MM-DD" />
-            <DatePickerPopover
-              selected={draftDue || undefined}
-              triggerLabel="Pick due date"
-              clearLabel="Never"
-              onSelect={(iso) => (draftDue = iso)}
-              onClear={() => (draftDue = "")}
-            />
-          </span>
-          {#if draftDue}
-            {@const dueHint = formatDueDateDisplay(draftDue, new Date(), displayState.nlDueDates)}
-            {#if dueHint}
-              <span class="due-hint" class:due-today={dueHint.variant === "today"} class:due-tomorrow={dueHint.variant === "tomorrow"} class:due-overdue={dueHint.variant === "overdue"}>{dueHint.label}</span>
-            {/if}
+      <label>
+        Scheduled
+        <span class="date-input-row">
+          <input type="text" bind:value={draftScheduled} placeholder="YYYY-MM-DD" />
+          <DatePickerPopover
+            selected={draftScheduled || undefined}
+            triggerLabel="Pick scheduled date"
+            clearLabel="Clear"
+            onSelect={(iso) => (draftScheduled = iso)}
+            onClear={() => (draftScheduled = "")}
+          />
+        </span>
+      </label>
+      <label>
+        Due
+        <span class="date-input-row">
+          <input type="text" bind:value={draftDue} placeholder="YYYY-MM-DD" />
+          <DatePickerPopover
+            selected={draftDue || undefined}
+            triggerLabel="Pick due date"
+            clearLabel="Never"
+            onSelect={(iso) => (draftDue = iso)}
+            onClear={() => (draftDue = "")}
+          />
+        </span>
+        {#if draftDue}
+          {@const dueHint = formatDueDateDisplay(draftDue, new Date(), displayState.nlDueDates)}
+          {#if dueHint}
+            <span class="due-hint" class:due-today={dueHint.variant === "today"} class:due-tomorrow={dueHint.variant === "tomorrow"} class:due-overdue={dueHint.variant === "overdue"}>{dueHint.label}</span>
           {/if}
-        </label>
-        <label>
-          Scheduled
-          <span class="date-input-row">
-            <input type="text" bind:value={draftScheduled} placeholder="YYYY-MM-DD" />
-            <DatePickerPopover
-              selected={draftScheduled || undefined}
-              triggerLabel="Pick scheduled date"
-              clearLabel="Clear"
-              onSelect={(iso) => (draftScheduled = iso)}
-              onClear={() => (draftScheduled = "")}
-            />
-          </span>
-        </label>
-      </div>
+        {/if}
+      </label>
       <div class="field-row">
         <label>
           Estimated time

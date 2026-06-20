@@ -306,6 +306,14 @@
         </div>
       </label>
       <label>
+        Priority
+        <select bind:value={draftPriority}>
+          {#each sortedPriorities(priorities) as level (level.id)}
+            <option value={level.id}>{level.label}</option>
+          {/each}
+        </select>
+      </label>
+      <label>
         Tags
         <div class="field-with-suggestions">
           <input
@@ -334,12 +342,17 @@
         </div>
       </label>
       <label>
-        Priority
-        <select bind:value={draftPriority}>
-          {#each sortedPriorities(priorities) as level (level.id)}
-            <option value={level.id}>{level.label}</option>
-          {/each}
-        </select>
+        Scheduled
+        <span class="date-input-row">
+          <input type="text" bind:value={draftScheduled} placeholder="YYYY-MM-DD" />
+          <DatePickerPopover
+            selected={draftScheduled || undefined}
+            triggerLabel="Pick scheduled date"
+            clearLabel="Clear"
+            onSelect={(iso) => (draftScheduled = iso)}
+            onClear={() => (draftScheduled = "")}
+          />
+        </span>
       </label>
       <label>
         Due
@@ -364,19 +377,6 @@
             >
           {/if}
         {/if}
-      </label>
-      <label>
-        Scheduled
-        <span class="date-input-row">
-          <input type="text" bind:value={draftScheduled} placeholder="YYYY-MM-DD" />
-          <DatePickerPopover
-            selected={draftScheduled || undefined}
-            triggerLabel="Pick scheduled date"
-            clearLabel="Clear"
-            onSelect={(iso) => (draftScheduled = iso)}
-            onClear={() => (draftScheduled = "")}
-          />
-        </span>
       </label>
       <label>
         Estimated time

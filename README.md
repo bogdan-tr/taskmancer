@@ -232,16 +232,20 @@ the title text.
 
 The calendar icon next to any Due/Scheduled field (task cards' inline edit,
 the task edit dialog, and the Add Task preview) opens a hand-built month
-grid — clicking a day sets that date. A row of quick-picks (Today, Tomorrow,
-In 2 days, In 3 days, In 1 week, In 1 month) sits above the grid for the
-common cases. A clear action sits next to the quick-picks: on Due it reads
-**Never** (clearing the due date entirely, the same as the `due na`
-quick-add token); on Scheduled it reads **Clear** (removing whatever you'd
-set there — in the Add Task modal that means falling back to whatever the
-typed phrase or configured default would resolve to; on an existing task it
-just empties the field). The picker is purely an alternative input method —
-it never touches the title text in the Add Task modal, and the existing
-typed `YYYY-MM-DD` field still works everywhere it always has.
+grid as its own large, centered dialog — clicking a day sets that date and
+closes the dialog. A row of quick-picks (Today, Tomorrow, In 2 days, In 3
+days, In 1 week, In 1 month) sits above the grid for the common cases. A
+clear action sits next to the quick-picks: on Due it reads **Never**
+(clearing the due date entirely, the same as the `due na` quick-add token);
+on Scheduled it reads **Clear** (removing whatever you'd set there — in the
+Add Task modal that means falling back to whatever the typed phrase or
+configured default would resolve to; on an existing task it just empties
+the field). The picker is purely an alternative input method — it never
+touches the title text in the Add Task modal, and the existing typed
+`YYYY-MM-DD` field still works everywhere it always has. Close it with the
+× in the top corner, by clicking outside it, or Escape — being a real
+dialog, it always renders on top of whatever task-edit or Add Task dialog
+it was opened from, regardless of where on screen the calendar icon sits.
 
 ### Week view
 

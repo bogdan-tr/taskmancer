@@ -464,7 +464,6 @@
             selected={scheduledSelectedForPicker}
             triggerLabel="Pick scheduled date"
             clearLabel="Clear"
-            rightAlign
             onSelect={handleScheduledSelect}
             onClear={handleScheduledClear}
           />
@@ -488,7 +487,6 @@
             selected={dueSelectedForPicker}
             triggerLabel="Pick due date"
             clearLabel="Never"
-            rightAlign
             onSelect={handleDueSelect}
             onClear={handleDueNever}
           />
