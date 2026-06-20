@@ -216,10 +216,13 @@ fn default_due_rule() -> DueRule {
 impl Series {
     /// Creates a new active series with a freshly generated id and the
     /// current time as `created`. `generated_until` starts at `anchor_date`
-    /// itself — the caller is expected to generate the first occurrence (at
-    /// `anchor_date`) separately and then extend the window forward from
-    /// there, the same way [`crate::project::Project::new`] doesn't create
-    /// any tasks itself.
+    /// itself — the caller is expected to generate the window forward from
+    /// there (via the normal generation step, see
+    /// `crate::recurrence::occurrence_dates_in_range`), and separately
+    /// create an occurrence directly at `anchor_date` itself *only* if
+    /// `crate::recurrence::anchor_matches_frequency` confirms the anchor
+    /// satisfies the rule — this constructor doesn't create any tasks
+    /// itself, the same way [`crate::project::Project::new`] doesn't.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         frequency: RecurrenceFrequency,

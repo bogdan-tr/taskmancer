@@ -41,14 +41,41 @@ pub fn resolve_due_rule(rule: &DueRule, scheduled: NaiveDate) -> Option<NaiveDat
     }
 }
 
+/// Whether `anchor` itself satisfies `frequency` — i.e. would be a valid
+/// occurrence date if the rule were applied to it directly. Always `true`
+/// for [`RecurrenceFrequency::EveryNDays`] (the anchor trivially defines
+/// "day 0" of that pattern, so it can never mismatch), but `Weekly`/
+/// `MonthlyByDay` can disagree with an explicitly chosen scheduled date —
+/// e.g. scheduling a Mon/Tue/Wed series for a Saturday. Used by
+/// `create_recurring_task` to decide whether the literal scheduled date
+/// itself becomes the series' first occurrence, or whether the first
+/// *real* occurrence is later — found by the normal generation step
+/// (`occurrence_dates_in_range`), which already searches strictly after
+/// the anchor regardless of whether the anchor itself matches.
+pub fn anchor_matches_frequency(frequency: &RecurrenceFrequency, anchor: NaiveDate) -> bool {
+    match frequency {
+        RecurrenceFrequency::EveryNDays { .. } => true,
+        RecurrenceFrequency::Weekly { weekdays, .. } => {
+            weekdays.contains(&(anchor.weekday().num_days_from_sunday() as u8))
+        }
+        RecurrenceFrequency::MonthlyByDay { day } => anchor.day() == *day,
+    }
+}
+
 /// Computes the occurrence dates `series` produces strictly after `after`
 /// and up to (and including) `through`, additionally clamped to the
 /// series' own `end_date` if it has one. Always empty if `series.anchor_date`
 /// fails to parse (defensive — should be unreachable for a series that
 /// passed validation at write time, but a corrupted `series.json` shouldn't
 /// crash the app). Dates at or before `series.anchor_date` are never
-/// produced, since the anchor itself is always the first occurrence
-/// (created directly alongside the series, not through this function).
+/// produced by *this* function — `create_recurring_task` creates the
+/// anchor date's own occurrence directly, separately, but only when
+/// [`anchor_matches_frequency`] confirms the anchor itself satisfies the
+/// rule (e.g. its weekday is one of `Weekly`'s `weekdays`). When it
+/// doesn't (scheduling a Mon/Tue/Wed series for a Saturday), no occurrence
+/// exists on the anchor date at all, and the first occurrence this
+/// function produces (the first one strictly after the anchor) is the
+/// series' real first occurrence.
 pub fn occurrence_dates_in_range(
     series: &Series,
     after: NaiveDate,
@@ -603,6 +630,67 @@ mod tests {
             );
 
             assert_eq!(resolved, None);
+        }
+    }
+
+    mod anchor_matches_frequency_tests {
+        use super::*;
+
+        #[test]
+        fn every_n_days_always_matches_the_anchor() {
+            // 2026-06-20 is a Saturday — irrelevant for this frequency, the
+            // anchor always trivially defines "day 0" of an N-day pattern.
+            let frequency = RecurrenceFrequency::EveryNDays { interval: 3 };
+
+            assert!(anchor_matches_frequency(&frequency, date("2026-06-20")));
+        }
+
+        #[test]
+        fn weekly_matches_when_the_anchor_weekday_is_in_the_list() {
+            // 2026-06-15 is a Monday.
+            let frequency = RecurrenceFrequency::Weekly {
+                weekdays: vec![1, 2, 3],
+                interval_weeks: 1,
+            };
+
+            assert!(anchor_matches_frequency(&frequency, date("2026-06-15")));
+        }
+
+        #[test]
+        fn weekly_does_not_match_when_the_anchor_weekday_is_not_in_the_list() {
+            // 2026-06-20 is a Saturday, not in [Mon, Tue, Wed].
+            let frequency = RecurrenceFrequency::Weekly {
+                weekdays: vec![1, 2, 3],
+                interval_weeks: 1,
+            };
+
+            assert!(!anchor_matches_frequency(&frequency, date("2026-06-20")));
+        }
+
+        #[test]
+        fn weekly_does_not_match_regardless_of_interval_weeks() {
+            // The interval only affects which *future* weeks count, not
+            // whether the anchor's own weekday is in the list at all.
+            let frequency = RecurrenceFrequency::Weekly {
+                weekdays: vec![1, 2, 3],
+                interval_weeks: 2,
+            };
+
+            assert!(!anchor_matches_frequency(&frequency, date("2026-06-20")));
+        }
+
+        #[test]
+        fn monthly_by_day_matches_when_the_anchor_day_of_month_equals_day() {
+            let frequency = RecurrenceFrequency::MonthlyByDay { day: 20 };
+
+            assert!(anchor_matches_frequency(&frequency, date("2026-06-20")));
+        }
+
+        #[test]
+        fn monthly_by_day_does_not_match_when_the_anchor_day_of_month_differs() {
+            let frequency = RecurrenceFrequency::MonthlyByDay { day: 5 };
+
+            assert!(!anchor_matches_frequency(&frequency, date("2026-06-20")));
         }
     }
 }

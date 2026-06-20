@@ -839,13 +839,16 @@
 
   .field-row {
     display: grid;
-    /* `minmax(0, 1fr)`, not bare `1fr` — a bare `1fr` track won't shrink
-       below its content's min-content size, and `.syntax-hint`'s
-       `white-space: nowrap` makes that the full unwrapped text width. A
-       long hint (e.g. the recurring-task variant) would then force the
-       grid wider than the dialog, pushing the due-date value in the third
-       column off-screen instead of the hint simply wrapping. */
-    grid-template-columns: auto minmax(0, 1fr) auto;
+    /* `minmax(0, 1fr)` on both flexible columns, not bare `1fr`/`auto` — a
+       bare `1fr` won't shrink below its content's min-content size, and a
+       bare `auto` claims as much space as its content needs with no
+       upper bound. Either one can starve the other: a long syntax hint
+       (e.g. the recurring-task variant) used to force the grid wider than
+       the dialog, and a long value (e.g. a multi-weekday recurrence with
+       an end date) used to squeeze the hint down to ~1 character instead
+       of sharing space with it. `minmax(0, 1fr)` on both lets each one
+       wrap onto multiple lines and shrink to fit instead. */
+    grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr);
     align-items: baseline;
     gap: var(--space-md);
     padding: var(--space-2xs) var(--space-md);
@@ -899,6 +902,14 @@
     align-items: center;
     justify-content: flex-end;
     gap: var(--space-2xs);
+  }
+
+  /* A flex item's default min-width is `auto` (its content's min-content
+     size), the same shrink-resistance issue as a bare grid `1fr`/`auto`
+     track — without this, the text span here could refuse to shrink/wrap
+     and overflow its now-constrained `.date-value` column instead. */
+  .field-row dd.date-value > span {
+    min-width: 0;
   }
 
   .field-row dd.estimate-editable {

@@ -6,7 +6,7 @@ use tauri::State;
 
 use crate::project::{Project, ProjectBoard, DEFAULT_PROJECT_COLOR};
 use crate::project_storage;
-use crate::recurrence::{occurrence_dates_in_range, resolve_due_rule};
+use crate::recurrence::{anchor_matches_frequency, occurrence_dates_in_range, resolve_due_rule};
 use crate::series::{validate_series, DueRule, RecurrenceFrequency, Series};
 use crate::series_storage;
 use crate::settings::{
@@ -399,12 +399,18 @@ fn generate_series_occurrences(
     Ok(created)
 }
 
-/// Creates a recurring task: a first occurrence (created the same way
-/// [`create_task`] creates any task) plus a `Series` template + rule, with
-/// occurrences immediately generated for the next
-/// [`RECURRENCE_BASELINE_LOOKAHEAD_DAYS`] days (see [`ensure_occurrences_until`]
-/// for extending further as the user scrolls). Returns every task created
-/// (the first occurrence, then any generated ones, in date order).
+/// Creates a recurring task: a `Series` template + rule, with occurrences
+/// immediately generated for the next [`RECURRENCE_BASELINE_LOOKAHEAD_DAYS`]
+/// days (see [`ensure_occurrences_until`] for extending further as the user
+/// scrolls), plus — *only if the scheduled date itself satisfies the
+/// recurrence rule* (see [`anchor_matches_frequency`]) — an occurrence
+/// created directly on that date, the same way [`create_task`] creates any
+/// task. When the scheduled date doesn't satisfy the rule (e.g. scheduling
+/// a Mon/Tue/Wed series for a Saturday), no occurrence is created on it at
+/// all — the series' real first occurrence is simply the first one the
+/// normal generation step produces, which already correctly searches for
+/// the next date matching the rule. Returns every task created, in date
+/// order.
 ///
 /// `due_rule`, if given, is the series' due rule exactly as the frontend
 /// derived it from whatever due phrase was typed (see `naturalLanguage.ts`)
@@ -494,6 +500,13 @@ pub fn create_recurring_task(
         }
     }
 
+    // Checked before `frequency` is moved into `Series::new` below — see
+    // `anchor_matches_frequency`'s own doc comment for why a scheduled
+    // date that doesn't itself satisfy the rule (e.g. a Mon/Tue/Wed series
+    // scheduled for a Saturday) must not get a forced, mismatched
+    // occurrence created directly on it.
+    let anchor_matches = anchor_matches_frequency(&frequency, anchor);
+
     let mut series = Series::new(
         frequency,
         resolved_scheduled.clone(),
@@ -508,25 +521,29 @@ pub fn create_recurring_task(
     );
     validate_series(&series)?;
 
-    let mut first_task = Task::new(title);
-    first_task.status = status.clone();
-    apply_create_overrides(
-        &mut first_task,
-        Some(project_name),
-        Some(final_tags),
-        Some(priority),
-        resolved_due,
-        resolved_scheduled.clone(),
-        resolved_estimated_minutes,
-    );
-    first_task.series_id = Some(series.id.clone());
-
     let _guard = state
         .series_lock
         .lock()
         .map_err(|_| "series lock poisoned".to_string())?;
 
-    storage::save_task(&state.tasks_dir, &first_task).map_err(|e| e.to_string())?;
+    let first_task = if anchor_matches {
+        let mut first_task = Task::new(title);
+        first_task.status = status.clone();
+        apply_create_overrides(
+            &mut first_task,
+            Some(project_name),
+            Some(final_tags),
+            Some(priority),
+            resolved_due,
+            resolved_scheduled.clone(),
+            resolved_estimated_minutes,
+        );
+        first_task.series_id = Some(series.id.clone());
+        storage::save_task(&state.tasks_dir, &first_task).map_err(|e| e.to_string())?;
+        Some(first_task)
+    } else {
+        None
+    };
 
     let horizon = anchor + chrono::Duration::days(RECURRENCE_BASELINE_LOOKAHEAD_DAYS);
     let mut created = generate_series_occurrences(
@@ -542,7 +559,9 @@ pub fn create_recurring_task(
     all_series.push(series);
     series_storage::save_series(&state.series_file, &all_series).map_err(|e| e.to_string())?;
 
-    created.insert(0, first_task);
+    if let Some(first_task) = first_task {
+        created.insert(0, first_task);
+    }
     Ok(created)
 }
 
