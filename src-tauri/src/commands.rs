@@ -6,6 +6,7 @@ use tauri::State;
 
 use crate::project::{Project, ProjectBoard, DEFAULT_PROJECT_COLOR};
 use crate::project_storage;
+use crate::project_tree::would_create_cycle;
 use crate::recurrence::{anchor_matches_frequency, occurrence_dates_in_range, resolve_due_rule};
 use crate::series::{validate_series, DueRule, RecurrenceFrequency, Series};
 use crate::series_storage;
@@ -1206,16 +1207,48 @@ fn resolve_project_color(color: Option<String>) -> Result<String, String> {
     }
 }
 
+/// Returns an error if `parent_id` (when set) doesn't reference an existing
+/// project in `projects`, or — when `moving_id` is also set (an existing
+/// project being re-parented, as opposed to a brand-new project that can
+/// never have descendants yet) — would create a cycle (see
+/// [`would_create_cycle`]).
+fn validate_parent_id(
+    projects: &[Project],
+    parent_id: Option<&str>,
+    moving_id: Option<&str>,
+) -> Result<(), String> {
+    let Some(parent_id) = parent_id else {
+        return Ok(());
+    };
+
+    if !projects.iter().any(|p| p.id == parent_id) {
+        return Err(format!("parent project '{parent_id}' not found"));
+    }
+
+    if let Some(moving_id) = moving_id {
+        if would_create_cycle(projects, moving_id, parent_id) {
+            return Err(
+                "cannot move a project under itself or one of its own subprojects".to_string(),
+            );
+        }
+    }
+
+    Ok(())
+}
+
 /// Creates a new project with a trimmed, non-empty, case-insensitively
 /// unique name. `order` is set to one past the current maximum so new
 /// projects sort after existing ones. Falls back to
 /// [`DEFAULT_PROJECT_COLOR`] when `color` is `None`; otherwise `color` must
-/// be a 6-digit hex color (see [`validate_hex_color`]).
+/// be a 6-digit hex color (see [`validate_hex_color`]). `parent_id`, when
+/// set, must reference an existing project (see [`validate_parent_id`]) —
+/// nesting depth is otherwise unrestricted.
 #[tauri::command]
 pub fn create_project(
     state: State<AppState>,
     name: String,
     color: Option<String>,
+    parent_id: Option<String>,
 ) -> Result<Project, String> {
     let name = name.trim().to_string();
     if name.is_empty() {
@@ -1230,9 +1263,11 @@ pub fn create_project(
     if projects.iter().any(|p| p.name.eq_ignore_ascii_case(&name)) {
         return Err(format!("a project named '{name}' already exists"));
     }
+    validate_parent_id(&projects, parent_id.as_deref(), None)?;
 
     let order = next_order(&projects);
-    let project = Project::new(name, color, order);
+    let mut project = Project::new(name, color, order);
+    project.parent_id = parent_id;
     projects.push(project.clone());
     project_storage::save_projects(&state.projects_file, &projects).map_err(|e| e.to_string())?;
 
@@ -1299,18 +1334,22 @@ fn apply_project_update(
         validate_ink_mode(ink_mode)?;
     }
 
-    let existing = &projects[index];
-    if update.color != existing.color {
+    let existing_color = projects[index].color.clone();
+    let existing_created = projects[index].created.clone();
+    if update.color != existing_color {
         validate_hex_color(&update.color)?;
     }
 
+    let existing_id = projects[index].id.clone();
+    validate_parent_id(projects, update.parent_id.as_deref(), Some(&existing_id))?;
+
     let updated = Project {
-        id: existing.id.clone(),
+        id: existing_id,
         name,
         color: update.color,
-        parent_id: existing.parent_id.clone(),
+        parent_id: update.parent_id,
         order: update.order,
-        created: existing.created.clone(),
+        created: existing_created,
         board: update.board,
         defaults: update.defaults,
     };
@@ -3534,5 +3573,66 @@ mod tests {
         assert!(third_call_created.is_empty());
         let saved = storage::list_tasks(dir.path()).unwrap();
         assert_eq!(saved.len(), 60);
+    }
+
+    #[test]
+    fn validate_parent_id_accepts_none() {
+        let projects = vec![Project::new("Inbox".to_string(), "#111111".to_string(), 1)];
+
+        assert!(validate_parent_id(&projects, None, None).is_ok());
+    }
+
+    #[test]
+    fn validate_parent_id_accepts_an_existing_project() {
+        let parent = Project::new("Inbox".to_string(), "#111111".to_string(), 1);
+        let parent_id = parent.id.clone();
+        let projects = vec![parent];
+
+        assert!(validate_parent_id(&projects, Some(&parent_id), None).is_ok());
+    }
+
+    #[test]
+    fn validate_parent_id_rejects_a_missing_project() {
+        let projects = vec![Project::new("Inbox".to_string(), "#111111".to_string(), 1)];
+
+        let result = validate_parent_id(&projects, Some("does-not-exist"), None);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_parent_id_rejects_a_self_cycle_on_update() {
+        let project = Project::new("Inbox".to_string(), "#111111".to_string(), 1);
+        let id = project.id.clone();
+        let projects = vec![project];
+
+        let result = validate_parent_id(&projects, Some(&id), Some(&id));
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_parent_id_rejects_moving_under_own_descendant() {
+        let mut parent = Project::new("Parent".to_string(), "#111111".to_string(), 1);
+        parent.id = "parent".to_string();
+        let mut child = Project::new("Child".to_string(), "#222222".to_string(), 2);
+        child.id = "child".to_string();
+        child.parent_id = Some("parent".to_string());
+        let projects = vec![parent, child];
+
+        let result = validate_parent_id(&projects, Some("child"), Some("parent"));
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_parent_id_allows_an_unrelated_new_parent_on_update() {
+        let mut a = Project::new("A".to_string(), "#111111".to_string(), 1);
+        a.id = "a".to_string();
+        let mut b = Project::new("B".to_string(), "#222222".to_string(), 2);
+        b.id = "b".to_string();
+        let projects = vec![a, b];
+
+        assert!(validate_parent_id(&projects, Some("b"), Some("a")).is_ok());
     }
 }
