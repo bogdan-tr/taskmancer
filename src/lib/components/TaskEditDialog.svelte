@@ -117,7 +117,7 @@
     if (!dialogEl) return;
     if (open && task) {
       draftTitle = task.title;
-      draftProject = task.project ?? "";
+      draftProject = projectsState.items.find((p) => p.id === task.project_id)?.name ?? "";
       draftTags = formatTags(task.tags);
       draftPriority = task.priority;
       draftStatus = task.status;
@@ -257,7 +257,8 @@
     const updated: Task = {
       ...task,
       title: draftTitle,
-      project: emptyToUndefined(draftProject),
+      project_id: projectsState.items.find((p) => p.name.toLowerCase() === draftProject.trim().toLowerCase())
+        ?.id,
       tags: parseTags(draftTags),
       priority: draftPriority,
       status: draftStatus,
@@ -378,8 +379,8 @@
    */
   function handleRecurrenceBuilderApply(value: RecurrenceBuilderValue) {
     if (!task?.series_id || !task.scheduled) return;
-    const matchedProject = task.project
-      ? projectsState.items.find((p) => p.name.toLowerCase() === task.project?.toLowerCase())
+    const matchedProject = task.project_id
+      ? projectsState.items.find((p) => p.id === task.project_id)
       : undefined;
     const globalDefaults = settingsState.current?.defaults ?? { tags: [] };
     const dueRule =

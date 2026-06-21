@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { page } from "$app/state";
   import { applyTagsSuggestion, filterSuggestions, splitTagsInput } from "$lib/autocomplete";
   import {
     isLightColor,
@@ -51,7 +52,14 @@
   let { task, onUpdate, onDelete, onRemoveRecurrence }: Props = $props();
 
   const priorities = $derived(settingsState.current?.priorities ?? FALLBACK_PRIORITIES);
-  const projectColor = $derived(resolveProjectColor(task.project, projectsState.items));
+  const projectColor = $derived(resolveProjectColor(task.project_id, projectsState.items));
+  const projectName = $derived(projectsState.items.find((p) => p.id === task.project_id)?.name);
+  /** The project currently being viewed (from the URL), or `undefined` on the non-project-scoped "All Tasks" route. */
+  let viewedProjectId = $derived(page.params.id);
+  /** `true` when this card is shown via a parent project's rolled-up view — its own project differs from the one currently being viewed. */
+  let isRolledUp = $derived(
+    viewedProjectId !== undefined && task.project_id !== undefined && task.project_id !== viewedProjectId,
+  );
   const isColorCoded = $derived(displayState.cardColorMode === "color_code");
   // The project's own override (Project.board.card_lightness) takes
   // precedence over the global default (Settings.card_lightness); falls
@@ -59,7 +67,7 @@
   // still loading.
   const cardLightness = $derived(
     resolveCardLightness(
-      task.project,
+      task.project_id,
       projectsState.items,
       settingsState.current?.card_lightness ?? NEON_CARD_LIGHTNESS,
     ),
@@ -77,7 +85,7 @@
   // over the global default (Settings.ink_mode); falls back to "auto"
   // (contrast-computed, the original behavior) while settings are loading.
   const inkMode = $derived(
-    resolveInkMode(task.project, projectsState.items, settingsState.current?.ink_mode ?? "auto"),
+    resolveInkMode(task.project_id, projectsState.items, settingsState.current?.ink_mode ?? "auto"),
   );
   const colorCodeTextColor = $derived(
     colorCodeBackground ? legibleInkColor(colorCodeBackground, inkMode) : undefined,
@@ -130,7 +138,7 @@
 
   function startEdit() {
     draftTitle = task.title;
-    draftProject = task.project ?? "";
+    draftProject = projectsState.items.find((p) => p.id === task.project_id)?.name ?? "";
     draftTags = formatTags(task.tags);
     draftPriority = task.priority;
     draftDue = task.due ?? "";
@@ -248,7 +256,8 @@
     const updated: Task = {
       ...task,
       title: draftTitle,
-      project: emptyToUndefined(draftProject),
+      project_id: projectsState.items.find((p) => p.name.toLowerCase() === draftProject.trim().toLowerCase())
+        ?.id,
       tags: parseTags(draftTags),
       priority: draftPriority,
       due: emptyToUndefined(draftDue),
@@ -529,9 +538,15 @@
           {priorityLabel(priorities, task.priority)}
         </span>
       {/if}
-      {#if task.project && !isColorCoded}
+      {#if projectName && !isColorCoded}
         <span class="chip project" style="--chip-color: {projectColor}; --chip-text-color: {projectChipTextColor}">
-          {task.project}
+          {projectName}
+        </span>
+      {/if}
+      {#if isRolledUp && projectName}
+        <span class="origin-badge" title={`From ${projectName}`}>
+          <span class="origin-dot" style="background: {projectColor}" aria-hidden="true"></span>
+          {projectName}
         </span>
       {/if}
       {#if task.due}
@@ -766,6 +781,21 @@
     border-color: color-mix(in oklch, var(--chip-color, var(--color-accent)) 45%, transparent);
     color: var(--chip-text-color, var(--chip-color, var(--color-accent)));
     font-weight: 600;
+  }
+
+  .origin-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    font-size: var(--text-xs);
+    color: var(--color-ink-muted);
+  }
+
+  .origin-dot {
+    width: 0.5rem;
+    height: 0.5rem;
+    flex-shrink: 0;
+    border-radius: var(--radius-sm);
   }
 
   .chip.due {

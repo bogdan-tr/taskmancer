@@ -6,7 +6,7 @@ function makeTask(overrides: Partial<Task> & { id: string }): Task {
   return {
     title: "Untitled",
     status: "todo",
-    project: undefined,
+    project_id: undefined,
     tags: [],
     priority: "medium",
     due: undefined,

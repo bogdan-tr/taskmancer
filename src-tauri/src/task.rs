@@ -28,8 +28,12 @@ pub struct Task {
     /// since-removed status remain visible.
     #[serde(default = "default_status")]
     pub status: String,
+    /// The id of the `Project` this task belongs to. `None` only
+    /// transiently — every task gets a concrete project id at creation
+    /// time (see `commands::resolve_project_id`), falling back to
+    /// `Settings.default_project_id` when none is given explicitly.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub project: Option<String>,
+    pub project_id: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
     /// The id of a user-defined `PriorityLevel` (see `crate::settings`).
@@ -91,7 +95,7 @@ impl Task {
             id: Uuid::new_v4().to_string(),
             title,
             status: default_status(),
-            project: None,
+            project_id: None,
             tags: Vec::new(),
             priority: default_priority(),
             due: None,
@@ -136,7 +140,7 @@ mod tests {
         assert_eq!(task.title, "Write report");
         assert_eq!(task.status, "backlog");
         assert_eq!(task.priority, "medium");
-        assert!(task.project.is_none());
+        assert!(task.project_id.is_none());
         assert!(task.tags.is_empty());
         assert!(!task.id.is_empty());
         assert!(!task.created.is_empty());
@@ -147,7 +151,7 @@ mod tests {
     fn to_markdown_then_from_markdown_round_trips() {
         let mut task = Task::new("Assignment 4".to_string());
         task.status = "in-progress".to_string();
-        task.project = Some("CS101/Homework".to_string());
+        task.project_id = Some("project-id-cs101-homework".to_string());
         task.tags = vec!["reading".to_string(), "urgent".to_string()];
         task.priority = "high".to_string();
         task.due = Some("2026-06-15".to_string());
@@ -185,7 +189,7 @@ mod tests {
         assert_eq!(task.priority, "medium");
         assert!(task.tags.is_empty());
         assert!(task.depends_on.is_empty());
-        assert!(task.project.is_none());
+        assert!(task.project_id.is_none());
         assert_eq!(task.order, 0);
         assert_eq!(task.estimated_minutes, None);
         assert_eq!(task.tracked_minutes, 0);

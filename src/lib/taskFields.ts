@@ -46,7 +46,7 @@ function sameTags(a: string[], b: string[]): boolean {
 export function seriesSharedFieldsChanged(original: Task, edited: Task): boolean {
   return (
     original.title !== edited.title ||
-    original.project !== edited.project ||
+    original.project_id !== edited.project_id ||
     original.priority !== edited.priority ||
     original.estimated_minutes !== edited.estimated_minutes ||
     original.notes !== edited.notes ||

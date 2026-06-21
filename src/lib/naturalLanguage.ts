@@ -3,7 +3,16 @@ import type { DueRule, RecurrenceFrequency } from "./recurrence";
 export interface ParsedTaskInput {
   title: string;
   tags: string[];
+  /** The display name of the project this task is filed under, resolved from typed/autocompleted text — see `projectId`. */
   project?: string;
+  /**
+   * The id of the project this task should actually be saved under, once
+   * resolved (the parser itself never sets this — only `AddTaskModal`
+   * does, after resolving `project` against the loaded project list — see
+   * its `handleSubmit`). Mirrors how `dueRule` is also populated after
+   * parsing, not by the parser itself.
+   */
+  projectId?: string;
   /** The id of a `PriorityLevel` (see `Settings.priorities`). */
   priority?: string;
   /** The id of a `StatusDefinition` (see `Settings.statuses`), from an `@status` quick-add token. */

@@ -6,7 +6,8 @@ export interface Task {
   title: string;
   /** The id of a user-defined `StatusDefinition` (see `Settings.statuses`). */
   status: string;
-  project?: string;
+  /** The id of the `Project` this task belongs to. */
+  project_id?: string;
   tags: string[];
   /** The id of a user-defined `PriorityLevel` (see `Settings.priorities`). */
   priority: string;
@@ -83,6 +84,8 @@ export interface Project {
   id: string;
   name: string;
   color: string;
+  /** The id of this project's parent, or `undefined` for a top-level project. Nesting is arbitrary depth. */
+  parent_id?: string;
   order: number;
   created: string;
   board: ProjectBoard;
@@ -109,7 +112,7 @@ export interface Series {
   generated_until: string;
   active: boolean;
   title: string;
-  project?: string;
+  project_id?: string;
   priority: string;
   tags: string[];
   estimated_minutes?: number;
@@ -152,9 +155,9 @@ export interface StatusDefinition {
  * the done status; the cancelled status is optional and, if set, differs from
  * the done status.
  *
- * `default_project` names the project a new task is filed under when no
- * project was specified (and no project-scoped board supplied one); the
- * backend never creates or saves a task with an empty/missing project.
+ * `default_project_id` is the id of the project a new task is filed under
+ * when no project was specified (and no project-scoped board supplied one);
+ * the backend never creates or saves a task with an empty/missing project.
  */
 export interface Settings {
   priorities: PriorityLevel[];
@@ -162,7 +165,7 @@ export interface Settings {
   defaults: TaskDefaults;
   done_status: string;
   cancelled_status?: string;
-  default_project: string;
+  default_project_id: string;
   /** Global default for whether Week view shows a "previous weeks" column. See `ProjectBoard.show_previous_weeks`. */
   show_previous_weeks_column: boolean;
   /** Global OKLCH lightness for "color code" mode's Kanban card background. See `ProjectBoard.card_lightness`. */

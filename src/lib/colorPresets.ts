@@ -49,23 +49,15 @@ function toHexByte(channel: number): string {
 }
 
 /**
- * Converts a CSS `oklch(...)` color to its 6-digit hex equivalent, using the
- * OKLab -> linear sRGB matrices from the CSS Color 4 specification. Already-hex
- * colors are lowercased and returned as-is; any other format is returned
- * unchanged (the caller's existing `CSS.supports` check flags those as invalid).
+ * Converts OKLCH coordinates to linear-light sRGB channels (not yet
+ * gamma-encoded or clamped to `[0, 1]`), using the OKLab -> linear sRGB
+ * matrices from the CSS Color 4 specification. Shared by `cssColorToHex`
+ * (which gamma-encodes and clamps the result) and `shadesOf`'s gamut check
+ * (which needs the unclamped channels to detect when clamping would distort
+ * hue, before that clamping happens).
  */
-export function cssColorToHex(value: string): string {
-  const trimmed = value.trim();
-  if (isHexColor(trimmed)) return trimmed.toLowerCase();
-
-  const match = OKLCH_PATTERN.exec(trimmed);
-  if (!match) return value;
-
-  const [, lightnessRaw, percentSign, chromaRaw, hueRaw] = match;
-  const lightness = percentSign ? Number(lightnessRaw) / 100 : Number(lightnessRaw);
-  const chroma = Number(chromaRaw);
-  const hueRadians = (Number(hueRaw) * Math.PI) / 180;
-
+function oklchToLinearSrgb(lightness: number, chroma: number, hueDegrees: number): [number, number, number] {
+  const hueRadians = (hueDegrees * Math.PI) / 180;
   const a = chroma * Math.cos(hueRadians);
   const b = chroma * Math.sin(hueRadians);
 
@@ -80,6 +72,28 @@ export function cssColorToHex(value: string): string {
   const red = 4.0767416621 * long - 3.3077115913 * mid + 0.2309699292 * short;
   const green = -1.2684380046 * long + 2.6097574011 * mid - 0.3413193965 * short;
   const blue = -0.0041960863 * long - 0.7034186147 * mid + 1.7076147010 * short;
+
+  return [red, green, blue];
+}
+
+/**
+ * Converts a CSS `oklch(...)` color to its 6-digit hex equivalent.
+ * Already-hex colors are lowercased and returned as-is; any other format is
+ * returned unchanged (the caller's existing `CSS.supports` check flags those
+ * as invalid).
+ */
+export function cssColorToHex(value: string): string {
+  const trimmed = value.trim();
+  if (isHexColor(trimmed)) return trimmed.toLowerCase();
+
+  const match = OKLCH_PATTERN.exec(trimmed);
+  if (!match) return value;
+
+  const [, lightnessRaw, percentSign, chromaRaw, hueRaw] = match;
+  const lightness = percentSign ? Number(lightnessRaw) / 100 : Number(lightnessRaw);
+  const chroma = Number(chromaRaw);
+
+  const [red, green, blue] = oklchToLinearSrgb(lightness, chroma, Number(hueRaw));
 
   return `#${toHexByte(srgbGammaEncode(red))}${toHexByte(srgbGammaEncode(green))}${toHexByte(srgbGammaEncode(blue))}`;
 }
@@ -166,6 +180,64 @@ export function neonCardColor(hex: string, lightness: number, chromaBoost = 1): 
  */
 export const NEON_CARD_LIGHTNESS = 0.5;
 export const NEON_CARD_CHROMA_BOOST = 1.55;
+
+/** Lightness range `shadesOf` spreads its suggestions across — stays clear of near-black/near-white extremes where hue becomes visually indistinct. */
+const SHADE_MIN_LIGHTNESS = 0.3;
+const SHADE_MAX_LIGHTNESS = 0.7;
+
+/** Returns `true` if all three linear-sRGB channels are within `[0, 1]` (within a small tolerance for floating-point error) — i.e. representable without per-channel clamping, which would otherwise distort hue. */
+function isInGamut(rgb: readonly [number, number, number]): boolean {
+  const tolerance = 1e-4;
+  return rgb.every((channel) => channel >= -tolerance && channel <= 1 + tolerance);
+}
+
+/**
+ * Returns the largest chroma in `[0, chroma]` (at the given lightness/hue)
+ * that stays within the sRGB gamut, via binary search. Used by `shadesOf` so
+ * its hex output never needs the per-channel clamping `cssColorToHex` would
+ * otherwise apply for an out-of-gamut color — clamping each channel
+ * independently shifts the resulting hue away from the parent's, which is
+ * exactly what `shadesOf` exists to avoid.
+ */
+function maxInGamutChroma(lightness: number, chroma: number, hueDegrees: number): number {
+  if (chroma <= 0 || isInGamut(oklchToLinearSrgb(lightness, chroma, hueDegrees))) return chroma;
+
+  let low = 0;
+  let high = chroma;
+  for (let i = 0; i < 20; i++) {
+    const mid = (low + high) / 2;
+    if (isInGamut(oklchToLinearSrgb(lightness, mid, hueDegrees))) {
+      low = mid;
+    } else {
+      high = mid;
+    }
+  }
+  return low;
+}
+
+/**
+ * Returns `count` color suggestions derived from `parentHex`'s hue and
+ * chroma, varying only lightness, spread evenly across
+ * `[SHADE_MIN_LIGHTNESS, SHADE_MAX_LIGHTNESS]` — the model for a
+ * subproject's color picker defaults, so its suggested colors read as
+ * "shades of the parent" rather than unrelated hues. Built on
+ * `neonCardColor` (same hue/chroma, different fixed lightness) — the
+ * existing precedent for this exact kind of derivation — converted to hex
+ * since `Project.color` is hex-only. Chroma is reduced per-shade (via
+ * `maxInGamutChroma`) when the parent's chroma would otherwise fall outside
+ * the sRGB gamut at that lightness, so the hue stays true to the parent
+ * across the whole range rather than drifting from clamped channels.
+ */
+export function shadesOf(parentHex: string, count: number): string[] {
+  const { c: parentChroma, h: hue } = hexToOklch(parentHex);
+  const step = count > 1 ? (SHADE_MAX_LIGHTNESS - SHADE_MIN_LIGHTNESS) / (count - 1) : 0;
+  return Array.from({ length: count }, (_, index) => {
+    const lightness = SHADE_MIN_LIGHTNESS + step * index;
+    const safeChromaBoost =
+      parentChroma > 0 ? maxInGamutChroma(lightness, parentChroma, hue) / parentChroma : 1;
+    return cssColorToHex(neonCardColor(parentHex, lightness, safeChromaBoost));
+  });
+}
 
 /**
  * Same idea as `NEON_CARD_LIGHTNESS`/`NEON_CARD_CHROMA_BOOST`, but for Week

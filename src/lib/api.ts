@@ -15,10 +15,10 @@ export async function listTasks(): Promise<Task[]> {
   return invoke<Task[]>("list_tasks");
 }
 
-export async function createTask(input: ParsedTaskInput): Promise<Task> {
+export async function createTask(input: ParsedTaskInput, projectId?: string): Promise<Task> {
   return invoke<Task>("create_task", {
     title: input.title,
-    project: input.project,
+    projectId,
     tags: input.tags.length > 0 ? input.tags : undefined,
     priority: input.priority,
     status: input.status,
@@ -43,10 +43,11 @@ export async function createRecurringTask(
   frequency: RecurrenceFrequency,
   endDate: string | undefined,
   dueRule: DueRule | undefined,
+  projectId?: string,
 ): Promise<Task[]> {
   return invoke<Task[]>("create_recurring_task", {
     title: input.title,
-    project: input.project,
+    projectId,
     tags: input.tags.length > 0 ? input.tags : undefined,
     priority: input.priority,
     status: input.status,
@@ -130,8 +131,8 @@ export async function listProjects(): Promise<Project[]> {
   return invoke<Project[]>("list_projects");
 }
 
-export async function createProject(name: string, color?: string): Promise<Project> {
-  return invoke<Project>("create_project", { name, color });
+export async function createProject(name: string, color?: string, parentId?: string): Promise<Project> {
+  return invoke<Project>("create_project", { name, color, parentId });
 }
 
 export async function updateProject(project: Project): Promise<Project> {

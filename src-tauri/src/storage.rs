@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::Path;
 
+use crate::project::Project;
 use crate::task::{Task, TaskError};
 
 #[derive(Debug, thiserror::Error)]
@@ -209,6 +210,89 @@ pub fn migrate_scheduled_dates(dir: &Path) -> Result<(), StorageError> {
     Ok(())
 }
 
+/// Extracts the legacy `project` frontmatter key (a plain project name
+/// string, from before `Task.project_id` replaced it) directly from
+/// `content`'s raw YAML frontmatter, without going through
+/// `Task::from_markdown` — which can no longer see this key at all, since
+/// `Task` itself has no `project` field anymore (only `project_id`).
+/// Returns `None` if there's no frontmatter, no `project` key, or the key
+/// isn't a plain string.
+fn read_legacy_project_name(content: &str) -> Option<String> {
+    let after_open = content.strip_prefix("---\n")?;
+    let end = after_open.find("\n---")?;
+    let frontmatter_yaml = &after_open[..end];
+    let value: serde_yaml::Value = serde_yaml::from_str(frontmatter_yaml).ok()?;
+    value.get("project")?.as_str().map(str::to_string)
+}
+
+/// One-time migration: rewrites every task markdown file in `tasks_dir`
+/// that still has the legacy `project` frontmatter key to use `project_id`
+/// instead, resolved by case-insensitive name lookup against `projects`
+/// (see [`read_legacy_project_name`]). Idempotent — a task with no legacy
+/// `project` key (already migrated, or created fresh after this field
+/// existed) is left completely untouched, never rewritten. A task whose
+/// legacy name doesn't match any project keeps `project_id` unset and gets
+/// a logged warning naming the task and the unmatched name, rather than
+/// silently losing the link — real user data is at stake here, so an
+/// unresolvable reference must be visible, not swallowed.
+pub fn migrate_task_project_names_to_ids(
+    tasks_dir: &Path,
+    projects: &[Project],
+) -> Result<(), StorageError> {
+    if !tasks_dir.exists() {
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(tasks_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+            continue;
+        }
+
+        let content = match fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(err) => {
+                eprintln!(
+                    "skipping unreadable task file {} during project-id migration: {err}",
+                    path.display()
+                );
+                continue;
+            }
+        };
+
+        let Some(legacy_name) = read_legacy_project_name(&content) else {
+            continue;
+        };
+
+        let mut task = match Task::from_markdown(&content) {
+            Ok(task) => task,
+            Err(err) => {
+                eprintln!(
+                    "skipping unreadable task file {} during project-id migration: {err}",
+                    path.display()
+                );
+                continue;
+            }
+        };
+
+        match projects
+            .iter()
+            .find(|p| p.name.eq_ignore_ascii_case(&legacy_name))
+        {
+            Some(matched) => task.project_id = Some(matched.id.clone()),
+            None => eprintln!(
+                "task '{}' ({}) referenced unknown project '{legacy_name}' during project-id migration — leaving its project unset",
+                task.title, task.id
+            ),
+        }
+
+        save_task(tasks_dir, &task)?;
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -334,7 +418,7 @@ mod tests {
         save_task(dir.path(), &task).unwrap();
 
         task.title = "Updated title".to_string();
-        task.project = Some("Inbox/Personal".to_string());
+        task.project_id = Some("inbox-personal-id".to_string());
         task.tags = vec!["urgent".to_string()];
         task.priority = "high".to_string();
         task.due = Some("2026-07-01".to_string());
@@ -350,13 +434,13 @@ mod tests {
     fn update_task_round_trips_cleared_optional_fields() {
         let dir = tempdir().unwrap();
         let mut task = Task::new("Original title".to_string());
-        task.project = Some("Inbox/Personal".to_string());
+        task.project_id = Some("inbox-personal-id".to_string());
         task.tags = vec!["urgent".to_string()];
         task.due = Some("2026-07-01".to_string());
         task.scheduled = Some("2026-06-15".to_string());
         save_task(dir.path(), &task).unwrap();
 
-        task.project = None;
+        task.project_id = None;
         task.tags = Vec::new();
         task.due = None;
         task.scheduled = None;
@@ -364,7 +448,7 @@ mod tests {
 
         let loaded = load_task(dir.path(), &task.id).unwrap();
 
-        assert_eq!(loaded.project, None);
+        assert_eq!(loaded.project_id, None);
         assert!(loaded.tags.is_empty());
         assert_eq!(loaded.due, None);
         assert_eq!(loaded.scheduled, None);
@@ -558,5 +642,130 @@ mod tests {
         assert!(result.is_ok());
         let loaded = load_task(dir.path(), &task.id).unwrap();
         assert!(loaded.scheduled.is_some());
+    }
+
+    #[test]
+    fn read_legacy_project_name_extracts_the_project_key() {
+        let content = "---\nid: abc\ntitle: Demo\nproject: Homework\ncreated: 2026-06-11T10:00:00+00:00\n---\n\nNotes.";
+
+        let name = read_legacy_project_name(content);
+
+        assert_eq!(name, Some("Homework".to_string()));
+    }
+
+    #[test]
+    fn read_legacy_project_name_returns_none_when_absent() {
+        let content =
+            "---\nid: abc\ntitle: Demo\ncreated: 2026-06-11T10:00:00+00:00\n---\n\nNotes.";
+
+        let name = read_legacy_project_name(content);
+
+        assert_eq!(name, None);
+    }
+
+    #[test]
+    fn read_legacy_project_name_returns_none_for_already_migrated_content() {
+        let content = "---\nid: abc\ntitle: Demo\nproject_id: some-id\ncreated: 2026-06-11T10:00:00+00:00\n---\n\nNotes.";
+
+        let name = read_legacy_project_name(content);
+
+        assert_eq!(name, None);
+    }
+
+    #[test]
+    fn read_legacy_project_name_returns_none_for_content_with_no_frontmatter() {
+        let name = read_legacy_project_name("Just plain markdown, no frontmatter.");
+
+        assert_eq!(name, None);
+    }
+
+    #[test]
+    fn migrate_task_project_names_to_ids_resolves_a_matching_project() {
+        let dir = tempdir().unwrap();
+        let mut task = Task::new("Read chapter 1".to_string());
+        let task_id = task.id.clone();
+        save_task(dir.path(), &task).unwrap();
+        // Simulate a legacy file by writing the raw markdown directly,
+        // bypassing `Task::to_markdown` (which would write `project_id`,
+        // not the legacy `project` key).
+        let legacy_content = format!(
+            "---\nid: {task_id}\ntitle: Read chapter 1\nproject: Homework\ncreated: {}\n---\n\n",
+            task.created
+        );
+        fs::write(dir.path().join(format!("{task_id}.md")), legacy_content).unwrap();
+        task.project_id = None;
+
+        let homework = Project::new("Homework".to_string(), "#111111".to_string(), 1);
+        let homework_id = homework.id.clone();
+        let projects = vec![homework];
+
+        migrate_task_project_names_to_ids(dir.path(), &projects).unwrap();
+
+        let migrated = load_task(dir.path(), &task_id).unwrap();
+        assert_eq!(migrated.project_id, Some(homework_id));
+    }
+
+    #[test]
+    fn migrate_task_project_names_to_ids_matches_case_insensitively() {
+        let dir = tempdir().unwrap();
+        let task_id = "task-1".to_string();
+        let legacy_content = format!(
+            "---\nid: {task_id}\ntitle: Demo\nproject: HOMEWORK\ncreated: 2026-06-11T10:00:00+00:00\n---\n\n"
+        );
+        fs::write(dir.path().join(format!("{task_id}.md")), legacy_content).unwrap();
+
+        let homework = Project::new("Homework".to_string(), "#111111".to_string(), 1);
+        let homework_id = homework.id.clone();
+        let projects = vec![homework];
+
+        migrate_task_project_names_to_ids(dir.path(), &projects).unwrap();
+
+        let migrated = load_task(dir.path(), &task_id).unwrap();
+        assert_eq!(migrated.project_id, Some(homework_id));
+    }
+
+    #[test]
+    fn migrate_task_project_names_to_ids_leaves_unmatched_tasks_unset_without_failing() {
+        let dir = tempdir().unwrap();
+        let task_id = "task-1".to_string();
+        let legacy_content = format!(
+            "---\nid: {task_id}\ntitle: Demo\nproject: DoesNotExist\ncreated: 2026-06-11T10:00:00+00:00\n---\n\n"
+        );
+        fs::write(dir.path().join(format!("{task_id}.md")), legacy_content).unwrap();
+        let projects: Vec<Project> = Vec::new();
+
+        let result = migrate_task_project_names_to_ids(dir.path(), &projects);
+
+        assert!(result.is_ok());
+        let migrated = load_task(dir.path(), &task_id).unwrap();
+        assert_eq!(migrated.project_id, None);
+    }
+
+    #[test]
+    fn migrate_task_project_names_to_ids_is_idempotent() {
+        let dir = tempdir().unwrap();
+        let mut task = Task::new("Already migrated".to_string());
+        task.project_id = Some("existing-id".to_string());
+        save_task(dir.path(), &task).unwrap();
+        let projects = vec![Project::new(
+            "Unrelated".to_string(),
+            "#222222".to_string(),
+            1,
+        )];
+
+        migrate_task_project_names_to_ids(dir.path(), &projects).unwrap();
+
+        let unchanged = load_task(dir.path(), &task.id).unwrap();
+        assert_eq!(unchanged.project_id, Some("existing-id".to_string()));
+    }
+
+    #[test]
+    fn migrate_task_project_names_to_ids_returns_ok_for_missing_directory() {
+        let dir = tempdir().unwrap();
+        let missing = dir.path().join("does-not-exist");
+
+        let result = migrate_task_project_names_to_ids(&missing, &[]);
+
+        assert!(result.is_ok());
     }
 }

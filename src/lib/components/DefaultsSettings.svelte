@@ -1,5 +1,6 @@
 <script lang="ts">
   import { hoursAndMinutesFromMinutes, minutesFromHoursAndMinutes, normalizeHoursMinutes } from "$lib/estimatedTime";
+  import { projectsState } from "$lib/projects.svelte";
   import { DUE_RELATIVE_DATE_OPTIONS, SCHEDULED_RELATIVE_DATE_OPTIONS } from "$lib/relativeDates";
   import { persistSettings, settingsState } from "$lib/settings.svelte";
   import { formatTags, parseTags } from "$lib/taskFields";
@@ -15,7 +16,7 @@
   let errorMessage = $state("");
   let isSaving = $state(false);
 
-  let baselineDefaultProject = $derived(settingsState.current?.default_project ?? "");
+  let baselineDefaultProject = $derived(settingsState.current?.default_project_id ?? "");
   let baselineTags = $derived(formatTags(settingsState.current?.defaults.tags ?? []));
   let baselineDue = $derived(settingsState.current?.defaults.due ?? "");
   let baselineScheduled = $derived(settingsState.current?.defaults.scheduled ?? "");
@@ -73,9 +74,9 @@
   async function save() {
     if (!settingsState.current || !initialized) return;
 
-    const defaultProject = draftDefaultProject.trim();
+    const defaultProject = draftDefaultProject;
     if (!defaultProject) {
-      errorMessage = "Default project name cannot be empty";
+      errorMessage = "Default project must be selected";
       return;
     }
 
@@ -89,7 +90,7 @@
 
     isSaving = true;
     try {
-      await persistSettings({ ...settingsState.current, default_project: defaultProject, defaults });
+      await persistSettings({ ...settingsState.current, default_project_id: defaultProject, defaults });
       draftDefaultProject = defaultProject;
       draftTags = formatTags(defaults.tags);
       draftDue = defaults.due ?? "";
@@ -115,13 +116,12 @@
     <p class="loading">Loading defaults…</p>
   {:else}
     <div class="field">
-      <label for="default-project">Default project name</label>
-      <input
-        id="default-project"
-        type="text"
-        placeholder="e.g. General"
-        bind:value={draftDefaultProject}
-      />
+      <label for="default-project">Default project</label>
+      <select id="default-project" bind:value={draftDefaultProject}>
+        {#each projectsState.items as candidate (candidate.id)}
+          <option value={candidate.id}>{candidate.name}</option>
+        {/each}
+      </select>
     </div>
 
     <div class="field">

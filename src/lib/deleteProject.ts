@@ -1,28 +1,44 @@
+import { descendantsOf } from "./projectTree";
 import type { Project, ProjectTaskStrategy, Task } from "./types";
 
 /**
- * Returns `true` if `projectName` is the configured default project
- * (case-insensitive, ignoring surrounding whitespace) - mirrors
+ * Returns `true` if `projectId` is the configured default project - mirrors
  * `ensure_not_default_project` in `src-tauri/src/commands.rs`. The default
  * project can never be deleted.
  */
-export function isDefaultProject(projectName: string, defaultProjectName: string): boolean {
-  return projectName.trim().toLowerCase() === defaultProjectName.trim().toLowerCase();
+export function isDefaultProject(projectId: string, defaultProjectId: string): boolean {
+  return projectId === defaultProjectId;
 }
 
 /**
- * Returns the tasks currently filed under `projectName` (matched
- * case-insensitively) - mirrors `tasks_for_project` in
- * `src-tauri/src/commands.rs`.
+ * Returns the tasks currently filed under `projectId` - mirrors
+ * `tasks_for_projects` (singular form) in `src-tauri/src/commands.rs`.
  */
-export function tasksForProject(tasks: Task[], projectName: string): Task[] {
-  const target = projectName.toLowerCase();
-  return tasks.filter((task) => (task.project ?? "").toLowerCase() === target);
+export function tasksForProject(tasks: Task[], projectId: string): Task[] {
+  return tasks.filter((task) => task.project_id === projectId);
 }
 
-/** Projects that can be picked as a reassignment target: every project other than the one being deleted. */
+/**
+ * Returns the tasks currently filed under any id in `projectIds` - mirrors
+ * `tasks_for_projects` in `src-tauri/src/commands.rs`, used when previewing
+ * or performing a cascading delete across a project and its descendants.
+ */
+export function tasksForProjects(tasks: Task[], projectIds: string[]): Task[] {
+  return tasks.filter((task) => task.project_id !== undefined && projectIds.includes(task.project_id));
+}
+
+/**
+ * Projects that can be picked as a reassignment target: every project
+ * other than the one being deleted and its own descendants — both are
+ * about to be deleted too, so reassigning into either would just create
+ * tasks with nowhere to go once the delete completes.
+ */
 export function reassignTargets(projects: Project[], excludeProjectId: string): Project[] {
-  return projects.filter((project) => project.id !== excludeProjectId);
+  const excludedIds = new Set([
+    excludeProjectId,
+    ...descendantsOf(projects, excludeProjectId).map((p) => p.id),
+  ]);
+  return projects.filter((project) => !excludedIds.has(project.id));
 }
 
 export type DeleteStrategyKind = "reassign" | "archive" | "delete";

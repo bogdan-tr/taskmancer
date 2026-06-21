@@ -189,7 +189,9 @@
     draftEstimatedMinutes = normalized.minutes;
   }
 
-  let defaultProjectName = $derived(settingsState.current?.default_project ?? "General");
+  let defaultProjectName = $derived(
+    projectsState.items.find((p) => p.id === settingsState.current?.default_project_id)?.name ?? "General",
+  );
   let globalDefaults = $derived(settingsState.current?.defaults ?? { tags: [] });
 
   /**
@@ -263,7 +265,7 @@
     draftEstimatedMinutes = resolved?.minutes;
   });
 
-  let previewProjectColor = $derived(resolveProjectColor(preview.project, projectsState.items));
+  let previewProjectColor = $derived(resolveProjectColor(matchedProject?.id, projectsState.items));
   // Falls back to the standard ink color for very light project colors (e.g.
   // a pale cream), which would otherwise be illegible as text — see TaskCard's
   // `projectChipTextColor` for the same fix applied to the board chip.
@@ -408,16 +410,25 @@
   async function handleSubmit(event: Event) {
     event.preventDefault();
     if (!parsed.title) return;
+    // `matchedProject` already resolves `preview.project` (a name) against
+    // the loaded project list (see its own `$derived` above) for the
+    // preview pane — reused here as the actual submission's id. A typed
+    // name with no match resolves to `undefined`, which the backend
+    // resolves to the configured default project, same as leaving the
+    // project blank entirely.
+    const projectId = matchedProject?.id;
     if (effectiveParsed.recurrence) {
       await onSubmit({
         ...effectiveParsed,
         project: preview.project,
+        projectId,
         dueRule: resolveSeriesDueRule(effectiveParsed.due, effectiveParsed.dueRule, preview.scheduledDate),
       });
     } else {
       await onSubmit({
         ...effectiveParsed,
         project: preview.project,
+        projectId,
         due: resolveNonRecurringDue(effectiveParsed.due, effectiveParsed.dueRule, preview.scheduledDate),
         dueRule: undefined,
       });

@@ -102,23 +102,18 @@ fn resolve_default_status(settings: &Settings, project_chain: &[&Project]) -> St
         .unwrap_or_else(|| "backlog".to_string())
 }
 
-/// Looks up `project_name` case-insensitively among `projects`, or `None` if
-/// no project matches (e.g. the named project doesn't exist yet and will be
-/// backfilled by `list_projects`).
-fn find_project<'a>(projects: &'a [Project], project_name: &str) -> Option<&'a Project> {
-    projects
-        .iter()
-        .find(|p| p.name.eq_ignore_ascii_case(project_name))
+/// Looks up `project_id` among `projects`, or `None` if no project with
+/// that id exists (e.g. it was deleted after the frontend last refreshed
+/// its project list).
+fn find_project<'a>(projects: &'a [Project], project_id: &str) -> Option<&'a Project> {
+    projects.iter().find(|p| p.id == project_id)
 }
 
-/// Resolves the project name a task should be saved with: `project`, trimmed,
-/// if it's non-empty, otherwise `settings.default_project`. Ensures a task can
-/// never be created or updated with an empty/missing project.
-fn resolve_project_name(project: Option<String>, settings: &Settings) -> String {
-    match project.as_deref().map(str::trim) {
-        Some(trimmed) if !trimmed.is_empty() => trimmed.to_string(),
-        _ => settings.default_project.trim().to_string(),
-    }
+/// Resolves the project id a task should be saved with: `project_id` if
+/// it's `Some`, otherwise `settings.default_project_id`. Ensures a task can
+/// never be created or updated without a project id.
+fn resolve_project_id(project_id: Option<String>, settings: &Settings) -> String {
+    project_id.unwrap_or_else(|| settings.default_project_id.clone())
 }
 
 /// Merges `defaults` into `explicit`, appending any default tag not already
@@ -236,15 +231,15 @@ fn resolve_creation_defaults(
 #[allow(clippy::too_many_arguments)]
 fn apply_create_overrides(
     task: &mut Task,
-    project: Option<String>,
+    project_id: Option<String>,
     tags: Option<Vec<String>>,
     priority: Option<String>,
     due: Option<String>,
     scheduled: String,
     estimated_minutes: Option<u32>,
 ) {
-    if let Some(project) = project {
-        task.project = Some(project);
+    if let Some(project_id) = project_id {
+        task.project_id = Some(project_id);
     }
     if let Some(tags) = tags {
         task.tags = tags;
@@ -261,15 +256,15 @@ fn apply_create_overrides(
     }
 }
 
-/// Creates and saves a new task. An empty/missing `project` falls back to
-/// `settings.default_project` (see [`resolve_project_name`]), so a task can
+/// Creates and saves a new task. A missing `project_id` falls back to
+/// `settings.default_project_id` (see [`resolve_project_id`]), so a task can
 /// never be created without a project.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub fn create_task(
     state: State<AppState>,
     title: String,
-    project: Option<String>,
+    project_id: Option<String>,
     tags: Option<Vec<String>>,
     priority: Option<String>,
     status: Option<String>,
@@ -294,11 +289,11 @@ pub fn create_task(
         None => resolve_default_priority(&settings),
     };
 
-    let project_name = resolve_project_name(project, &settings);
+    let resolved_project_id = resolve_project_id(project_id, &settings);
 
     let projects =
         project_storage::list_projects(&state.projects_file).map_err(|e| e.to_string())?;
-    let matched_project = find_project(&projects, &project_name);
+    let matched_project = find_project(&projects, &resolved_project_id);
     let project_chain: Vec<&Project> = matched_project
         .map(|p| project_tree::self_and_ancestors(&projects, &p.id))
         .unwrap_or_default();
@@ -323,7 +318,7 @@ pub fn create_task(
     task.status = status;
     apply_create_overrides(
         &mut task,
-        Some(project_name),
+        Some(resolved_project_id),
         Some(final_tags),
         Some(priority),
         resolved_due,
@@ -347,7 +342,7 @@ fn build_series_occurrence(
 ) -> Task {
     let mut task = Task::new(series.title.clone());
     task.status = resolve_default_status(settings, project_chain);
-    task.project = series.project.clone();
+    task.project_id = series.project_id.clone();
     task.tags = series.tags.clone();
     task.priority = series.priority.clone();
     task.estimated_minutes = series.estimated_minutes;
@@ -431,7 +426,7 @@ fn generate_series_occurrences(
 pub fn create_recurring_task(
     state: State<AppState>,
     title: String,
-    project: Option<String>,
+    project_id: Option<String>,
     tags: Option<Vec<String>>,
     priority: Option<String>,
     status: Option<String>,
@@ -460,11 +455,11 @@ pub fn create_recurring_task(
         None => resolve_default_priority(&settings),
     };
 
-    let project_name = resolve_project_name(project, &settings);
+    let resolved_project_id = resolve_project_id(project_id, &settings);
 
     let projects =
         project_storage::list_projects(&state.projects_file).map_err(|e| e.to_string())?;
-    let matched_project = find_project(&projects, &project_name);
+    let matched_project = find_project(&projects, &resolved_project_id);
     let project_chain: Vec<&Project> = matched_project
         .map(|p| project_tree::self_and_ancestors(&projects, &p.id))
         .unwrap_or_default();
@@ -523,7 +518,7 @@ pub fn create_recurring_task(
         end_date,
         series_due_rule,
         title.clone(),
-        Some(project_name.clone()),
+        Some(resolved_project_id.clone()),
         priority.clone(),
         final_tags.clone(),
         resolved_estimated_minutes,
@@ -541,7 +536,7 @@ pub fn create_recurring_task(
         first_task.status = status.clone();
         apply_create_overrides(
             &mut first_task,
-            Some(project_name),
+            Some(resolved_project_id),
             Some(final_tags),
             Some(priority),
             resolved_due,
@@ -609,9 +604,9 @@ pub fn ensure_occurrences_until(
     }
 
     let project_chain: Vec<&Project> = series
-        .project
+        .project_id
         .as_deref()
-        .and_then(|name| find_project(&projects, name))
+        .and_then(|id| find_project(&projects, id))
         .map(|p| project_tree::self_and_ancestors(&projects, &p.id))
         .unwrap_or_default();
 
@@ -652,9 +647,9 @@ fn validate_due_creation_field(value: &Option<String>) -> Result<(), String> {
 }
 
 /// Applies `update_task`'s editable fields from `task` onto `existing`:
-/// `title` (already trimmed by the caller), `project_name` (the already
-/// project-fallback-resolved name — see [`resolve_project_name`] — rather
-/// than `task.project` directly), `tags`, `priority`, `status`, `due`,
+/// `title` (already trimmed by the caller), `project_id` (the already
+/// project-fallback-resolved id — see [`resolve_project_id`] — rather
+/// than `task.project_id` directly), `tags`, `priority`, `status`, `due`,
 /// `scheduled`, `estimated_minutes`, and `notes`. `status` is a normal
 /// editable field on this path: `TaskEditDialog.svelte`'s status dropdown
 /// (used from the week view's "Edit" button) saves through `update_task`,
@@ -664,9 +659,9 @@ fn validate_due_creation_field(value: &Option<String>) -> Result<(), String> {
 /// overwrite them or redirect the write to a different task's file;
 /// `tracked_minutes` specifically has no user-facing edit control at all
 /// (only the future time-tracking infrastructure writes it).
-fn apply_task_update(existing: &mut Task, title: String, project_name: String, task: Task) {
+fn apply_task_update(existing: &mut Task, title: String, project_id: String, task: Task) {
     existing.title = title;
-    existing.project = Some(project_name);
+    existing.project_id = Some(project_id);
     existing.tags = task.tags;
     existing.priority = task.priority;
     existing.status = task.status;
@@ -683,8 +678,8 @@ fn apply_task_update(existing: &mut Task, title: String, project_name: String, t
 /// malformed `task` payload from the frontend cannot corrupt these fields or
 /// redirect the write to a different task's file.
 ///
-/// An empty/missing `task.project` falls back to `settings.default_project`
-/// (see [`resolve_project_name`]), so a task can never be saved without a
+/// A missing `task.project_id` falls back to `settings.default_project_id`
+/// (see [`resolve_project_id`]), so a task can never be saved without a
 /// project.
 #[tauri::command]
 pub fn update_task(state: State<AppState>, task: Task) -> Result<Task, String> {
@@ -703,9 +698,9 @@ pub fn update_task(state: State<AppState>, task: Task) -> Result<Task, String> {
     validate_priority_id(&settings, &task.priority)?;
     validate_status_id(&settings, &task.status)?;
 
-    let project_name = resolve_project_name(task.project.clone(), &settings);
+    let resolved_project_id = resolve_project_id(task.project_id.clone(), &settings);
     let mut existing = storage::load_task(&state.tasks_dir, &task.id).map_err(|e| e.to_string())?;
-    apply_task_update(&mut existing, title, project_name, task);
+    apply_task_update(&mut existing, title, resolved_project_id, task);
 
     storage::update_task(&state.tasks_dir, &existing).map_err(|e| e.to_string())?;
     Ok(existing)
@@ -717,14 +712,14 @@ pub fn delete_task(state: State<AppState>, id: String) -> Result<(), String> {
 }
 
 /// Copies the template fields a `Series` shares across every occurrence
-/// (title, project, priority, tags, estimated time, notes — see `Series`'s
+/// (title, project_id, priority, tags, estimated time, notes — see `Series`'s
 /// own doc comment for why `status`/`due`/`scheduled` are excluded) from
 /// `task` onto `series`. Used by [`update_series_occurrence`]'s `"future"`
 /// scope to fold an edit back into the template, so occurrences generated
 /// *after* this edit also pick it up.
 fn apply_series_template_update(series: &mut Series, task: &Task) {
     series.title = task.title.clone();
-    series.project = task.project.clone();
+    series.project_id = task.project_id.clone();
     series.priority = task.priority.clone();
     series.tags = task.tags.clone();
     series.estimated_minutes = task.estimated_minutes;
@@ -738,7 +733,7 @@ fn apply_series_template_update(series: &mut Series, task: &Task) {
 /// status/due/scheduled.
 fn apply_template_to_occurrence(occurrence: &mut Task, task: &Task) {
     occurrence.title = task.title.clone();
-    occurrence.project = task.project.clone();
+    occurrence.project_id = task.project_id.clone();
     occurrence.priority = task.priority.clone();
     occurrence.tags = task.tags.clone();
     occurrence.estimated_minutes = task.estimated_minutes;
@@ -814,10 +809,10 @@ pub fn update_series_occurrence(
     validate_priority_id(&settings, &task.priority)?;
     validate_status_id(&settings, &task.status)?;
 
-    let project_name = resolve_project_name(task.project.clone(), &settings);
+    let resolved_project_id = resolve_project_id(task.project_id.clone(), &settings);
     let mut existing = storage::load_task(&state.tasks_dir, &task.id).map_err(|e| e.to_string())?;
     let series_id = existing.series_id.clone();
-    apply_task_update(&mut existing, title, project_name, task);
+    apply_task_update(&mut existing, title, resolved_project_id, task);
 
     if scope == "this" {
         existing.series_id = None;
@@ -1030,9 +1025,9 @@ pub fn update_series_recurrence(
     validate_series(series)?;
 
     let project_chain: Vec<&Project> = series
-        .project
+        .project_id
         .as_deref()
-        .and_then(|name| find_project(&projects, name))
+        .and_then(|id| find_project(&projects, id))
         .map(|p| project_tree::self_and_ancestors(&projects, &p.id))
         .unwrap_or_default();
 
@@ -1121,66 +1116,43 @@ fn next_order(projects: &[Project]) -> i64 {
         .map_or(1, |max| max + 1)
 }
 
-/// Ensures every distinct, non-empty `task.project` name has a corresponding
-/// `Project` entry (matched case-insensitively against existing names).
-/// Returns the (possibly extended) project list and whether any entries were
-/// added, so callers can avoid rewriting the projects file when nothing
-/// changed. New entries get fresh ids, [`DEFAULT_PROJECT_COLOR`], and
-/// ascending `order` values starting just past the current maximum.
-fn backfill_projects(existing: Vec<Project>, tasks: &[Task]) -> (Vec<Project>, bool) {
-    let mut projects = existing;
-    let mut next = next_order(&projects);
-    let mut changed = false;
-    let mut added_names: Vec<String> = Vec::new();
-
-    for task in tasks {
-        let Some(name) = task
-            .project
-            .as_deref()
-            .map(str::trim)
-            .filter(|name| !name.is_empty())
-        else {
-            continue;
-        };
-
-        let already_known = projects.iter().any(|p| p.name.eq_ignore_ascii_case(name))
-            || added_names
-                .iter()
-                .any(|added| added.eq_ignore_ascii_case(name));
-        if already_known {
-            continue;
-        }
-
-        added_names.push(name.to_string());
-        projects.push(Project::new(
-            name.to_string(),
-            DEFAULT_PROJECT_COLOR.to_string(),
-            next,
-        ));
-        next += 1;
-        changed = true;
+/// Ensures `settings.default_project_id` references a project that actually
+/// exists, creating a new top-level "General" project (using
+/// [`DEFAULT_PROJECT_COLOR`] and the next available `order`, via the same
+/// [`next_order`] every other project-creation path uses) if it doesn't.
+/// Covers both a brand-new install (`default_project_id` seeds as an empty
+/// string — see `Settings::default`) and an upgrade from before this field
+/// existed, where the id is just stale or never resolved. Returns
+/// `Some((updated_projects, updated_settings))` if a project was created
+/// (so the caller knows both files need saving), or `None` if
+/// `default_project_id` already pointed at a real project.
+pub fn ensure_default_project(
+    projects: Vec<Project>,
+    settings: Settings,
+) -> Option<(Vec<Project>, Settings)> {
+    if projects.iter().any(|p| p.id == settings.default_project_id) {
+        return None;
     }
 
-    (projects, changed)
+    let mut projects = projects;
+    let mut settings = settings;
+    let order = next_order(&projects);
+    let project = Project::new(
+        "General".to_string(),
+        DEFAULT_PROJECT_COLOR.to_string(),
+        order,
+    );
+    settings.default_project_id = project.id.clone();
+    projects.push(project);
+    Some((projects, settings))
 }
 
-/// Returns all projects, sorted by `order`. Lazily backfills a `Project`
-/// entry for any project name referenced by a task but not yet present in
-/// the projects file, persisting the updated list only when something
-/// changed.
+/// Returns all projects, sorted by `order`.
 #[tauri::command]
 pub fn list_projects(state: State<AppState>) -> Result<Vec<Project>, String> {
-    let tasks = storage::list_tasks(&state.tasks_dir).map_err(|e| e.to_string())?;
-
     let _guard = state.projects_lock.lock().map_err(|e| e.to_string())?;
-    let existing =
+    let mut projects =
         project_storage::list_projects(&state.projects_file).map_err(|e| e.to_string())?;
-
-    let (mut projects, changed) = backfill_projects(existing, &tasks);
-    if changed {
-        project_storage::save_projects(&state.projects_file, &projects)
-            .map_err(|e| e.to_string())?;
-    }
 
     projects.sort_by_key(|p| p.order);
     Ok(projects)
@@ -1395,12 +1367,9 @@ pub fn update_project(state: State<AppState>, project: Project) -> Result<Projec
 
 /// Returns an error if `project` is the configured default project: every
 /// task without an explicit project falls back to it (see
-/// [`resolve_project_name`]), so it can never be deleted.
+/// [`resolve_project_id`]), so it can never be deleted.
 fn ensure_not_default_project(project: &Project, settings: &Settings) -> Result<(), String> {
-    if project
-        .name
-        .eq_ignore_ascii_case(settings.default_project.trim())
-    {
+    if project.id == settings.default_project_id {
         Err(format!(
             "'{}' is the default project and cannot be deleted",
             project.name
@@ -1410,17 +1379,16 @@ fn ensure_not_default_project(project: &Project, settings: &Settings) -> Result<
     }
 }
 
-/// Returns the tasks currently filed under `project_name` (matched
-/// case-insensitively, mirroring [`find_project`]) - i.e. those that need to
-/// be reassigned, archived, or deleted before `project_name` can itself be
-/// deleted.
-fn tasks_for_project<'a>(tasks: &'a [Task], project_name: &str) -> Vec<&'a Task> {
+/// Returns the tasks currently filed under any id in `project_ids` - i.e.
+/// those that need to be reassigned, archived, or deleted before the
+/// corresponding projects can themselves be deleted.
+fn tasks_for_projects<'a>(tasks: &'a [Task], project_ids: &[String]) -> Vec<&'a Task> {
     tasks
         .iter()
         .filter(|t| {
-            t.project
+            t.project_id
                 .as_deref()
-                .is_some_and(|p| p.eq_ignore_ascii_case(project_name))
+                .is_some_and(|id| project_ids.iter().any(|target| target == id))
         })
         .collect()
 }
@@ -1439,30 +1407,30 @@ pub enum ProjectTaskStrategy {
     Delete,
 }
 
-/// Applies `strategy` to every task in `tasks` (all belonging to the project
-/// identified by `deleted_project_id`, which is about to be deleted), using
-/// `tasks_dir`/`archive_dir` for file operations and `projects` to resolve a
-/// `Reassign` target's name. Returns the number of tasks affected.
+/// Applies `strategy` to every task in `tasks` (all belonging to one of the
+/// projects identified by `deleted_project_ids`, which are about to be
+/// deleted), using `tasks_dir`/`archive_dir` for file operations and
+/// `projects` to resolve a `Reassign` target's name. Returns the number of
+/// tasks affected.
 fn apply_task_strategy(
     tasks_dir: &Path,
     archive_dir: &Path,
     projects: &[Project],
-    deleted_project_id: &str,
+    deleted_project_ids: &[String],
     tasks: &[&Task],
     strategy: &ProjectTaskStrategy,
 ) -> Result<usize, String> {
     match strategy {
         ProjectTaskStrategy::Reassign { target_project_id } => {
-            if target_project_id == deleted_project_id {
-                return Err("cannot reassign tasks to the project being deleted".to_string());
+            if deleted_project_ids.contains(target_project_id) {
+                return Err("cannot reassign tasks to a project being deleted".to_string());
             }
-            let target = projects
-                .iter()
-                .find(|p| &p.id == target_project_id)
-                .ok_or_else(|| format!("target project '{target_project_id}' not found"))?;
+            if !projects.iter().any(|p| &p.id == target_project_id) {
+                return Err(format!("target project '{target_project_id}' not found"));
+            }
             for task in tasks {
                 let mut updated = (*task).clone();
-                updated.project = Some(target.name.clone());
+                updated.project_id = Some(target_project_id.clone());
                 storage::update_task(tasks_dir, &updated).map_err(|e| e.to_string())?;
             }
         }
@@ -1486,13 +1454,36 @@ fn apply_task_strategy(
 #[derive(Debug, Serialize)]
 pub struct DeleteProjectResult {
     pub affected_tasks: usize,
+    /// How many descendant subprojects were deleted along with the
+    /// requested project (0 if it had none).
+    pub deleted_subprojects: usize,
 }
 
-/// Deletes the project identified by `project_id`. The configured default
-/// project can never be deleted (see [`ensure_not_default_project`]). If the
-/// project still has tasks (matched by name, case-insensitively - see
-/// [`tasks_for_project`]), `task_strategy` is required and is applied to all
-/// of them (see [`apply_task_strategy`]) before the project itself is removed
+/// Returns the project identified by `project_id` together with all of its
+/// descendants (see [`crate::project_tree::descendants_of`]) — the full set
+/// of projects [`delete_project`] removes for a cascading delete. Empty if
+/// `project_id` doesn't exist in `projects`.
+fn projects_to_delete(projects: &[Project], project_id: &str) -> Vec<Project> {
+    let Some(target) = projects.iter().find(|p| p.id == project_id) else {
+        return Vec::new();
+    };
+    std::iter::once(target.clone())
+        .chain(
+            project_tree::descendants_of(projects, project_id)
+                .into_iter()
+                .cloned(),
+        )
+        .collect()
+}
+
+/// Deletes the project identified by `project_id` together with every
+/// descendant subproject (see [`projects_to_delete`]) — a cascading delete.
+/// The configured default project can never be deleted, nor can any project
+/// whose subtree contains it (see [`ensure_not_default_project`]). If the
+/// project or any descendant still has tasks (matched by name,
+/// case-insensitively - see [`tasks_for_projects`]), `task_strategy` is
+/// required and is applied to all of them together (see
+/// [`apply_task_strategy`]) before every project in the subtree is removed
 /// from the projects file. Tasks already moved to the archive don't count
 /// toward this check and never block deletion.
 #[tauri::command]
@@ -1508,14 +1499,20 @@ pub fn delete_project(
     let mut projects =
         project_storage::list_projects(&state.projects_file).map_err(|e| e.to_string())?;
 
-    let index = projects
-        .iter()
-        .position(|p| p.id == project_id)
-        .ok_or_else(|| format!("project '{project_id}' not found"))?;
-    ensure_not_default_project(&projects[index], &settings)?;
+    let doomed = projects_to_delete(&projects, &project_id);
+    if doomed.is_empty() {
+        return Err(format!("project '{project_id}' not found"));
+    }
+    for project in &doomed {
+        ensure_not_default_project(project, &settings)?;
+    }
+
+    let doomed_ids: Vec<String> = doomed.iter().map(|p| p.id.clone()).collect();
+    let doomed_names: Vec<String> = doomed.iter().map(|p| p.name.clone()).collect();
+    let deleted_subprojects = doomed.len() - 1;
 
     let tasks = storage::list_tasks(&state.tasks_dir).map_err(|e| e.to_string())?;
-    let matching = tasks_for_project(&tasks, &projects[index].name);
+    let matching = tasks_for_projects(&tasks, &doomed_names);
 
     let affected_tasks = if matching.is_empty() {
         0
@@ -1527,16 +1524,19 @@ pub fn delete_project(
             &state.tasks_dir,
             &state.archive_dir,
             &projects,
-            &project_id,
+            &doomed_ids,
             &matching,
             &strategy,
         )?
     };
 
-    projects.remove(index);
+    projects.retain(|p| !doomed_ids.contains(&p.id));
     project_storage::save_projects(&state.projects_file, &projects).map_err(|e| e.to_string())?;
 
-    Ok(DeleteProjectResult { affected_tasks })
+    Ok(DeleteProjectResult {
+        affected_tasks,
+        deleted_subprojects,
+    })
 }
 
 /// Returns the global settings (custom priority levels, the global status
@@ -1563,6 +1563,13 @@ fn validate_settings_against_projects(
     settings: &Settings,
     projects: &[Project],
 ) -> Result<(), String> {
+    if !projects.iter().any(|p| p.id == settings.default_project_id) {
+        return Err(format!(
+            "default project '{}' does not exist",
+            settings.default_project_id
+        ));
+    }
+
     for project in projects {
         for status_id in &project.board.statuses {
             validate_status_id(settings, status_id).map_err(|_| {
@@ -1765,7 +1772,7 @@ mod tests {
             None,
         );
 
-        assert_eq!(task.project, defaults.project);
+        assert_eq!(task.project_id, defaults.project_id);
         assert_eq!(task.tags, defaults.tags);
         assert_eq!(task.priority, defaults.priority);
         assert_eq!(task.due, defaults.due);
@@ -1787,7 +1794,7 @@ mod tests {
             Some(90),
         );
 
-        assert_eq!(task.project, Some("Vacation".to_string()));
+        assert_eq!(task.project_id, Some("Vacation".to_string()));
         assert_eq!(task.tags, vec!["travel".to_string()]);
         assert_eq!(task.priority, "high");
         assert_eq!(task.due, Some("2026-07-01".to_string()));
@@ -1817,7 +1824,7 @@ mod tests {
         );
 
         assert_eq!(existing.title, "New title");
-        assert_eq!(existing.project, Some("Work".to_string()));
+        assert_eq!(existing.project_id, Some("Work".to_string()));
         assert_eq!(existing.tags, vec!["urgent".to_string()]);
         assert_eq!(existing.priority, "high");
         assert_eq!(existing.status, "done");
@@ -2262,85 +2269,42 @@ mod tests {
     }
 
     #[test]
-    fn backfill_projects_adds_missing_project_names_from_tasks() {
-        let mut task = Task::new("Do homework".to_string());
-        task.project = Some("Homework".to_string());
+    fn ensure_default_project_creates_one_when_none_exists() {
+        let projects: Vec<Project> = Vec::new();
+        let settings = Settings::default();
 
-        let (projects, changed) = backfill_projects(Vec::new(), &[task]);
+        let result = ensure_default_project(projects, settings);
 
-        assert!(changed);
+        let (projects, settings) = result.expect("should have created a default project");
         assert_eq!(projects.len(), 1);
-        assert_eq!(projects[0].name, "Homework");
-        assert_eq!(projects[0].order, 1);
-        assert_eq!(projects[0].color, DEFAULT_PROJECT_COLOR);
+        assert_eq!(projects[0].name, "General");
+        assert_eq!(settings.default_project_id, projects[0].id);
     }
 
     #[test]
-    fn backfill_projects_is_case_insensitive_against_existing_projects() {
-        let existing = vec![Project::new(
-            "Homework".to_string(),
-            "#abcdef".to_string(),
-            1,
-        )];
-        let mut task = Task::new("Do homework".to_string());
-        task.project = Some("HOMEWORK".to_string());
+    fn ensure_default_project_does_nothing_when_default_already_exists() {
+        let project = Project::new("Inbox".to_string(), "#111111".to_string(), 1);
+        let mut settings = Settings::default();
+        settings.default_project_id = project.id.clone();
+        let projects = vec![project];
 
-        let (projects, changed) = backfill_projects(existing, &[task]);
+        let result = ensure_default_project(projects, settings);
 
-        assert!(!changed);
-        assert_eq!(projects.len(), 1);
+        assert!(result.is_none());
     }
 
     #[test]
-    fn backfill_projects_dedupes_multiple_tasks_with_the_same_new_project_name() {
-        let mut task_a = Task::new("First".to_string());
-        task_a.project = Some("Side Project".to_string());
-        let mut task_b = Task::new("Second".to_string());
-        task_b.project = Some("side project".to_string());
+    fn ensure_default_project_creates_one_when_configured_id_is_stale() {
+        let project = Project::new("Inbox".to_string(), "#111111".to_string(), 1);
+        let mut settings = Settings::default();
+        settings.default_project_id = "a-deleted-project-id".to_string();
+        let projects = vec![project];
 
-        let (projects, changed) = backfill_projects(Vec::new(), &[task_a, task_b]);
+        let result = ensure_default_project(projects, settings);
 
-        assert!(changed);
-        assert_eq!(projects.len(), 1);
-        assert_eq!(projects[0].name, "Side Project");
-    }
-
-    #[test]
-    fn backfill_projects_ignores_tasks_without_a_project() {
-        let task = Task::new("No project".to_string());
-
-        let (projects, changed) = backfill_projects(Vec::new(), &[task]);
-
-        assert!(!changed);
-        assert!(projects.is_empty());
-    }
-
-    #[test]
-    fn backfill_projects_preserves_existing_ids_and_colors() {
-        let existing = vec![Project::new("Inbox".to_string(), "#abcdef".to_string(), 1)];
-        let existing_id = existing[0].id.clone();
-        let mut task = Task::new("Triage".to_string());
-        task.project = Some("Inbox".to_string());
-
-        let (projects, changed) = backfill_projects(existing, &[task]);
-
-        assert!(!changed);
-        assert_eq!(projects.len(), 1);
-        assert_eq!(projects[0].id, existing_id);
-        assert_eq!(projects[0].color, "#abcdef");
-    }
-
-    #[test]
-    fn backfill_projects_assigns_ascending_order_to_new_entries() {
-        let mut task_a = Task::new("First".to_string());
-        task_a.project = Some("Alpha".to_string());
-        let mut task_b = Task::new("Second".to_string());
-        task_b.project = Some("Beta".to_string());
-
-        let (projects, _) = backfill_projects(Vec::new(), &[task_a, task_b]);
-
-        assert_eq!(projects[0].order, 1);
-        assert_eq!(projects[1].order, 2);
+        let (projects, settings) = result.expect("should have created a default project");
+        assert_eq!(projects.len(), 2);
+        assert!(projects.iter().any(|p| p.id == settings.default_project_id));
     }
 
     #[test]
@@ -2848,13 +2812,14 @@ mod tests {
     }
 
     #[test]
-    fn find_project_matches_case_insensitively() {
+    fn find_project_matches_by_id() {
         let mut project =
             Project::new("Homework".to_string(), DEFAULT_PROJECT_COLOR.to_string(), 1);
         project.board.default_status = Some("done".to_string());
+        let id = project.id.clone();
         let projects = vec![project];
 
-        let found = find_project(&projects, "HOMEWORK").expect("should find a match");
+        let found = find_project(&projects, &id).expect("should find a match");
 
         assert_eq!(found.board.default_status, Some("done".to_string()));
     }
@@ -2867,66 +2832,45 @@ mod tests {
             1,
         )];
 
-        assert!(find_project(&projects, "Inbox").is_none());
+        assert!(find_project(&projects, "does-not-exist").is_none());
     }
 
     #[test]
-    fn resolve_project_name_returns_the_trimmed_explicit_project() {
+    fn resolve_project_id_returns_the_explicit_project_id() {
         let settings = Settings::default();
 
-        let resolved = resolve_project_name(Some("  Homework  ".to_string()), &settings);
+        let resolved = resolve_project_id(Some("homework-id".to_string()), &settings);
 
-        assert_eq!(resolved, "Homework");
+        assert_eq!(resolved, "homework-id");
     }
 
     #[test]
-    fn resolve_project_name_falls_back_to_default_project_when_none() {
+    fn resolve_project_id_falls_back_to_default_project_id_when_none() {
         let mut settings = Settings::default();
-        settings.default_project = "Inbox".to_string();
+        settings.default_project_id = "inbox-id".to_string();
 
-        let resolved = resolve_project_name(None, &settings);
+        let resolved = resolve_project_id(None, &settings);
 
-        assert_eq!(resolved, "Inbox");
+        assert_eq!(resolved, "inbox-id");
     }
 
-    #[test]
-    fn resolve_project_name_falls_back_to_default_project_when_empty() {
-        let mut settings = Settings::default();
-        settings.default_project = "Inbox".to_string();
-
-        let resolved = resolve_project_name(Some(String::new()), &settings);
-
-        assert_eq!(resolved, "Inbox");
-    }
-
-    #[test]
-    fn resolve_project_name_falls_back_to_default_project_when_whitespace_only() {
-        let mut settings = Settings::default();
-        settings.default_project = "Inbox".to_string();
-
-        let resolved = resolve_project_name(Some("   ".to_string()), &settings);
-
-        assert_eq!(resolved, "Inbox");
-    }
-
-    /// `create_task` resolves the project name (falling back to
-    /// `settings.default_project`) *before* looking it up with
+    /// `create_task` resolves the project id (falling back to
+    /// `settings.default_project_id`) *before* looking it up with
     /// `find_project`, so a task created with no `+Project` token still picks
     /// up the default project's `TaskDefaults` and `ProjectBoard`.
     #[test]
     fn default_project_fallback_resolves_to_project_with_matching_defaults() {
-        let settings = Settings {
-            default_project: "Homework".to_string(),
-            ..Default::default()
-        };
-
         let mut project =
             Project::new("Homework".to_string(), DEFAULT_PROJECT_COLOR.to_string(), 1);
         project.defaults.tags = vec!["school".to_string()];
+        let settings = Settings {
+            default_project_id: project.id.clone(),
+            ..Default::default()
+        };
         let projects = vec![project];
 
-        let project_name = resolve_project_name(None, &settings);
-        let matched = find_project(&projects, &project_name);
+        let resolved_project_id = resolve_project_id(None, &settings);
+        let matched = find_project(&projects, &resolved_project_id);
 
         assert_eq!(
             matched.map(|p| p.defaults.tags.clone()),
@@ -2958,19 +2902,24 @@ mod tests {
     }
 
     #[test]
-    fn validate_settings_against_projects_accepts_empty_projects() {
-        assert!(validate_settings_against_projects(&Settings::default(), &[]).is_ok());
+    fn validate_settings_against_projects_rejects_a_default_project_that_does_not_exist() {
+        let mut settings = Settings::default();
+        settings.default_project_id = "does-not-exist".to_string();
+        let projects = vec![Project::new("Inbox".to_string(), "#111111".to_string(), 1)];
+
+        let result = validate_settings_against_projects(&settings, &projects);
+
+        assert!(result.is_err());
     }
 
     #[test]
     fn validate_settings_against_projects_accepts_a_project_with_an_uncustomized_board() {
-        let projects = vec![Project::new(
-            "Inbox".to_string(),
-            DEFAULT_PROJECT_COLOR.to_string(),
-            1,
-        )];
+        let project = Project::new("Inbox".to_string(), DEFAULT_PROJECT_COLOR.to_string(), 1);
+        let mut settings = Settings::default();
+        settings.default_project_id = project.id.clone();
+        let projects = vec![project];
 
-        assert!(validate_settings_against_projects(&Settings::default(), &projects).is_ok());
+        assert!(validate_settings_against_projects(&settings, &projects).is_ok());
     }
 
     #[test]
@@ -2978,9 +2927,10 @@ mod tests {
         let mut project =
             Project::new("Homework".to_string(), DEFAULT_PROJECT_COLOR.to_string(), 1);
         project.board.statuses = vec!["backlog".to_string(), "blocked".to_string()];
+        let mut settings = Settings::default();
+        settings.default_project_id = project.id.clone();
         let projects = vec![project];
 
-        let mut settings = Settings::default();
         settings.statuses.retain(|status| status.id != "blocked");
 
         let err = validate_settings_against_projects(&settings, &projects).unwrap_err();
@@ -2993,9 +2943,10 @@ mod tests {
         let mut project =
             Project::new("Homework".to_string(), DEFAULT_PROJECT_COLOR.to_string(), 1);
         project.board.default_status = Some("blocked".to_string());
+        let mut settings = Settings::default();
+        settings.default_project_id = project.id.clone();
         let projects = vec![project];
 
-        let mut settings = Settings::default();
         settings.statuses.retain(|status| status.id != "blocked");
 
         let err = validate_settings_against_projects(&settings, &projects).unwrap_err();
@@ -3007,9 +2958,10 @@ mod tests {
         let mut project =
             Project::new("Homework".to_string(), DEFAULT_PROJECT_COLOR.to_string(), 1);
         project.defaults.status = Some("blocked".to_string());
+        let mut settings = Settings::default();
+        settings.default_project_id = project.id.clone();
         let projects = vec![project];
 
-        let mut settings = Settings::default();
         settings.statuses.retain(|status| status.id != "blocked");
 
         let err = validate_settings_against_projects(&settings, &projects).unwrap_err();
@@ -3021,9 +2973,10 @@ mod tests {
         let mut project =
             Project::new("Homework".to_string(), DEFAULT_PROJECT_COLOR.to_string(), 1);
         project.defaults.priority = Some("low".to_string());
+        let mut settings = Settings::default();
+        settings.default_project_id = project.id.clone();
         let projects = vec![project];
 
-        let mut settings = Settings::default();
         settings.priorities.retain(|priority| priority.id != "low");
 
         let err = validate_settings_against_projects(&settings, &projects).unwrap_err();
@@ -3031,30 +2984,87 @@ mod tests {
     }
 
     #[test]
-    fn tasks_for_project_matches_case_insensitively() {
+    fn projects_to_delete_with_no_descendants_returns_just_the_target() {
+        let project = Project::new("Solo".to_string(), "#111111".to_string(), 1);
+        let id = project.id.clone();
+        let projects = vec![project];
+
+        let doomed = projects_to_delete(&projects, &id);
+
+        assert_eq!(doomed.len(), 1);
+        assert_eq!(doomed[0].id, id);
+    }
+
+    #[test]
+    fn projects_to_delete_includes_every_descendant() {
+        let mut parent = Project::new("Parent".to_string(), "#111111".to_string(), 1);
+        parent.id = "parent".to_string();
+        let mut child = Project::new("Child".to_string(), "#222222".to_string(), 2);
+        child.id = "child".to_string();
+        child.parent_id = Some("parent".to_string());
+        let mut grandchild = Project::new("Grandchild".to_string(), "#333333".to_string(), 3);
+        grandchild.id = "grandchild".to_string();
+        grandchild.parent_id = Some("child".to_string());
+        let mut unrelated = Project::new("Unrelated".to_string(), "#444444".to_string(), 4);
+        unrelated.id = "unrelated".to_string();
+        let projects = vec![parent, child, grandchild, unrelated];
+
+        let doomed = projects_to_delete(&projects, "parent");
+
+        let mut ids: Vec<&str> = doomed.iter().map(|p| p.id.as_str()).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, vec!["child", "grandchild", "parent"]);
+    }
+
+    #[test]
+    fn projects_to_delete_for_a_missing_id_is_empty() {
+        let projects = vec![Project::new("Solo".to_string(), "#111111".to_string(), 1)];
+
+        let doomed = projects_to_delete(&projects, "does-not-exist");
+
+        assert!(doomed.is_empty());
+    }
+
+    #[test]
+    fn tasks_for_projects_matches_tasks_filed_under_the_given_id() {
         let mut homework = Task::new("Algebra".to_string());
-        homework.project = Some("Homework".to_string());
-        let mut homework_upper = Task::new("Geometry".to_string());
-        homework_upper.project = Some("HOMEWORK".to_string());
+        homework.project_id = Some("homework-id".to_string());
         let mut other = Task::new("Groceries".to_string());
-        other.project = Some("Errands".to_string());
+        other.project_id = Some("errands-id".to_string());
         let unfiled = Task::new("No project".to_string());
 
-        let tasks = vec![homework, homework_upper, other, unfiled];
-        let matching = tasks_for_project(&tasks, "homework");
+        let tasks = vec![homework, other, unfiled];
+        let matching = tasks_for_projects(&tasks, &["homework-id".to_string()]);
+
+        assert_eq!(matching.len(), 1);
+        assert_eq!(matching[0].title, "Algebra");
+    }
+
+    #[test]
+    fn tasks_for_projects_matches_any_of_several_ids() {
+        let mut homework = Task::new("Read chapter 1".to_string());
+        homework.project_id = Some("homework-id".to_string());
+        let mut chores = Task::new("Clean room".to_string());
+        chores.project_id = Some("chores-id".to_string());
+        let mut other = Task::new("Plan trip".to_string());
+        other.project_id = Some("vacation-id".to_string());
+        let tasks = vec![homework, chores, other];
+
+        let matching = tasks_for_projects(
+            &tasks,
+            &["homework-id".to_string(), "chores-id".to_string()],
+        );
 
         assert_eq!(matching.len(), 2);
-        assert_eq!(matching[0].title, "Algebra");
-        assert_eq!(matching[1].title, "Geometry");
     }
 
     #[test]
     fn ensure_not_default_project_rejects_the_default_project() {
+        let project = Project::new("General".to_string(), DEFAULT_PROJECT_COLOR.to_string(), 1);
         let settings = Settings {
-            default_project: "General".to_string(),
+            default_project_id: project.id.clone(),
             ..Default::default()
         };
-        let project = Project::new("General".to_string(), DEFAULT_PROJECT_COLOR.to_string(), 1);
 
         let err = ensure_not_default_project(&project, &settings).unwrap_err();
 
@@ -3062,20 +3072,9 @@ mod tests {
     }
 
     #[test]
-    fn ensure_not_default_project_matches_case_insensitively() {
-        let settings = Settings {
-            default_project: "General".to_string(),
-            ..Default::default()
-        };
-        let project = Project::new("general".to_string(), DEFAULT_PROJECT_COLOR.to_string(), 1);
-
-        assert!(ensure_not_default_project(&project, &settings).is_err());
-    }
-
-    #[test]
     fn ensure_not_default_project_allows_other_projects() {
         let settings = Settings {
-            default_project: "General".to_string(),
+            default_project_id: "some-other-id".to_string(),
             ..Default::default()
         };
         let project = Project::new("Work".to_string(), DEFAULT_PROJECT_COLOR.to_string(), 1);
@@ -3087,7 +3086,7 @@ mod tests {
     fn apply_task_strategy_reassign_updates_task_project() {
         let dir = tempdir().unwrap();
         let mut task = Task::new("Algebra".to_string());
-        task.project = Some("Homework".to_string());
+        task.project_id = Some("homework-id".to_string());
         storage::save_task(dir.path(), &task).unwrap();
 
         let source = Project::new("Homework".to_string(), DEFAULT_PROJECT_COLOR.to_string(), 1);
@@ -3101,24 +3100,24 @@ mod tests {
             dir.path(),
             &archive_dir,
             &projects,
-            &source_id,
+            &[source_id.clone()],
             &[&task],
             &ProjectTaskStrategy::Reassign {
-                target_project_id: target_id,
+                target_project_id: target_id.clone(),
             },
         )
         .unwrap();
 
         assert_eq!(affected, 1);
         let loaded = storage::load_task(dir.path(), &task.id).unwrap();
-        assert_eq!(loaded.project, Some("School".to_string()));
+        assert_eq!(loaded.project_id, Some(target_id));
     }
 
     #[test]
     fn apply_task_strategy_reassign_rejects_self_target() {
         let dir = tempdir().unwrap();
         let mut task = Task::new("Algebra".to_string());
-        task.project = Some("Homework".to_string());
+        task.project_id = Some("homework-id".to_string());
         storage::save_task(dir.path(), &task).unwrap();
 
         let source = Project::new("Homework".to_string(), DEFAULT_PROJECT_COLOR.to_string(), 1);
@@ -3130,7 +3129,7 @@ mod tests {
             dir.path(),
             &archive_dir,
             &projects,
-            &source_id,
+            &[source_id.clone()],
             &[&task],
             &ProjectTaskStrategy::Reassign {
                 target_project_id: source_id.clone(),
@@ -3145,7 +3144,7 @@ mod tests {
     fn apply_task_strategy_reassign_rejects_unknown_target() {
         let dir = tempdir().unwrap();
         let mut task = Task::new("Algebra".to_string());
-        task.project = Some("Homework".to_string());
+        task.project_id = Some("homework-id".to_string());
         storage::save_task(dir.path(), &task).unwrap();
 
         let source = Project::new("Homework".to_string(), DEFAULT_PROJECT_COLOR.to_string(), 1);
@@ -3157,7 +3156,7 @@ mod tests {
             dir.path(),
             &archive_dir,
             &projects,
-            &source_id,
+            &[source_id.clone()],
             &[&task],
             &ProjectTaskStrategy::Reassign {
                 target_project_id: "missing-id".to_string(),
@@ -3172,7 +3171,7 @@ mod tests {
     fn apply_task_strategy_archive_moves_task_files() {
         let dir = tempdir().unwrap();
         let mut task = Task::new("Algebra".to_string());
-        task.project = Some("Homework".to_string());
+        task.project_id = Some("homework-id".to_string());
         storage::save_task(dir.path(), &task).unwrap();
 
         let source = Project::new("Homework".to_string(), DEFAULT_PROJECT_COLOR.to_string(), 1);
@@ -3184,7 +3183,7 @@ mod tests {
             dir.path(),
             &archive_dir,
             &projects,
-            &source_id,
+            &[source_id.clone()],
             &[&task],
             &ProjectTaskStrategy::Archive,
         )
@@ -3203,7 +3202,7 @@ mod tests {
     fn apply_task_strategy_delete_removes_task_files() {
         let dir = tempdir().unwrap();
         let mut task = Task::new("Algebra".to_string());
-        task.project = Some("Homework".to_string());
+        task.project_id = Some("homework-id".to_string());
         storage::save_task(dir.path(), &task).unwrap();
 
         let source = Project::new("Homework".to_string(), DEFAULT_PROJECT_COLOR.to_string(), 1);
@@ -3215,7 +3214,7 @@ mod tests {
             dir.path(),
             &archive_dir,
             &projects,
-            &source_id,
+            &[source_id.clone()],
             &[&task],
             &ProjectTaskStrategy::Delete,
         )
@@ -3226,6 +3225,30 @@ mod tests {
             storage::load_task(dir.path(), &task.id),
             Err(storage::StorageError::NotFound(_))
         ));
+    }
+
+    #[test]
+    fn apply_task_strategy_rejects_reassigning_to_any_doomed_descendant() {
+        let dir = tempdir().unwrap();
+        let archive_dir = dir.path().join("archive");
+        let target = Project::new("Descendant".to_string(), "#111111".to_string(), 1);
+        let target_id = target.id.clone();
+        let projects = vec![target];
+        let task = Task::new("Demo".to_string());
+        let tasks: Vec<&Task> = vec![&task];
+
+        let result = apply_task_strategy(
+            dir.path(),
+            &archive_dir,
+            &projects,
+            &["parent-id".to_string(), target_id.clone()],
+            &tasks,
+            &ProjectTaskStrategy::Reassign {
+                target_project_id: target_id,
+            },
+        );
+
+        assert!(result.is_err());
     }
 
     #[test]
@@ -3291,7 +3314,7 @@ mod tests {
 
     fn edited_occurrence_task() -> Task {
         let mut task = Task::new("Water the ferns".to_string());
-        task.project = Some("Garden".to_string());
+        task.project_id = Some("Garden".to_string());
         task.priority = "high".to_string();
         task.status = "in-progress".to_string();
         task.tags = vec!["urgent".to_string()];
@@ -3314,7 +3337,7 @@ mod tests {
         apply_series_template_update(&mut series, &edited);
 
         assert_eq!(series.title, "Water the ferns");
-        assert_eq!(series.project, Some("Garden".to_string()));
+        assert_eq!(series.project_id, Some("Garden".to_string()));
         assert_eq!(series.priority, "high");
         assert_eq!(series.tags, vec!["urgent".to_string()]);
         assert_eq!(series.estimated_minutes, Some(20));
@@ -3335,7 +3358,7 @@ mod tests {
         apply_template_to_occurrence(&mut occurrence, &edited);
 
         assert_eq!(occurrence.title, "Water the ferns");
-        assert_eq!(occurrence.project, Some("Garden".to_string()));
+        assert_eq!(occurrence.project_id, Some("Garden".to_string()));
         assert_eq!(occurrence.priority, "high");
         assert_eq!(occurrence.tags, vec!["urgent".to_string()]);
         assert_eq!(occurrence.estimated_minutes, Some(20));
@@ -3442,7 +3465,7 @@ mod tests {
         let task = build_series_occurrence(&series, &settings, &[], date);
 
         assert_eq!(task.title, "Water the plants");
-        assert_eq!(task.project, Some("Home".to_string()));
+        assert_eq!(task.project_id, Some("Home".to_string()));
         assert_eq!(task.priority, "medium");
         assert_eq!(task.tags, vec!["chore".to_string()]);
         assert_eq!(task.estimated_minutes, Some(15));

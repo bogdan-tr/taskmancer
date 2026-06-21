@@ -7,7 +7,7 @@ function baseTask(overrides: Partial<Task> = {}): Task {
     id: "task-1",
     title: "Water the plants",
     status: "backlog",
-    project: "Home",
+    project_id: "home-id",
     tags: ["chore"],
     priority: "medium",
     due: "2026-06-21",
@@ -110,7 +110,7 @@ describe("seriesSharedFieldsChanged", () => {
 
   test("returns true when the project changed", () => {
     const original = baseTask();
-    const edited = baseTask({ project: "Garden" });
+    const edited = baseTask({ project_id: "garden-id" });
 
     expect(seriesSharedFieldsChanged(original, edited)).toBe(true);
   });

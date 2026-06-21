@@ -103,7 +103,7 @@ export interface ResolveTaskPreviewOptions {
   parsed: ParsedTaskInput;
   /** The project of the board the add-task modal was opened from, if any. */
   projectFilter?: string;
-  /** `Settings.default_project`, used when no project was specified or implied. */
+  /** The name of the project `Settings.default_project_id` resolves to, used when no project was specified or implied. */
   defaultProjectName: string;
   globalDefaults: TaskDefaults;
   projectDefaults?: TaskDefaults;

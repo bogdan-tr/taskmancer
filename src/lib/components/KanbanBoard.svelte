@@ -37,7 +37,9 @@
   } from "$lib/kanbanGrouping";
   import type { ParsedTaskInput } from "$lib/naturalLanguage";
   import { FALLBACK_PRIORITIES } from "$lib/priorities.svelte";
+  import { effectiveBoardStatuses } from "$lib/projectBoardSettings";
   import { projectsState } from "$lib/projects.svelte";
+  import { descendantsOf, selfAndAncestors } from "$lib/projectTree";
   import type { DueRule, RecurrenceFrequency, SeriesEditScope } from "$lib/recurrence";
   import { settingsState } from "$lib/settings.svelte";
   import {
@@ -55,7 +57,7 @@
     title: string;
     tagline?: string;
     accentColor?: string;
-    /** When set, only tasks whose `project` matches this name are shown. */
+    /** When set, only tasks whose `project_id` matches this id are shown. */
     projectFilter?: string;
   }
 
@@ -71,30 +73,40 @@
   let groupByPriority = $derived(displayState.showPriorityGroups);
 
   /**
-   * The current project, looked up by name (case-insensitively, mirroring
-   * `find_project_board` in the Rust command layer) when this board is scoped
-   * to a project via `projectFilter`.
+   * The current project, looked up by id, when this board is scoped to a
+   * project via `projectFilter`.
    */
   let project = $derived(
-    projectFilter
-      ? projectsState.items.find((p) => p.name.toLowerCase() === projectFilter.toLowerCase())
-      : undefined,
+    projectFilter ? projectsState.items.find((p) => p.id === projectFilter) : undefined,
   );
+
+  /** `projectFilter` plus every one of its descendant subprojects' ids — viewing a parent project rolls up all of its descendants' tasks too. */
+  let rollupProjectIds = $derived(
+    projectFilter
+      ? [projectFilter, ...descendantsOf(projectsState.items, projectFilter).map((p) => p.id)]
+      : [],
+  );
+
+  /** The full ancestor chain for the current project (own board first, then ancestors' boards, nearest-first), or empty when this board isn't project-scoped. */
+  let projectChain = $derived(project ? selfAndAncestors(projectsState.items, project.id) : []);
 
   /**
    * The status ids shown as columns on this board, in display order: the
-   * project's configured board subset if it has one, otherwise every status
-   * in the global list.
+   * nearest customized board in `projectChain` if any has one, otherwise
+   * every status in the global list.
    */
   let boardStatusIds = $derived(
-    project && project.board.statuses.length > 0
-      ? project.board.statuses
-      : statuses.map((status) => status.id),
+    effectiveBoardStatuses(
+      projectChain.map((p) => p.board),
+      statuses.map((status) => status.id),
+    ),
   );
 
-  /** This project's `board.show_previous_weeks` override if set, else the global default. */
+  /** The nearest `board.show_previous_weeks` override in `projectChain`, else the global default. */
   let showPreviousWeeksColumn = $derived(
-    project?.board.show_previous_weeks ?? settingsState.current?.show_previous_weeks_column ?? false,
+    projectChain.find((p) => p.board.show_previous_weeks !== undefined)?.board.show_previous_weeks ??
+      settingsState.current?.show_previous_weeks_column ??
+      false,
   );
 
   let buckets: StatusBuckets = $state(
@@ -156,7 +168,7 @@
     try {
       const allTasks = await listTasks();
       const visible = projectFilter
-        ? allTasks.filter((task) => task.project === projectFilter)
+        ? allTasks.filter((task) => task.project_id !== undefined && rollupProjectIds.includes(task.project_id))
         : allTasks;
       visibleTasks = visible;
       const today = formatDateISO(new Date());
@@ -179,10 +191,11 @@
           parsed.recurrence.frequency,
           parsed.recurrence.endDate,
           parsed.dueRule,
+          parsed.projectId,
         );
         for (const task of tasks) replaceTask(task);
       } else {
-        const task = await createTask(parsed);
+        const task = await createTask(parsed, parsed.projectId);
         replaceTask(task);
       }
       errorMessage = "";
@@ -244,7 +257,7 @@
    * available to the week view.
    */
   function replaceTask(updated: Task) {
-    if (projectFilter && updated.project !== projectFilter) {
+    if (projectFilter && (updated.project_id === undefined || !rollupProjectIds.includes(updated.project_id))) {
       removeTask(updated.id);
       return;
     }

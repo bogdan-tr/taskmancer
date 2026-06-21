@@ -150,7 +150,7 @@ pub fn validate_recurrence_frequency(frequency: &RecurrenceFrequency) -> Result<
 /// project log for why a dedicated template record beat the alternatives
 /// (a single self-rescheduling task, or lazy virtual occurrences).
 ///
-/// Template fields (`title`, `project`, `priority`, `tags`,
+/// Template fields (`title`, `project_id`, `priority`, `tags`,
 /// `estimated_minutes`, `notes`) are copied into every newly generated
 /// occurrence and are what "this and future" edits update. `status` is
 /// deliberately *not* a template field: a freshly generated occurrence gets
@@ -193,8 +193,9 @@ pub struct Series {
     #[serde(default = "default_active")]
     pub active: bool,
     pub title: String,
+    /// The id of the `Project` this series' occurrences belong to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub project: Option<String>,
+    pub project_id: Option<String>,
     pub priority: String,
     #[serde(default)]
     pub tags: Vec<String>,
@@ -230,7 +231,7 @@ impl Series {
         end_date: Option<String>,
         due_rule: DueRule,
         title: String,
-        project: Option<String>,
+        project_id: Option<String>,
         priority: String,
         tags: Vec<String>,
         estimated_minutes: Option<u32>,
@@ -245,7 +246,7 @@ impl Series {
             due_rule,
             active: true,
             title,
-            project,
+            project_id,
             priority,
             tags,
             estimated_minutes,

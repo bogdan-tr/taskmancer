@@ -6,12 +6,14 @@
     open: boolean;
     projectName: string;
     taskCount: number;
+    /** How many descendant subprojects will also be deleted (0 if none). */
+    descendantCount: number;
     otherProjects: Project[];
     onConfirm: (strategy: DeleteStrategyKind, targetProjectId: string) => void;
     onCancel: () => void;
   }
 
-  let { open, projectName, taskCount, otherProjects, onConfirm, onCancel }: Props = $props();
+  let { open, projectName, taskCount, descendantCount, otherProjects, onConfirm, onCancel }: Props = $props();
 
   let canReassign = $derived(otherProjects.length > 0);
   let strategyKind = $state<DeleteStrategyKind>("reassign");
@@ -65,11 +67,14 @@
   onclose={onCancel}
   onclick={handleBackdropClick}
 >
-  <h2 id="delete-project-dialog-heading">Delete "{projectName}"?</h2>
+  <h2 id="delete-project-dialog-heading">
+    Delete "{projectName}"{descendantCount > 0 ? ` and its ${descendantCount} ${descendantCount === 1 ? "subproject" : "subprojects"}` : ""}?
+  </h2>
   <p>
-    {taskCount} {taskCount === 1 ? "task" : "tasks"} still
-    {taskCount === 1 ? "belongs" : "belong"} to this project. Choose what to do with
-    {taskCount === 1 ? "it" : "them"} before deleting the project.
+    {taskCount} {taskCount === 1 ? "task" : "tasks"}
+    {descendantCount > 0 ? "across this project and its subprojects" : ""} still
+    {taskCount === 1 ? "belongs" : "belong"} {descendantCount > 0 ? "here" : "to this project"}. Choose what to
+    do with {taskCount === 1 ? "it" : "them"} before deleting.
   </p>
 
   <fieldset>
