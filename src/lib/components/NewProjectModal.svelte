@@ -1,6 +1,7 @@
 <script lang="ts">
   import { createProject } from "$lib/api";
   import { shadesOf } from "$lib/colorPresets";
+  import { getErrorMessage } from "$lib/errors";
   import { DEFAULT_PROJECT_COLOR, type Project } from "$lib/types";
   import ColorPicker from "$lib/components/ColorPicker.svelte";
 
@@ -26,7 +27,11 @@
     if (open) {
       if (!dialogEl.open) {
         name = "";
-        color = parentProject ? shadesOf(parentProject.color, 5)[0] : DEFAULT_PROJECT_COLOR;
+        // The middle shade (index 2 of 5) reads as the most "obviously a
+        // nice shade of the parent" default — the darkest/lightest ends of
+        // the range are more extreme and less universally flattering as an
+        // unreviewed first pick.
+        color = parentProject ? shadesOf(parentProject.color, 5)[2] : DEFAULT_PROJECT_COLOR;
         errorMessage = "";
         dialogEl.showModal();
         inputEl?.focus();
@@ -64,7 +69,7 @@
       onCreated(project);
       dialogEl?.close();
     } catch (error) {
-      errorMessage = error instanceof Error ? error.message : "Failed to create project";
+      errorMessage = getErrorMessage(error, "Failed to create project");
     } finally {
       isSubmitting = false;
     }

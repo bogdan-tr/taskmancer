@@ -4,6 +4,7 @@ import {
   childrenOf,
   computeZoneOrderUpdates,
   descendantsOf,
+  projectPath,
   selfAndAncestors,
   wouldCreateCycle,
 } from "./projectTree";
@@ -220,5 +221,25 @@ describe("computeZoneOrderUpdates", () => {
     const { rejected } = computeZoneOrderUpdates(allProjects, undefined, [a]);
 
     expect(rejected).toBe(false);
+  });
+});
+
+describe("projectPath", () => {
+  it("returns just the name for a top-level project", () => {
+    const projects = fixtureTree();
+
+    expect(projectPath(projects, "root_a")).toBe("Root A");
+  });
+
+  it("returns the root-first ancestor path for a nested project", () => {
+    const projects = fixtureTree();
+
+    expect(projectPath(projects, "grandchild_a1a")).toBe("Root A/Child A1/Grandchild A1a");
+  });
+
+  it("returns an empty string for a missing id", () => {
+    const projects = fixtureTree();
+
+    expect(projectPath(projects, "does-not-exist")).toBe("");
   });
 });

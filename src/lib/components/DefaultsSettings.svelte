@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { getErrorMessage } from "$lib/errors";
   import { hoursAndMinutesFromMinutes, minutesFromHoursAndMinutes, normalizeHoursMinutes } from "$lib/estimatedTime";
   import { projectsState } from "$lib/projects.svelte";
   import { DUE_RELATIVE_DATE_OPTIONS, SCHEDULED_RELATIVE_DATE_OPTIONS } from "$lib/relativeDates";
@@ -97,7 +98,7 @@
       draftScheduled = defaults.scheduled ?? "";
       errorMessage = "";
     } catch (error) {
-      errorMessage = error instanceof Error ? error.message : "Failed to save defaults";
+      errorMessage = getErrorMessage(error, "Failed to save defaults");
     } finally {
       isSaving = false;
     }

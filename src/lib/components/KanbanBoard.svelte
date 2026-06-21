@@ -22,6 +22,7 @@
   import KanbanGrid from "$lib/components/KanbanGrid.svelte";
   import WeekView from "$lib/components/WeekView.svelte";
   import { displayState } from "$lib/displaySettings.svelte";
+  import { getErrorMessage } from "$lib/errors";
   import { formatFinishDayResult } from "$lib/finishDay";
   import {
     bucketsHaveTasks,
@@ -177,7 +178,7 @@
       recomputeHasOther();
       errorMessage = "";
     } catch (error) {
-      errorMessage = error instanceof Error ? error.message : "Failed to load tasks";
+      errorMessage = getErrorMessage(error, "Failed to load tasks");
     } finally {
       isLoading = false;
     }
@@ -203,7 +204,7 @@
       modalOpen = false;
       void refreshTags();
     } catch (error) {
-      errorMessage = error instanceof Error ? error.message : "Failed to create task";
+      errorMessage = getErrorMessage(error, "Failed to create task");
     }
   }
 
@@ -237,7 +238,7 @@
         for (const task of tasks) replaceTask(task);
       }
     } catch (error) {
-      errorMessage = error instanceof Error ? error.message : "Failed to extend recurring tasks";
+      errorMessage = getErrorMessage(error, "Failed to extend recurring tasks");
     }
   }
 
@@ -288,7 +289,7 @@
       finishDayMessage = "";
       void refreshTags();
     } catch (error) {
-      errorMessage = error instanceof Error ? error.message : "Failed to update task";
+      errorMessage = getErrorMessage(error, "Failed to update task");
     }
   }
 
@@ -315,7 +316,7 @@
       errorMessage = "";
       finishDayMessage = "";
     } catch (error) {
-      errorMessage = error instanceof Error ? error.message : "Failed to delete task";
+      errorMessage = getErrorMessage(error, "Failed to delete task");
     }
   }
 
@@ -324,7 +325,7 @@
       await removeRecurrence(id);
       errorMessage = "";
     } catch (error) {
-      errorMessage = error instanceof Error ? error.message : "Failed to remove recurrence";
+      errorMessage = getErrorMessage(error, "Failed to remove recurrence");
     }
   }
 
@@ -348,7 +349,7 @@
       errorMessage = "";
       await refresh();
     } catch (error) {
-      errorMessage = error instanceof Error ? error.message : "Failed to update recurrence";
+      errorMessage = getErrorMessage(error, "Failed to update recurrence");
     }
   }
 
@@ -363,7 +364,7 @@
       errorMessage = "";
       await refresh();
     } catch (error) {
-      errorMessage = error instanceof Error ? error.message : "Failed to finish day";
+      errorMessage = getErrorMessage(error, "Failed to finish day");
     } finally {
       isFinishingDay = false;
     }
@@ -432,7 +433,7 @@
       errorMessage = "";
       finishDayMessage = "";
     } catch (error) {
-      errorMessage = error instanceof Error ? error.message : "Failed to reorder tasks";
+      errorMessage = getErrorMessage(error, "Failed to reorder tasks");
       await refresh();
     }
   }

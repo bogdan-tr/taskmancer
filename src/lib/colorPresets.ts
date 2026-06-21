@@ -181,9 +181,28 @@ export function neonCardColor(hex: string, lightness: number, chromaBoost = 1): 
 export const NEON_CARD_LIGHTNESS = 0.5;
 export const NEON_CARD_CHROMA_BOOST = 1.55;
 
-/** Lightness range `shadesOf` spreads its suggestions across — stays clear of near-black/near-white extremes where hue becomes visually indistinct. */
-const SHADE_MIN_LIGHTNESS = 0.3;
-const SHADE_MAX_LIGHTNESS = 0.7;
+/**
+ * Lightness range `shadesOf` spreads its suggestions across — narrower than
+ * the full 0-1 range to stay clear of the muddy near-black and washed-out
+ * near-white extremes, where a "shade of the parent" stops looking like one
+ * (a hue mostly reads as itself in roughly this middle band; outside it,
+ * lightness dominates the impression more than hue/chroma does).
+ */
+const SHADE_MIN_LIGHTNESS = 0.4;
+const SHADE_MAX_LIGHTNESS = 0.76;
+
+/**
+ * `shadesOf` targets this multiple of the parent's own chroma (before
+ * gamut-correcting back down if needed) so shades read as vivid/saturated
+ * rather than a washed-out, muted version of the parent — the parent's
+ * literal chroma is just one specific color's worth of saturation, not
+ * necessarily the most flattering one across a whole lightness range.
+ */
+const SHADE_CHROMA_BOOST = 1.35;
+/** Absolute chroma ceiling for `shadesOf`, regardless of boost — keeps the boosted target itself from overshooting into "neon sign" territory even before gamut correction kicks in. Matches the spirit of `neonCardColor`'s own 0.4 cap, just slightly more conservative since these become a project's *persistent* color, not a one-off background. */
+const SHADE_MAX_CHROMA = 0.37;
+/** A floor under the boosted target chroma so an already near-gray parent color (very low chroma) still yields visibly tinted, recognizable shades rather than another shade of gray. */
+const SHADE_MIN_TARGET_CHROMA = 0.12;
 
 /** Returns `true` if all three linear-sRGB channels are within `[0, 1]` (within a small tolerance for floating-point error) — i.e. representable without per-channel clamping, which would otherwise distort hue. */
 function isInGamut(rgb: readonly [number, number, number]): boolean {
@@ -216,26 +235,44 @@ function maxInGamutChroma(lightness: number, chroma: number, hueDegrees: number)
 }
 
 /**
- * Returns `count` color suggestions derived from `parentHex`'s hue and
- * chroma, varying only lightness, spread evenly across
- * `[SHADE_MIN_LIGHTNESS, SHADE_MAX_LIGHTNESS]` — the model for a
+ * Builds one vivid shade at `lightness`/`hue`, targeting
+ * `SHADE_CHROMA_BOOST` times `parentChroma` (floored at
+ * `SHADE_MIN_TARGET_CHROMA`, capped at `SHADE_MAX_CHROMA`) and reduced only
+ * as far as `maxInGamutChroma` requires to stay in-gamut — so the result is
+ * never a per-channel-clamped, hue-shifted color (see `maxInGamutChroma`'s
+ * own doc comment), but is also never just the parent's own, potentially
+ * under-saturated chroma carried through unboosted.
+ */
+function vividShadeHex(parentChroma: number, hue: number, lightness: number): string {
+  const targetChroma = Math.min(Math.max(parentChroma * SHADE_CHROMA_BOOST, SHADE_MIN_TARGET_CHROMA), SHADE_MAX_CHROMA);
+  const chroma = maxInGamutChroma(lightness, targetChroma, hue);
+  return cssColorToHex(`oklch(${(lightness * 100).toFixed(1)}% ${chroma.toFixed(4)} ${hue.toFixed(1)})`);
+}
+
+/**
+ * Returns `count` color suggestions derived from `parentHex`'s hue, varying
+ * lightness evenly across `[SHADE_MIN_LIGHTNESS, SHADE_MAX_LIGHTNESS]` and
+ * boosting chroma for vividness (see `vividShadeHex`) — the model for a
  * subproject's color picker defaults, so its suggested colors read as
- * "shades of the parent" rather than unrelated hues. Built on
- * `neonCardColor` (same hue/chroma, different fixed lightness) — the
- * existing precedent for this exact kind of derivation — converted to hex
- * since `Project.color` is hex-only. Chroma is reduced per-shade (via
- * `maxInGamutChroma`) when the parent's chroma would otherwise fall outside
- * the sRGB gamut at that lightness, so the hue stays true to the parent
- * across the whole range rather than drifting from clamped channels.
+ * distinct, attractive "shades of the parent" rather than a washed-out
+ * dilution of one specific color. If a shade would otherwise come out
+ * identical to the parent's own hex (the parent's color already happens to
+ * sit on the generated curve), its lightness is nudged by one step's worth
+ * before rebuilding it, so every suggestion is visibly its own color.
  */
 export function shadesOf(parentHex: string, count: number): string[] {
   const { c: parentChroma, h: hue } = hexToOklch(parentHex);
+  const parentHexLower = parentHex.toLowerCase();
   const step = count > 1 ? (SHADE_MAX_LIGHTNESS - SHADE_MIN_LIGHTNESS) / (count - 1) : 0;
+  const nudge = step > 0 ? step / 2 : 0.08;
+
   return Array.from({ length: count }, (_, index) => {
     const lightness = SHADE_MIN_LIGHTNESS + step * index;
-    const safeChromaBoost =
-      parentChroma > 0 ? maxInGamutChroma(lightness, parentChroma, hue) / parentChroma : 1;
-    return cssColorToHex(neonCardColor(parentHex, lightness, safeChromaBoost));
+    const hex = vividShadeHex(parentChroma, hue, lightness);
+    if (hex.toLowerCase() !== parentHexLower) return hex;
+
+    const nudgedLightness = Math.min(Math.max(lightness + nudge, 0.05), 0.95);
+    return vividShadeHex(parentChroma, hue, nudgedLightness);
   });
 }
 

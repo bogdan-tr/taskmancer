@@ -16,6 +16,7 @@
   import { FALLBACK_PRIORITIES, priorityColor, priorityLabel, sortedPriorities } from "$lib/priorities.svelte";
   import { resolveProjectColor } from "$lib/projectColor";
   import { projectsState } from "$lib/projects.svelte";
+  import { projectPath, selfAndAncestors } from "$lib/projectTree";
   import {
     dueRuleFromDefaultCode,
     formatDueRule,
@@ -148,7 +149,10 @@
     // it actively overrides a due phrase still sitting in the title rather
     // than silently doing nothing.
     draftDueRuleOverride =
-      value.dueRule ?? dueRuleFromDefaultCode(effectiveDefaultCode(globalDefaults.due, matchedProject?.defaults.due));
+      value.dueRule ??
+      dueRuleFromDefaultCode(
+        effectiveDefaultCode(globalDefaults.due, projectChain.find((p) => p.defaults.due !== undefined)?.defaults.due),
+      );
     dueRuleManuallySet = true;
     dueManuallySet = false;
   }
@@ -196,13 +200,29 @@
 
   /**
    * The project the task will be created under: the `+Project` quick-add
-   * token, else this dialog's `projectFilter`, else the configured default
-   * project. Looked up case-insensitively (mirroring `find_project` in the
-   * Rust command layer) to resolve its `TaskDefaults` overrides.
+   * token (matched by name, first match wins — see the NL parser's
+   * documented same-name-subproject limitation), else this dialog's
+   * `projectFilter` (matched by id — `KanbanBoard` passes its own id-based
+   * filter straight through), else the configured default project (also
+   * matched by id).
    */
-  let resolvedProjectName = $derived(parsed.project ?? projectFilter ?? defaultProjectName);
-  let matchedProject = $derived(
-    projectsState.items.find((project) => project.name.toLowerCase() === resolvedProjectName.toLowerCase()),
+  let matchedProject = $derived.by(() => {
+    if (parsed.project) {
+      const typed = parsed.project.toLowerCase();
+      return projectsState.items.find((project) => project.name.toLowerCase() === typed);
+    }
+    if (projectFilter) {
+      return projectsState.items.find((project) => project.id === projectFilter);
+    }
+    return projectsState.items.find((project) => project.id === settingsState.current?.default_project_id);
+  });
+
+  /** `matchedProject` itself, then its ancestors nearest-first — settings/defaults inherit through this full chain, mirroring the backend's `self_and_ancestors` walk. Empty when no project is matched yet (e.g. before projects finish loading). */
+  let projectChain = $derived(matchedProject ? selfAndAncestors(projectsState.items, matchedProject.id) : []);
+
+  /** Root-first ancestor path for `matchedProject` (e.g. "Work/Client A"), shown in the preview instead of a bare leaf name — disambiguates same-named subprojects under different parents. */
+  let matchedProjectPath = $derived(
+    matchedProject ? projectPath(projectsState.items, matchedProject.id) : undefined,
   );
 
   /** The effective project, priority, status, tags, due, scheduled, and estimated time this task will be created with. */
@@ -212,11 +232,11 @@
       projectFilter,
       defaultProjectName,
       globalDefaults,
-      projectDefaults: matchedProject?.defaults,
-      matchedProjectName: matchedProject?.name,
+      projectDefaultsChain: projectChain.map((p) => p.defaults),
+      matchedProjectName: matchedProjectPath,
       priorities,
       statuses,
-      projectBoardDefaultStatus: matchedProject?.board.default_status,
+      projectBoardDefaultStatusChain: projectChain.map((p) => p.board.default_status),
     }),
   );
 
@@ -410,12 +430,10 @@
   async function handleSubmit(event: Event) {
     event.preventDefault();
     if (!parsed.title) return;
-    // `matchedProject` already resolves `preview.project` (a name) against
-    // the loaded project list (see its own `$derived` above) for the
-    // preview pane — reused here as the actual submission's id. A typed
-    // name with no match resolves to `undefined`, which the backend
-    // resolves to the configured default project, same as leaving the
-    // project blank entirely.
+    // `matchedProject` (see its own `$derived` above) already resolves the
+    // effective project — by +Project name, by this dialog's id-based
+    // projectFilter, or by the default project — reused here directly as
+    // the actual submission's id, rather than re-deriving it.
     const projectId = matchedProject?.id;
     if (effectiveParsed.recurrence) {
       await onSubmit({

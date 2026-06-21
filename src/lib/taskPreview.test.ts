@@ -206,7 +206,7 @@ describe("resolveTaskPreview", () => {
       globalDefaults: { tags: [], status: "do" },
       priorities: PRIORITIES,
       statuses: STATUSES,
-      projectBoardDefaultStatus: "done",
+      projectBoardDefaultStatusChain: ["done"],
     });
 
     expect(preview.statusId).toBe("done");
@@ -219,7 +219,7 @@ describe("resolveTaskPreview", () => {
       globalDefaults: { tags: [], status: "do" },
       priorities: PRIORITIES,
       statuses: STATUSES,
-      projectBoardDefaultStatus: "done",
+      projectBoardDefaultStatusChain: ["done"],
     });
 
     expect(preview.statusId).toBe("backlog");
@@ -242,7 +242,7 @@ describe("resolveTaskPreview", () => {
       parsed: parsed(),
       defaultProjectName: "General",
       globalDefaults: { tags: ["chore"] },
-      projectDefaults: { tags: ["school"] },
+      projectDefaultsChain: [{ tags: ["school"] }],
       priorities: PRIORITIES,
       statuses: STATUSES,
     });
@@ -255,7 +255,7 @@ describe("resolveTaskPreview", () => {
       parsed: parsed(),
       defaultProjectName: "General",
       globalDefaults: { tags: [], due: "same_day", scheduled: "today" },
-      projectDefaults: { tags: [], due: "in_1_week", scheduled: "in_1_month" },
+      projectDefaultsChain: [{ tags: [], due: "in_1_week", scheduled: "in_1_month" }],
       priorities: PRIORITIES,
       statuses: STATUSES,
       now: NOW,
@@ -361,7 +361,7 @@ describe("resolveTaskPreview", () => {
       parsed: parsed({ estimatedMinutes: 15 }),
       defaultProjectName: "General",
       globalDefaults: { tags: [], estimated_minutes: 60 },
-      projectDefaults: { tags: [], estimated_minutes: 30 },
+      projectDefaultsChain: [{ tags: [], estimated_minutes: 30 }],
       priorities: PRIORITIES,
       statuses: STATUSES,
     });
@@ -374,7 +374,7 @@ describe("resolveTaskPreview", () => {
       parsed: parsed(),
       defaultProjectName: "General",
       globalDefaults: { tags: [], estimated_minutes: 60 },
-      projectDefaults: { tags: [], estimated_minutes: 30 },
+      projectDefaultsChain: [{ tags: [], estimated_minutes: 30 }],
       priorities: PRIORITIES,
       statuses: STATUSES,
     });
@@ -387,7 +387,7 @@ describe("resolveTaskPreview", () => {
       parsed: parsed(),
       defaultProjectName: "General",
       globalDefaults: { tags: [], estimated_minutes: 60 },
-      projectDefaults: { tags: [] },
+      projectDefaultsChain: [{ tags: [] }],
       priorities: PRIORITIES,
       statuses: STATUSES,
     });

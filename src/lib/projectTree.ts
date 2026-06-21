@@ -27,6 +27,14 @@ export function selfAndAncestors(projects: Project[], id: string): Project[] {
   return [self, ...ancestorsOf(projects, id)];
 }
 
+/** Returns the full ancestor path for the project identified by `id`, root-first and joined with "/" (e.g. "Work/Client A/Phase 1") — unambiguous even for same-named subprojects under different parents, unlike a bare leaf name. Empty string if `id` doesn't exist in `projects`. */
+export function projectPath(projects: Project[], id: string): string {
+  const self = projects.find((p) => p.id === id);
+  if (!self) return "";
+  const ancestorsRootFirst = ancestorsOf(projects, id).reverse();
+  return [...ancestorsRootFirst, self].map((p) => p.name).join("/");
+}
+
 /** Returns every transitive descendant of the project identified by `id` (children, grandchildren, ...). */
 export function descendantsOf(projects: Project[], id: string): Project[] {
   const result: Project[] = [];

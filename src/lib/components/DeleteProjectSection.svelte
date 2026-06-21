@@ -10,6 +10,7 @@
     tasksForProjects,
     type DeleteStrategyKind,
   } from "$lib/deleteProject";
+  import { getErrorMessage } from "$lib/errors";
   import { projectsState, refreshProjects } from "$lib/projects.svelte";
   import { descendantsOf } from "$lib/projectTree";
   import { settingsState } from "$lib/settings.svelte";
@@ -46,7 +47,7 @@
         strategyDialogOpen = true;
       }
     } catch (error) {
-      errorMessage = error instanceof Error ? error.message : "Failed to check project tasks";
+      errorMessage = getErrorMessage(error, "Failed to check project tasks");
     }
   }
 
@@ -67,7 +68,7 @@
       await refreshProjects();
       await goto("/");
     } catch (error) {
-      errorMessage = error instanceof Error ? error.message : "Failed to delete project";
+      errorMessage = getErrorMessage(error, "Failed to delete project");
     } finally {
       isDeleting = false;
     }

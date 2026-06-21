@@ -6,6 +6,7 @@
     neonCardColor,
     type InkMode,
   } from "$lib/colorPresets";
+  import { getErrorMessage } from "$lib/errors";
   import { persistSettings, settingsState } from "$lib/settings.svelte";
   import { DEFAULT_PROJECT_COLOR } from "$lib/types";
 
@@ -70,7 +71,7 @@
       });
       errorMessage = "";
     } catch (error) {
-      errorMessage = error instanceof Error ? error.message : "Failed to save appearance settings";
+      errorMessage = getErrorMessage(error, "Failed to save appearance settings");
     } finally {
       isSaving = false;
     }

@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { countTasksByStatus } from "$lib/api";
   import { cssColorToHex } from "$lib/colorPresets";
+  import { getErrorMessage } from "$lib/errors";
   import { projectsState } from "$lib/projects.svelte";
   import { persistSettings, settingsState } from "$lib/settings.svelte";
   import {
@@ -137,7 +138,7 @@
       draft = trimmed;
       errorMessage = "";
     } catch (error) {
-      errorMessage = error instanceof Error ? error.message : "Failed to save statuses";
+      errorMessage = getErrorMessage(error, "Failed to save statuses");
     } finally {
       isSaving = false;
     }

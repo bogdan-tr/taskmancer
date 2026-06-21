@@ -2,6 +2,7 @@
   import { dndzone, type DndEvent } from "svelte-dnd-action";
   import { page } from "$app/state";
   import { updateProject } from "$lib/api";
+  import { getErrorMessage } from "$lib/errors";
   import { projectsState, refreshProjects } from "$lib/projects.svelte";
   import { childrenOf, computeZoneOrderUpdates } from "$lib/projectTree";
   import { isExpanded, toggleExpanded } from "$lib/projectTree.svelte";
@@ -53,40 +54,42 @@
       }
       await refreshProjects();
     } catch (error) {
-      dropError = error instanceof Error ? error.message : "Failed to move project";
+      dropError = getErrorMessage(error, "Failed to move project");
       await refreshProjects();
     }
   }
 </script>
 
 <li>
-  <div class="project-row" style="--depth: {depth}">
-    {#if hasChildren}
-      <button
-        type="button"
-        class="expand-toggle"
-        class:expanded
-        onclick={() => toggleExpanded(project.id)}
-        aria-expanded={expanded}
-        aria-label={expanded ? `Collapse ${project.name}` : `Expand ${project.name}`}
-      >
-        <svg
-          xmlns="http://www.w3.org/2000/svg"
-          width="12"
-          height="12"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          aria-hidden="true"
+  <div class="project-row" style="--depth: {sidebarState.collapsed ? 0 : depth}">
+    {#if !sidebarState.collapsed}
+      {#if hasChildren}
+        <button
+          type="button"
+          class="expand-toggle"
+          class:expanded
+          onclick={() => toggleExpanded(project.id)}
+          aria-expanded={expanded}
+          aria-label={expanded ? `Collapse ${project.name}` : `Expand ${project.name}`}
         >
-          <polyline points="9 18 15 12 9 6" />
-        </svg>
-      </button>
-    {:else}
-      <span class="expand-spacer" aria-hidden="true"></span>
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="12"
+            height="12"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <polyline points="9 18 15 12 9 6" />
+          </svg>
+        </button>
+      {:else}
+        <span class="expand-spacer" aria-hidden="true"></span>
+      {/if}
     {/if}
     <a
       href="/projects/{project.id}"
@@ -123,7 +126,7 @@
       </button>
     {/if}
   </div>
-  {#if hasChildren && expanded}
+  {#if !sidebarState.collapsed && hasChildren && expanded}
     <ul
       class="subproject-list"
       use:dndzone={{ items: zoneItems, flipDurationMs: FLIP_DURATION_MS, dropTargetStyle: {} }}

@@ -3,10 +3,12 @@
   import { applyTagsSuggestion, filterSuggestions, splitTagsInput } from "$lib/autocomplete";
   import { displayState } from "$lib/displaySettings.svelte";
   import { formatDueDateDisplay } from "$lib/dueDateDisplay";
+  import { getErrorMessage } from "$lib/errors";
   import { hoursAndMinutesFromMinutes, minutesFromHoursAndMinutes, normalizeHoursMinutes } from "$lib/estimatedTime";
   import { generalState } from "$lib/generalSettings.svelte";
   import { FALLBACK_PRIORITIES, sortedPriorities } from "$lib/priorities.svelte";
   import { projectsState } from "$lib/projects.svelte";
+  import { selfAndAncestors } from "$lib/projectTree";
   import {
     dueRuleFromDefaultCode,
     formatDueRule,
@@ -107,7 +109,7 @@
       }
     } catch (error) {
       if (task?.series_id === seriesId) {
-        seriesLoadError = error instanceof Error ? error.message : "Failed to load recurrence";
+        seriesLoadError = getErrorMessage(error, "Failed to load recurrence");
       }
     }
   }
@@ -379,12 +381,10 @@
    */
   function handleRecurrenceBuilderApply(value: RecurrenceBuilderValue) {
     if (!task?.series_id || !task.scheduled) return;
-    const matchedProject = task.project_id
-      ? projectsState.items.find((p) => p.id === task.project_id)
-      : undefined;
+    const projectChain = task.project_id ? selfAndAncestors(projectsState.items, task.project_id) : [];
     const globalDefaults = settingsState.current?.defaults ?? { tags: [] };
-    const dueRule =
-      value.dueRule ?? dueRuleFromDefaultCode(effectiveDefaultCode(globalDefaults.due, matchedProject?.defaults.due));
+    const chainDue = projectChain.find((p) => p.defaults.due !== undefined)?.defaults.due;
+    const dueRule = value.dueRule ?? dueRuleFromDefaultCode(effectiveDefaultCode(globalDefaults.due, chainDue));
     onUpdateRecurrence(task.series_id, task.scheduled, value.frequency, dueRule, value.endDate);
     onCancel();
   }

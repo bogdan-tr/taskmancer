@@ -106,18 +106,28 @@ export interface ResolveTaskPreviewOptions {
   /** The name of the project `Settings.default_project_id` resolves to, used when no project was specified or implied. */
   defaultProjectName: string;
   globalDefaults: TaskDefaults;
-  projectDefaults?: TaskDefaults;
+  /**
+   * The resolved project's own `TaskDefaults`, then its ancestors'
+   * nearest-first (see `selfAndAncestors`) — mirrors the backend's
+   * `effective_default_tags`/`resolve_creation_defaults` ancestor-chain
+   * walk, so a subproject with no defaults of its own still picks up its
+   * nearest ancestor's. Empty/omitted when no project is matched.
+   */
+  projectDefaultsChain?: TaskDefaults[];
   /**
    * The canonical name of the project matched (case-insensitively, mirroring
-   * `find_project` in the Rust command layer) against `projectDefaults`'
-   * source project, if any. Used so the preview shows the project's stored
-   * casing rather than whatever casing the user typed via `+project`.
+   * `find_project` in the Rust command layer), if any. Used so the preview
+   * shows the project's stored casing rather than whatever casing the user
+   * typed via `+project`.
    */
   matchedProjectName?: string;
   priorities: PriorityLevel[];
   statuses: StatusDefinition[];
-  /** The matched project's `board.default_status`, if any. */
-  projectBoardDefaultStatus?: string;
+  /**
+   * The resolved project's own `board.default_status`, then its ancestors'
+   * nearest-first — mirrors `resolve_default_status`'s ancestor-chain walk.
+   */
+  projectBoardDefaultStatusChain?: (string | undefined)[];
   /** "Now", for resolving relative-date defaults. Defaults to `new Date()`. */
   now?: Date;
 }
@@ -159,22 +169,26 @@ export function resolveTaskPreview(options: ResolveTaskPreviewOptions): TaskPrev
     projectFilter,
     defaultProjectName,
     globalDefaults,
-    projectDefaults,
+    projectDefaultsChain = [],
     matchedProjectName,
     priorities,
     statuses,
-    projectBoardDefaultStatus,
+    projectBoardDefaultStatusChain = [],
     now = new Date(),
   } = options;
 
   const project = matchedProjectName ?? parsed.project ?? projectFilter ?? defaultProjectName;
   const priorityId = parsed.priority ?? defaultPriorityId(priorities, globalDefaults.priority);
+  const projectBoardDefaultStatus = projectBoardDefaultStatusChain.find((status) => status !== undefined);
   const statusId =
     parsed.status ?? effectiveDefaultStatus(statuses, projectBoardDefaultStatus, globalDefaults.status);
-  const tags = mergeTags(parsed.tags, effectiveDefaultTags(globalDefaults.tags, projectDefaults?.tags));
+  const chainTags = projectDefaultsChain.find((defaults) => defaults.tags.length > 0)?.tags;
+  const tags = mergeTags(parsed.tags, effectiveDefaultTags(globalDefaults.tags, chainTags));
 
-  const dueCode = effectiveDefaultCode(globalDefaults.due, projectDefaults?.due);
-  const scheduledCode = effectiveDefaultCode(globalDefaults.scheduled, projectDefaults?.scheduled);
+  const chainDue = projectDefaultsChain.find((defaults) => defaults.due !== undefined)?.due;
+  const chainScheduled = projectDefaultsChain.find((defaults) => defaults.scheduled !== undefined)?.scheduled;
+  const dueCode = effectiveDefaultCode(globalDefaults.due, chainDue);
+  const scheduledCode = effectiveDefaultCode(globalDefaults.scheduled, chainScheduled);
 
   // The scheduled date this task would actually get, mirroring
   // `resolve_creation_defaults`'s `resolved_scheduled` — needed as the
@@ -197,7 +211,10 @@ export function resolveTaskPreview(options: ResolveTaskPreviewOptions): TaskPrev
               ? resolveDueRelativeDate(dueCode, resolvedScheduledDate)
               : undefined);
 
-  const estimatedMinutes = parsed.estimatedMinutes ?? projectDefaults?.estimated_minutes ?? globalDefaults.estimated_minutes;
+  const chainEstimatedMinutes = projectDefaultsChain.find(
+    (defaults) => defaults.estimated_minutes !== undefined,
+  )?.estimated_minutes;
+  const estimatedMinutes = parsed.estimatedMinutes ?? chainEstimatedMinutes ?? globalDefaults.estimated_minutes;
 
   return {
     project,

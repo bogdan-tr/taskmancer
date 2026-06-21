@@ -4,6 +4,7 @@
   import { updateProject } from "$lib/api";
   import NewProjectModal from "./NewProjectModal.svelte";
   import ProjectTreeNode from "./ProjectTreeNode.svelte";
+  import { getErrorMessage } from "$lib/errors";
   import { projectsState, refreshProjects } from "$lib/projects.svelte";
   import { childrenOf, computeZoneOrderUpdates } from "$lib/projectTree";
   import { expandIfUnset } from "$lib/projectTree.svelte";
@@ -44,7 +45,7 @@
       }
       await refreshProjects();
     } catch (error) {
-      dropError = error instanceof Error ? error.message : "Failed to move project";
+      dropError = getErrorMessage(error, "Failed to move project");
       await refreshProjects();
     }
   }

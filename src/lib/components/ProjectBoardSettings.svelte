@@ -7,6 +7,7 @@
     neonCardColor,
     type InkMode,
   } from "$lib/colorPresets";
+  import { getErrorMessage } from "$lib/errors";
   import { boardsEqual, effectiveBoardStatuses } from "$lib/projectBoardSettings";
   import { projectsState, refreshProjects } from "$lib/projects.svelte";
   import { ancestorsOf, descendantsOf, selfAndAncestors } from "$lib/projectTree";
@@ -183,7 +184,7 @@
       await refreshProjects();
       errorMessage = "";
     } catch (error) {
-      errorMessage = error instanceof Error ? error.message : "Failed to save board settings";
+      errorMessage = getErrorMessage(error, "Failed to save board settings");
     } finally {
       isSaving = false;
     }

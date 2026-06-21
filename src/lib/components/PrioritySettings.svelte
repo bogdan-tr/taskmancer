@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { countTasksByPriority } from "$lib/api";
   import { cssColorToHex } from "$lib/colorPresets";
+  import { getErrorMessage } from "$lib/errors";
   import { deleteBlockReason, levelsEqual, renumber, toggleDefault, uniqueId } from "$lib/prioritySettings";
   import { FALLBACK_PRIORITY_COLOR, sortedPriorities } from "$lib/priorities.svelte";
   import { persistSettings, settingsState } from "$lib/settings.svelte";
@@ -102,7 +103,7 @@
       draft = trimmed;
       errorMessage = "";
     } catch (error) {
-      errorMessage = error instanceof Error ? error.message : "Failed to save priority levels";
+      errorMessage = getErrorMessage(error, "Failed to save priority levels");
     } finally {
       isSaving = false;
     }
