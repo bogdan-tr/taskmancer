@@ -6,6 +6,7 @@ import type {
   FinishDayResult,
   Project,
   ProjectTaskStrategy,
+  Series,
   Settings,
   Task,
 } from "./types";
@@ -84,6 +85,36 @@ export async function deleteSeriesOccurrence(taskId: string, scope: SeriesEditSc
 /** Stops a recurring task's series from generating any further occurrences. Existing occurrences keep their `series_id`. */
 export async function removeRecurrence(taskId: string): Promise<void> {
   return invoke<void>("remove_recurrence", { taskId });
+}
+
+/** Returns a series' recurrence configuration, to pre-fill the recurrence builder when editing an existing recurring task. */
+export async function getSeries(seriesId: string): Promise<Series> {
+  return invoke<Series>("get_series", { seriesId });
+}
+
+/**
+ * Updates an existing recurring task's frequency/due rule/end date —
+ * always a whole-series change. Deletes every already-generated
+ * occurrence on or after `cutoff` (including the occurrence the edit was
+ * made from, if it falls on or after `cutoff` — pass that occurrence's
+ * own `scheduled` date) and regenerates a fresh baseline under the new
+ * rule; past occurrences are untouched. Returns the newly generated
+ * tasks.
+ */
+export async function updateSeriesRecurrence(
+  seriesId: string,
+  cutoff: string,
+  frequency: RecurrenceFrequency,
+  dueRule: DueRule,
+  endDate: string | undefined,
+): Promise<Task[]> {
+  return invoke<Task[]>("update_series_recurrence", {
+    seriesId,
+    cutoff,
+    frequency,
+    dueRule,
+    endDate,
+  });
 }
 
 export async function reorderTask(

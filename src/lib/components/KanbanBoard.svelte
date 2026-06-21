@@ -12,6 +12,7 @@
     removeRecurrence,
     reorderTask,
     updateSeriesOccurrence,
+    updateSeriesRecurrence,
     updateTask,
   } from "$lib/api";
   import { isVisibleOnBoard } from "$lib/boardVisibility";
@@ -37,7 +38,7 @@
   import type { ParsedTaskInput } from "$lib/naturalLanguage";
   import { FALLBACK_PRIORITIES } from "$lib/priorities.svelte";
   import { projectsState } from "$lib/projects.svelte";
-  import type { SeriesEditScope } from "$lib/recurrence";
+  import type { DueRule, RecurrenceFrequency, SeriesEditScope } from "$lib/recurrence";
   import { settingsState } from "$lib/settings.svelte";
   import {
     FALLBACK_STATUS_COLOR,
@@ -314,6 +315,30 @@
     }
   }
 
+  /**
+   * Applies a recurrence-pattern edit (frequency/due rule/end date) from
+   * `TaskEditDialog`'s recurrence builder. Unlike a `scope: "future"`
+   * edit/delete (where precise local patching is possible — every
+   * affected task id is known), this deletes and regenerates an unknown
+   * set of tasks server-side, so a full `refresh()` is the only option,
+   * the same way `confirmFinishDay`'s archive operation already needs one.
+   */
+  async function handleUpdateRecurrence(
+    seriesId: string,
+    cutoff: string,
+    frequency: RecurrenceFrequency,
+    dueRule: DueRule,
+    endDate: string | undefined,
+  ) {
+    try {
+      await updateSeriesRecurrence(seriesId, cutoff, frequency, dueRule, endDate);
+      errorMessage = "";
+      await refresh();
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : "Failed to update recurrence";
+    }
+  }
+
   /** Archives every done/cancelled task across all projects, after the user confirms. */
   async function confirmFinishDay() {
     finishDayConfirmOpen = false;
@@ -580,6 +605,7 @@
       onUpdate={handleUpdate}
       onDelete={handleDelete}
       onRemoveRecurrence={handleRemoveRecurrence}
+      onUpdateRecurrence={handleUpdateRecurrence}
       {showPreviousWeeksColumn}
       onEnsureOccurrences={ensureOccurrencesThrough}
     />
@@ -589,6 +615,7 @@
       onUpdate={handleUpdate}
       onDelete={handleDelete}
       onRemoveRecurrence={handleRemoveRecurrence}
+      onUpdateRecurrence={handleUpdateRecurrence}
       onEnsureOccurrences={ensureOccurrencesThrough}
     />
   {:else}

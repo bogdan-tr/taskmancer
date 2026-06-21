@@ -44,6 +44,8 @@ pub fn run() {
             commands::delete_task,
             commands::delete_series_occurrence,
             commands::remove_recurrence,
+            commands::get_series,
+            commands::update_series_recurrence,
             commands::reorder_task,
             commands::list_projects,
             commands::create_project,

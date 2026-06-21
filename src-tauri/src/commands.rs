@@ -927,6 +927,140 @@ pub fn remove_recurrence(state: State<AppState>, task_id: String) -> Result<(), 
     Ok(())
 }
 
+/// Returns the `Series` identified by `series_id`, for the recurrence
+/// builder to pre-fill when editing an existing recurring task's
+/// frequency/due rule — the frontend otherwise has no way to see a
+/// series' recurrence configuration at all, only its occurrences' own
+/// task fields.
+#[tauri::command]
+pub fn get_series(state: State<AppState>, series_id: String) -> Result<Series, String> {
+    let all_series = series_storage::list_series(&state.series_file).map_err(|e| e.to_string())?;
+    all_series
+        .into_iter()
+        .find(|s| s.id == series_id)
+        .ok_or_else(|| format!("series '{series_id}' not found"))
+}
+
+/// Updates an existing recurring task's frequency, due rule, and/or end
+/// date — always a whole-series change, never scoped to "just this
+/// occurrence" (unlike [`update_series_occurrence`]'s shared-field edits):
+/// there's no meaningful "just this one occurrence follows a different
+/// recurrence pattern" the way there is for title/priority/tags.
+///
+/// Deletes every already-generated occurrence in the series whose
+/// `scheduled` date is on or after `cutoff` — including the occurrence the
+/// edit was made from, if its own date falls on or after `cutoff` (which
+/// it normally will, since the frontend passes that occurrence's own
+/// `scheduled` date as `cutoff`; that task disappearing as part of this is
+/// expected, since it may no longer match the new pattern) — then
+/// regenerates a fresh [`RECURRENCE_BASELINE_LOOKAHEAD_DAYS`]-day baseline
+/// from `cutoff` under the new rule. Past occurrences (before `cutoff`)
+/// are never touched. The series' `anchor_date` is never changed by this
+/// — only by removing and recreating the series entirely — so a
+/// `Weekly`/`MonthlyByDay` pattern with `interval_weeks`/month-skip
+/// behavior still counts from the same original reference point.
+///
+/// If `cutoff` is exactly the series' `anchor_date` (the edit was made
+/// from the series' very first occurrence), that date's occurrence is
+/// recreated directly when it satisfies the new pattern, mirroring
+/// [`create_recurring_task`]'s own [`anchor_matches_frequency`] check —
+/// the normal generation step alone can never produce a date on or before
+/// its own `after` parameter, so without this, the anchor date would be
+/// lost permanently even when the new pattern would otherwise include it.
+///
+/// Rejects the edit if the series is no longer active (recurrence already
+/// removed via [`remove_recurrence`]) — otherwise this would silently
+/// resume generating occurrences for a series the user explicitly stopped.
+/// Returns every newly generated task.
+#[tauri::command]
+pub fn update_series_recurrence(
+    state: State<AppState>,
+    series_id: String,
+    cutoff: String,
+    frequency: RecurrenceFrequency,
+    due_rule: DueRule,
+    end_date: Option<String>,
+) -> Result<Vec<Task>, String> {
+    let cutoff_date = chrono::NaiveDate::parse_from_str(&cutoff, "%Y-%m-%d")
+        .map_err(|_| "cutoff must be a valid date in YYYY-MM-DD format".to_string())?;
+    validate_date_field(&end_date, "end date")?;
+    if let Some(end) = &end_date {
+        let end_date_parsed =
+            chrono::NaiveDate::parse_from_str(end, "%Y-%m-%d").map_err(|e| e.to_string())?;
+        if end_date_parsed < cutoff_date {
+            return Err("end date must be on or after the cutoff date".to_string());
+        }
+    }
+
+    let settings =
+        settings_storage::load_settings(&state.settings_file).map_err(|e| e.to_string())?;
+    let projects =
+        project_storage::list_projects(&state.projects_file).map_err(|e| e.to_string())?;
+
+    let _guard = state
+        .series_lock
+        .lock()
+        .map_err(|_| "series lock poisoned".to_string())?;
+
+    let mut all_series =
+        series_storage::list_series(&state.series_file).map_err(|e| e.to_string())?;
+    let Some(series) = all_series.iter_mut().find(|s| s.id == series_id) else {
+        return Err(format!("series '{series_id}' not found"));
+    };
+    if !series.active {
+        return Err(
+            "this series' recurrence has been removed and can no longer be edited".to_string(),
+        );
+    }
+
+    series.frequency = frequency;
+    series.due_rule = due_rule;
+    series.end_date = end_date;
+    validate_series(series)?;
+
+    let project_board = series
+        .project
+        .as_deref()
+        .and_then(|name| find_project(&projects, name))
+        .map(|p| &p.board);
+
+    let all_tasks = storage::list_tasks(&state.tasks_dir).map_err(|e| e.to_string())?;
+    for stale in future_occurrences(&all_tasks, &series_id, None, &cutoff) {
+        storage::delete_task(&state.tasks_dir, &stale.id).map_err(|e| e.to_string())?;
+    }
+
+    let mut created = Vec::new();
+
+    // Mirrors create_recurring_task's own anchor_matches_frequency check:
+    // occurrence_dates_in_range only ever returns dates strictly *after*
+    // its `after` parameter, so if `cutoff` is the series' anchor date
+    // itself (i.e. this edit was made from the series' very first
+    // occurrence, which was just deleted above), the generation step
+    // below can never reconsider that date — it would be lost forever,
+    // even when it satisfies the new pattern, without this direct check.
+    let anchor_date = chrono::NaiveDate::parse_from_str(&series.anchor_date, "%Y-%m-%d")
+        .map_err(|e| e.to_string())?;
+    if cutoff_date == anchor_date && anchor_matches_frequency(&series.frequency, anchor_date) {
+        let occurrence = build_series_occurrence(series, &settings, project_board, anchor_date);
+        storage::save_task(&state.tasks_dir, &occurrence).map_err(|e| e.to_string())?;
+        created.push(occurrence);
+    }
+
+    let new_watermark = cutoff_date
+        .checked_sub_days(chrono::Days::new(1))
+        .ok_or_else(|| "cutoff date is out of range".to_string())?;
+    series.generated_until = new_watermark.format("%Y-%m-%d").to_string();
+
+    let horizon = cutoff_date + chrono::Duration::days(RECURRENCE_BASELINE_LOOKAHEAD_DAYS);
+    let generated =
+        generate_series_occurrences(&state.tasks_dir, &settings, project_board, series, horizon)?;
+    created.extend(generated);
+
+    series_storage::save_series(&state.series_file, &all_series).map_err(|e| e.to_string())?;
+
+    Ok(created)
+}
+
 /// Sets a task's board position (`order`) and optionally its status and/or
 /// priority, used by the frontend after a drag-and-drop reorder, a move
 /// between status columns, or a move between priority groups within a

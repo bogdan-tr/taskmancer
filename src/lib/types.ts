@@ -1,4 +1,5 @@
 import type { InkMode } from "./colorPresets";
+import type { DueRule, RecurrenceFrequency } from "./recurrence";
 
 export interface Task {
   id: string;
@@ -90,6 +91,31 @@ export interface Project {
 
 /** Matches `DEFAULT_PROJECT_COLOR` in `src-tauri/src/project.rs`. */
 export const DEFAULT_PROJECT_COLOR = "#3b82f6";
+
+/**
+ * A recurring task's template and rule, mirroring `Series` in
+ * `src-tauri/src/series.rs` exactly. Only ever fetched via `getSeries` (to
+ * pre-fill the recurrence builder when editing an existing recurring
+ * task) — the app otherwise interacts with recurrence entirely through
+ * `Task.series_id` and the dedicated series commands, never by reading or
+ * writing this shape directly elsewhere.
+ */
+export interface Series {
+  id: string;
+  frequency: RecurrenceFrequency;
+  anchor_date: string;
+  end_date?: string;
+  due_rule: DueRule;
+  generated_until: string;
+  active: boolean;
+  title: string;
+  project?: string;
+  priority: string;
+  tags: string[];
+  estimated_minutes?: number;
+  notes: string;
+  created: string;
+}
 
 /**
  * A user-defined priority level: an id stored in `Task.priority`, a display

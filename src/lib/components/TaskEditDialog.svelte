@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { getSeries } from "$lib/api";
   import { applyTagsSuggestion, filterSuggestions, splitTagsInput } from "$lib/autocomplete";
   import { displayState } from "$lib/displaySettings.svelte";
   import { formatDueDateDisplay } from "$lib/dueDateDisplay";
@@ -6,7 +7,15 @@
   import { generalState } from "$lib/generalSettings.svelte";
   import { FALLBACK_PRIORITIES, sortedPriorities } from "$lib/priorities.svelte";
   import { projectsState } from "$lib/projects.svelte";
-  import type { SeriesEditScope } from "$lib/recurrence";
+  import {
+    dueRuleFromDefaultCode,
+    formatDueRule,
+    formatRecurrenceFrequency,
+    type DueRule,
+    type RecurrenceBuilderValue,
+    type RecurrenceFrequency,
+    type SeriesEditScope,
+  } from "$lib/recurrence";
   import { settingsState } from "$lib/settings.svelte";
   import { FALLBACK_STATUSES, sortedStatuses } from "$lib/statuses.svelte";
   import {
@@ -17,10 +26,12 @@
     seriesSharedFieldsChanged,
   } from "$lib/taskFields";
   import { tagsState } from "$lib/tags.svelte";
-  import type { Task } from "$lib/types";
+  import { effectiveDefaultCode } from "$lib/taskPreview";
+  import type { Series, Task } from "$lib/types";
   import Autocomplete from "./Autocomplete.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
   import DatePickerPopover from "./DatePickerPopover.svelte";
+  import RecurrenceBuilderDialog from "./RecurrenceBuilderDialog.svelte";
   import SeriesScopeDialog from "./SeriesScopeDialog.svelte";
 
   interface Props {
@@ -29,10 +40,18 @@
     onSave: (task: Task, scope?: SeriesEditScope) => void;
     onDelete: (id: string, scope?: SeriesEditScope) => void;
     onRemoveRecurrence: (id: string) => void;
+    /** Updates a series' frequency/due rule/end date — always a whole-series change, see `RecurrenceBuilderDialog`'s own doc comment for why there's no "this vs future" scope here. */
+    onUpdateRecurrence: (
+      seriesId: string,
+      cutoff: string,
+      frequency: RecurrenceFrequency,
+      dueRule: DueRule,
+      endDate: string | undefined,
+    ) => void;
     onCancel: () => void;
   }
 
-  let { open, task, onSave, onDelete, onRemoveRecurrence, onCancel }: Props = $props();
+  let { open, task, onSave, onDelete, onRemoveRecurrence, onUpdateRecurrence, onCancel }: Props = $props();
 
   const priorities = $derived(settingsState.current?.priorities ?? FALLBACK_PRIORITIES);
   const statuses = $derived(sortedStatuses(settingsState.current?.statuses ?? FALLBACK_STATUSES));
@@ -68,6 +87,31 @@
   let tagSuggestions: string[] = $state([]);
   let tagSuggestionIndex = $state(0);
 
+  /**
+   * The opened task's series, fetched fresh each time the dialog opens on
+   * a recurring task — `Task` only ever carries `series_id`, never the
+   * series' own frequency/due rule/end date, so this is the only way to
+   * show or edit them. `undefined` while loading or for a non-recurring
+   * task; `seriesLoadError` is set if the fetch itself fails (e.g. a
+   * `series_id` left over after the series was somehow removed).
+   */
+  let seriesInfo: Series | undefined = $state();
+  let seriesLoadError = $state("");
+
+  /** Guards against a stale response overwriting fresher state if the dialog is reopened on a different task before the previous fetch resolves. */
+  async function loadSeriesInfo(seriesId: string) {
+    try {
+      const result = await getSeries(seriesId);
+      if (task?.series_id === seriesId) {
+        seriesInfo = result;
+      }
+    } catch (error) {
+      if (task?.series_id === seriesId) {
+        seriesLoadError = error instanceof Error ? error.message : "Failed to load recurrence";
+      }
+    }
+  }
+
   /** Opens/closes the dialog and (re)initializes the draft fields from `task` whenever it opens. */
   $effect(() => {
     if (!dialogEl) return;
@@ -87,6 +131,11 @@
       editError = "";
       projectSuggestions = [];
       tagSuggestions = [];
+      seriesInfo = undefined;
+      seriesLoadError = "";
+      if (task.series_id !== undefined) {
+        void loadSeriesInfo(task.series_id);
+      }
       if (!dialogEl.open) dialogEl.showModal();
     } else if (dialogEl.open) {
       dialogEl.close();
@@ -281,11 +330,66 @@
     if (!task) return;
     showRemoveRecurrenceConfirm = false;
     onRemoveRecurrence(task.id);
+    // Updates the cached `seriesInfo` locally rather than refetching —
+    // this dialog stays open afterward (only "Save"/"Cancel"/"Delete"
+    // close it), and without this, the "Edit recurrence" trigger and
+    // "Remove recurrence" button would keep showing stale `active: true`
+    // for the rest of this session, letting the user reach the backend's
+    // now-correct rejection of an edit to an inactive series — the exact
+    // disconnected-error symptom the `seriesInfo.active` gating elsewhere
+    // in this file exists to prevent in the first place.
+    if (seriesInfo) {
+      seriesInfo = { ...seriesInfo, active: false };
+    }
   }
 
   function cancelRemoveRecurrence() {
     showRemoveRecurrenceConfirm = false;
   }
+
+  /**
+   * The value `RecurrenceBuilderDialog` pre-fills from when opened — the
+   * series' own current configuration, with no override layer (unlike
+   * `AddTaskModal`, editing here has nothing to override; `seriesInfo` is
+   * the only source of truth).
+   */
+  let recurrenceBuilderValue: RecurrenceBuilderValue | undefined = $derived(
+    seriesInfo
+      ? { frequency: seriesInfo.frequency, endDate: seriesInfo.end_date, dueRule: seriesInfo.due_rule }
+      : undefined,
+  );
+
+  /**
+   * Applies a recurrence-pattern edit — always a whole-series change, with
+   * the *opened* occurrence's own scheduled date as the cutoff (mirroring
+   * "this and future" elsewhere: relative to the occurrence you're
+   * looking at, not an unrelated "today"). The opened task itself may be
+   * deleted as part of this if it no longer matches the new pattern, so
+   * the dialog closes immediately after — its underlying `task` is no
+   * longer guaranteed to exist, and `onCancel` is what `KanbanBoard` uses
+   * to trigger a full board refresh after a series-recurrence edit (see
+   * its own doc comment).
+   *
+   * "Use the default" (`value.dueRule` unset) is resolved to an explicit
+   * rule here, the same way `AddTaskModal` resolves it for creation — the
+   * backend command takes a non-optional `DueRule`, since there's no
+   * typed-phrase fallback to defer to once you're editing an existing
+   * series.
+   */
+  function handleRecurrenceBuilderApply(value: RecurrenceBuilderValue) {
+    if (!task?.series_id || !task.scheduled) return;
+    const matchedProject = task.project
+      ? projectsState.items.find((p) => p.name.toLowerCase() === task.project?.toLowerCase())
+      : undefined;
+    const globalDefaults = settingsState.current?.defaults ?? { tags: [] };
+    const dueRule =
+      value.dueRule ?? dueRuleFromDefaultCode(effectiveDefaultCode(globalDefaults.due, matchedProject?.defaults.due));
+    onUpdateRecurrence(task.series_id, task.scheduled, value.frequency, dueRule, value.endDate);
+    onCancel();
+  }
+
+  /** "Clear" has nothing meaningful to revert to here (there's no typed-phrase override layer the way AddTaskModal has) — RecurrenceBuilderDialog closes itself either way, so this is a no-op. */
+  function handleRecurrenceBuilderClear() {}
 </script>
 
 <dialog
@@ -439,9 +543,36 @@
         <textarea bind:value={draftNotes} rows="3"></textarea>
       </label>
       {#if task.series_id !== undefined}
-        <button type="button" class="remove-recurrence-link" onclick={handleRemoveRecurrenceClick}>
-          Remove recurrence
-        </button>
+        <div class="recurrence-info">
+          <span class="recurrence-info-label">Recurrence</span>
+          {#if seriesInfo}
+            <span class="recurrence-info-summary">
+              {formatRecurrenceFrequency(seriesInfo.frequency)}{seriesInfo.end_date
+                ? ` until ${seriesInfo.end_date}`
+                : ""} · Due: {formatDueRule(seriesInfo.due_rule)}
+              {#if !seriesInfo.active}
+                (recurrence removed)
+              {/if}
+            </span>
+            {#if seriesInfo.active}
+              <RecurrenceBuilderDialog
+                value={recurrenceBuilderValue}
+                triggerLabel="Edit recurrence"
+                onApply={handleRecurrenceBuilderApply}
+                onClear={handleRecurrenceBuilderClear}
+              />
+            {/if}
+          {:else if seriesLoadError}
+            <span class="recurrence-info-summary recurrence-info-error">{seriesLoadError}</span>
+          {:else}
+            <span class="recurrence-info-summary">Loading…</span>
+          {/if}
+        </div>
+        {#if seriesInfo?.active !== false}
+          <button type="button" class="remove-recurrence-link" onclick={handleRemoveRecurrenceClick}>
+            Remove recurrence
+          </button>
+        {/if}
       {/if}
       {#if editError}
         <p class="edit-error" role="alert">{editError}</p>
@@ -688,6 +819,39 @@
   }
 
   .remove-recurrence-link:hover {
+    color: var(--color-danger);
+  }
+
+  .recurrence-info {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-sm);
+    padding: var(--space-2xs) var(--space-xs);
+    border-radius: var(--radius-sm);
+    background: var(--color-canvas);
+  }
+
+  .recurrence-info-label {
+    flex-shrink: 0;
+    font-size: var(--text-xs);
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-wide);
+    color: var(--color-ink-muted);
+  }
+
+  .recurrence-info-summary {
+    flex: 1;
+    min-width: 0;
+    font-size: var(--text-xs);
+    font-weight: 400;
+    text-transform: none;
+    letter-spacing: normal;
+    color: var(--color-ink);
+  }
+
+  .recurrence-info-error {
     color: var(--color-danger);
   }
 </style>
