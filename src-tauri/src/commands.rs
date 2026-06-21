@@ -4,9 +4,9 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use crate::project::{Project, ProjectBoard, DEFAULT_PROJECT_COLOR};
+use crate::project::{Project, DEFAULT_PROJECT_COLOR};
 use crate::project_storage;
-use crate::project_tree::would_create_cycle;
+use crate::project_tree::{self, would_create_cycle};
 use crate::recurrence::{anchor_matches_frequency, occurrence_dates_in_range, resolve_due_rule};
 use crate::series::{validate_series, DueRule, RecurrenceFrequency, Series};
 use crate::series_storage;
@@ -72,14 +72,19 @@ fn resolve_default_priority(settings: &Settings) -> String {
 }
 
 /// Resolves the status a new task should get when none was explicitly
-/// requested. Checked in order: `project_board.default_status` (if it names
-/// a currently-defined status), `settings.defaults.status` (if it names a
-/// currently-defined status), the status with the lowest `order` (order 1
-/// sorts first), otherwise `"backlog"` if no statuses are defined at all.
-fn resolve_default_status(settings: &Settings, project_board: Option<&ProjectBoard>) -> String {
-    if let Some(default_id) = project_board.and_then(|board| board.default_status.as_ref()) {
-        if validate_status_id(settings, default_id).is_ok() {
-            return default_id.clone();
+/// requested. Checked in order: each project in `project_chain` (the task's
+/// own project, then its ancestors nearest-first — see
+/// [`crate::project_tree::self_and_ancestors`])'s `board.default_status` (if
+/// it names a currently-defined status), `settings.defaults.status` (if it
+/// names a currently-defined status), the status with the lowest `order`
+/// (order 1 sorts first), otherwise `"backlog"` if no statuses are defined
+/// at all.
+fn resolve_default_status(settings: &Settings, project_chain: &[&Project]) -> String {
+    for project in project_chain {
+        if let Some(default_id) = &project.board.default_status {
+            if validate_status_id(settings, default_id).is_ok() {
+                return default_id.clone();
+            }
         }
     }
 
@@ -129,34 +134,30 @@ fn merge_tags(explicit: Vec<String>, defaults: Vec<String>) -> Vec<String> {
 }
 
 /// Returns the default tags that should be merged into a newly-created
-/// task's explicit tags: the project's default tags if it has any, otherwise
-/// the global default tags.
-fn effective_default_tags(global: &TaskDefaults, project: Option<&TaskDefaults>) -> Vec<String> {
-    match project {
-        Some(p) if !p.tags.is_empty() => p.tags.clone(),
-        _ => global.tags.clone(),
-    }
+/// task's explicit tags: the nearest project in `project_chain` (the task's
+/// own project, then its ancestors nearest-first) with a non-empty
+/// `defaults.tags`, otherwise the global default tags.
+fn effective_default_tags(global: &TaskDefaults, project_chain: &[&Project]) -> Vec<String> {
+    project_chain
+        .iter()
+        .map(|p| &p.defaults.tags)
+        .find(|tags| !tags.is_empty())
+        .cloned()
+        .unwrap_or_else(|| global.tags.clone())
 }
 
 /// Resolves the effective `estimated_minutes` default for a new task that
-/// doesn't specify its own estimate: the project-level override if set,
-/// otherwise the global default, otherwise `None` (no estimate).
+/// doesn't specify its own estimate: the nearest project in `project_chain`
+/// (the task's own project, then its ancestors nearest-first) with an
+/// override, otherwise the global default, otherwise `None` (no estimate).
 fn effective_default_estimated_minutes(
     global: &TaskDefaults,
-    project: Option<&TaskDefaults>,
+    project_chain: &[&Project],
 ) -> Option<u32> {
-    project
-        .and_then(|p| p.estimated_minutes)
+    project_chain
+        .iter()
+        .find_map(|p| p.defaults.estimated_minutes)
         .or(global.estimated_minutes)
-}
-
-/// Resolves the effective relative-date code for a `due`/`scheduled`
-/// default: the project-level override if set, otherwise the global default.
-fn effective_default_code<'a>(
-    global: &'a Option<String>,
-    project: Option<&'a Option<String>>,
-) -> Option<&'a String> {
-    project.and_then(|p| p.as_ref()).or(global.as_ref())
 }
 
 /// Resolves a [`SCHEDULED_RELATIVE_DATE_CODES`](crate::settings::SCHEDULED_RELATIVE_DATE_CODES)
@@ -192,17 +193,20 @@ fn resolve_default_due_date(code: Option<&String>, scheduled: chrono::NaiveDate)
 /// already present in the explicit tags is appended.
 fn resolve_creation_defaults(
     settings: &Settings,
-    project_defaults: Option<&TaskDefaults>,
+    project_chain: &[&Project],
     today: chrono::NaiveDate,
     tags: Option<Vec<String>>,
     due: Option<String>,
     scheduled: Option<String>,
 ) -> (Vec<String>, Option<String>, String) {
-    let due_code = effective_default_code(&settings.defaults.due, project_defaults.map(|d| &d.due));
-    let scheduled_code = effective_default_code(
-        &settings.defaults.scheduled,
-        project_defaults.map(|d| &d.scheduled),
-    );
+    let due_code = project_chain
+        .iter()
+        .find_map(|p| p.defaults.due.as_ref())
+        .or(settings.defaults.due.as_ref());
+    let scheduled_code = project_chain
+        .iter()
+        .find_map(|p| p.defaults.scheduled.as_ref())
+        .or(settings.defaults.scheduled.as_ref());
 
     let resolved_scheduled = scheduled
         .or_else(|| resolve_default_scheduled_date(scheduled_code, today))
@@ -218,7 +222,7 @@ fn resolve_creation_defaults(
         }
     };
 
-    let default_tags = effective_default_tags(&settings.defaults, project_defaults);
+    let default_tags = effective_default_tags(&settings.defaults, project_chain);
     let final_tags = merge_tags(tags.unwrap_or_default(), default_tags);
 
     (final_tags, resolved_due, resolved_scheduled)
@@ -295,14 +299,15 @@ pub fn create_task(
     let projects =
         project_storage::list_projects(&state.projects_file).map_err(|e| e.to_string())?;
     let matched_project = find_project(&projects, &project_name);
-    let project_board = matched_project.map(|p| &p.board);
-    let project_defaults = matched_project.map(|p| &p.defaults);
+    let project_chain: Vec<&Project> = matched_project
+        .map(|p| project_tree::self_and_ancestors(&projects, &p.id))
+        .unwrap_or_default();
     let status = match status {
         Some(id) => {
             validate_status_id(&settings, &id)?;
             id
         }
-        None => resolve_default_status(&settings, project_board),
+        None => resolve_default_status(&settings, &project_chain),
     };
 
     // Use the user's local date so relative-date defaults (e.g. "today",
@@ -310,9 +315,9 @@ pub fn create_task(
     // regardless of the machine's UTC offset.
     let today = chrono::Local::now().date_naive();
     let (final_tags, resolved_due, resolved_scheduled) =
-        resolve_creation_defaults(&settings, project_defaults, today, tags, due, scheduled);
+        resolve_creation_defaults(&settings, &project_chain, today, tags, due, scheduled);
     let resolved_estimated_minutes = estimated_minutes
-        .or_else(|| effective_default_estimated_minutes(&settings.defaults, project_defaults));
+        .or_else(|| effective_default_estimated_minutes(&settings.defaults, &project_chain));
 
     let mut task = Task::new(title);
     task.status = status;
@@ -337,11 +342,11 @@ pub fn create_task(
 fn build_series_occurrence(
     series: &Series,
     settings: &Settings,
-    project_board: Option<&ProjectBoard>,
+    project_chain: &[&Project],
     date: chrono::NaiveDate,
 ) -> Task {
     let mut task = Task::new(series.title.clone());
-    task.status = resolve_default_status(settings, project_board);
+    task.status = resolve_default_status(settings, project_chain);
     task.project = series.project.clone();
     task.tags = series.tags.clone();
     task.priority = series.priority.clone();
@@ -364,7 +369,7 @@ fn build_series_occurrence(
 fn generate_series_occurrences(
     tasks_dir: &Path,
     settings: &Settings,
-    project_board: Option<&ProjectBoard>,
+    project_chain: &[&Project],
     series: &mut Series,
     through: chrono::NaiveDate,
 ) -> Result<Vec<Task>, String> {
@@ -374,7 +379,7 @@ fn generate_series_occurrences(
     let dates = occurrence_dates_in_range(series, generated_until, through);
     let mut created = Vec::with_capacity(dates.len());
     for date in &dates {
-        let task = build_series_occurrence(series, settings, project_board, *date);
+        let task = build_series_occurrence(series, settings, project_chain, *date);
         storage::save_task(tasks_dir, &task).map_err(|e| e.to_string())?;
         created.push(task);
     }
@@ -460,14 +465,15 @@ pub fn create_recurring_task(
     let projects =
         project_storage::list_projects(&state.projects_file).map_err(|e| e.to_string())?;
     let matched_project = find_project(&projects, &project_name);
-    let project_board = matched_project.map(|p| &p.board);
-    let project_defaults = matched_project.map(|p| &p.defaults);
+    let project_chain: Vec<&Project> = matched_project
+        .map(|p| project_tree::self_and_ancestors(&projects, &p.id))
+        .unwrap_or_default();
     let status = match status {
         Some(id) => {
             validate_status_id(&settings, &id)?;
             id
         }
-        None => resolve_default_status(&settings, project_board),
+        None => resolve_default_status(&settings, &project_chain),
     };
 
     let today = chrono::Local::now().date_naive();
@@ -479,11 +485,14 @@ pub fn create_recurring_task(
     // `build_series_occurrence`) — the exact inconsistency this whole
     // feature exists to fix, just one occurrence later than before.
     let (final_tags, _due_resolution_unused_for_recurring_tasks, resolved_scheduled) =
-        resolve_creation_defaults(&settings, project_defaults, today, tags, due, scheduled);
+        resolve_creation_defaults(&settings, &project_chain, today, tags, due, scheduled);
     let resolved_estimated_minutes = estimated_minutes
-        .or_else(|| effective_default_estimated_minutes(&settings.defaults, project_defaults));
+        .or_else(|| effective_default_estimated_minutes(&settings.defaults, &project_chain));
     let series_due_rule = due_rule.unwrap_or_else(|| {
-        effective_default_code(&settings.defaults.due, project_defaults.map(|d| &d.due))
+        project_chain
+            .iter()
+            .find_map(|p| p.defaults.due.as_ref())
+            .or(settings.defaults.due.as_ref())
             .map(|code| DueRule::DefaultCode { code: code.clone() })
             .unwrap_or(DueRule::Never)
     });
@@ -550,7 +559,7 @@ pub fn create_recurring_task(
     let mut created = generate_series_occurrences(
         &state.tasks_dir,
         &settings,
-        project_board,
+        &project_chain,
         &mut series,
         horizon,
     )?;
@@ -599,16 +608,17 @@ pub fn ensure_occurrences_until(
         return Ok(Vec::new());
     }
 
-    let project_board = series
+    let project_chain: Vec<&Project> = series
         .project
         .as_deref()
         .and_then(|name| find_project(&projects, name))
-        .map(|p| &p.board);
+        .map(|p| project_tree::self_and_ancestors(&projects, &p.id))
+        .unwrap_or_default();
 
     let created = generate_series_occurrences(
         &state.tasks_dir,
         &settings,
-        project_board,
+        &project_chain,
         series,
         through_date,
     )?;
@@ -1019,11 +1029,12 @@ pub fn update_series_recurrence(
     series.end_date = end_date;
     validate_series(series)?;
 
-    let project_board = series
+    let project_chain: Vec<&Project> = series
         .project
         .as_deref()
         .and_then(|name| find_project(&projects, name))
-        .map(|p| &p.board);
+        .map(|p| project_tree::self_and_ancestors(&projects, &p.id))
+        .unwrap_or_default();
 
     let all_tasks = storage::list_tasks(&state.tasks_dir).map_err(|e| e.to_string())?;
     for stale in future_occurrences(&all_tasks, &series_id, None, &cutoff) {
@@ -1042,7 +1053,7 @@ pub fn update_series_recurrence(
     let anchor_date = chrono::NaiveDate::parse_from_str(&series.anchor_date, "%Y-%m-%d")
         .map_err(|e| e.to_string())?;
     if cutoff_date == anchor_date && anchor_matches_frequency(&series.frequency, anchor_date) {
-        let occurrence = build_series_occurrence(series, &settings, project_board, anchor_date);
+        let occurrence = build_series_occurrence(series, &settings, &project_chain, anchor_date);
         storage::save_task(&state.tasks_dir, &occurrence).map_err(|e| e.to_string())?;
         created.push(occurrence);
     }
@@ -1054,7 +1065,7 @@ pub fn update_series_recurrence(
 
     let horizon = cutoff_date + chrono::Duration::days(RECURRENCE_BASELINE_LOOKAHEAD_DAYS);
     let generated =
-        generate_series_occurrences(&state.tasks_dir, &settings, project_board, series, horizon)?;
+        generate_series_occurrences(&state.tasks_dir, &settings, &project_chain, series, horizon)?;
     created.extend(generated);
 
     series_storage::save_series(&state.series_file, &all_series).map_err(|e| e.to_string())?;
@@ -1873,13 +1884,15 @@ mod tests {
             tags: vec!["global".to_string()],
             ..Default::default()
         };
-        let project = TaskDefaults {
+        let mut project = Project::new("Test".to_string(), "#111111".to_string(), 1);
+        project.defaults = TaskDefaults {
             tags: vec!["project".to_string()],
             ..Default::default()
         };
+        let chain = vec![&project];
 
         assert_eq!(
-            effective_default_tags(&global, Some(&project)),
+            effective_default_tags(&global, &chain),
             vec!["project".to_string()]
         );
     }
@@ -1890,10 +1903,11 @@ mod tests {
             tags: vec!["global".to_string()],
             ..Default::default()
         };
-        let project = TaskDefaults::default();
+        let project = Project::new("Test".to_string(), "#111111".to_string(), 1);
+        let chain = vec![&project];
 
         assert_eq!(
-            effective_default_tags(&global, Some(&project)),
+            effective_default_tags(&global, &chain),
             vec!["global".to_string()]
         );
     }
@@ -1904,13 +1918,15 @@ mod tests {
             estimated_minutes: Some(60),
             ..Default::default()
         };
-        let project = TaskDefaults {
+        let mut project = Project::new("Test".to_string(), "#111111".to_string(), 1);
+        project.defaults = TaskDefaults {
             estimated_minutes: Some(15),
             ..Default::default()
         };
+        let chain = vec![&project];
 
         assert_eq!(
-            effective_default_estimated_minutes(&global, Some(&project)),
+            effective_default_estimated_minutes(&global, &chain),
             Some(15)
         );
     }
@@ -1921,10 +1937,11 @@ mod tests {
             estimated_minutes: Some(60),
             ..Default::default()
         };
-        let project = TaskDefaults::default();
+        let project = Project::new("Test".to_string(), "#111111".to_string(), 1);
+        let chain = vec![&project];
 
         assert_eq!(
-            effective_default_estimated_minutes(&global, Some(&project)),
+            effective_default_estimated_minutes(&global, &chain),
             Some(60)
         );
     }
@@ -1933,7 +1950,7 @@ mod tests {
     fn effective_default_estimated_minutes_is_none_when_neither_set() {
         let global = TaskDefaults::default();
 
-        assert_eq!(effective_default_estimated_minutes(&global, None), None);
+        assert_eq!(effective_default_estimated_minutes(&global, &[]), None);
     }
 
     #[test]
@@ -1944,48 +1961,9 @@ mod tests {
         };
 
         assert_eq!(
-            effective_default_tags(&global, None),
+            effective_default_tags(&global, &[]),
             vec!["global".to_string()]
         );
-    }
-
-    #[test]
-    fn effective_default_code_prefers_project_override() {
-        let global = Some("tomorrow".to_string());
-        let project = Some("in_1_week".to_string());
-
-        assert_eq!(
-            effective_default_code(&global, Some(&project)),
-            Some(&"in_1_week".to_string())
-        );
-    }
-
-    #[test]
-    fn effective_default_code_falls_back_to_global_when_project_has_no_override() {
-        let global = Some("tomorrow".to_string());
-        let project = None;
-
-        assert_eq!(
-            effective_default_code(&global, Some(&project)),
-            Some(&"tomorrow".to_string())
-        );
-    }
-
-    #[test]
-    fn effective_default_code_falls_back_to_global_when_no_project_defaults() {
-        let global = Some("tomorrow".to_string());
-
-        assert_eq!(
-            effective_default_code(&global, None),
-            Some(&"tomorrow".to_string())
-        );
-    }
-
-    #[test]
-    fn effective_default_code_returns_none_when_neither_set() {
-        let global = None;
-
-        assert_eq!(effective_default_code(&global, Some(&None)), None);
     }
 
     #[test]
@@ -2046,7 +2024,7 @@ mod tests {
         };
 
         let (tags, due, scheduled) =
-            resolve_creation_defaults(&settings, None, today, None, None, None);
+            resolve_creation_defaults(&settings, &[], today, None, None, None);
 
         assert_eq!(tags, vec!["global".to_string()]);
         assert_eq!(scheduled, "2026-06-21".to_string());
@@ -2063,7 +2041,7 @@ mod tests {
         };
 
         let (_tags, _due, scheduled) =
-            resolve_creation_defaults(&settings, None, today, None, None, None);
+            resolve_creation_defaults(&settings, &[], today, None, None, None);
 
         assert_eq!(scheduled, "2026-06-14".to_string());
     }
@@ -2081,7 +2059,7 @@ mod tests {
         };
 
         let (_tags, due, _scheduled) =
-            resolve_creation_defaults(&settings, None, today, None, Some("none".to_string()), None);
+            resolve_creation_defaults(&settings, &[], today, None, Some("none".to_string()), None);
 
         assert_eq!(due, None);
     }
@@ -2099,7 +2077,7 @@ mod tests {
 
         let (_tags, due, scheduled) = resolve_creation_defaults(
             &settings,
-            None,
+            &[],
             today,
             None,
             None,
@@ -2120,14 +2098,16 @@ mod tests {
             },
             ..Default::default()
         };
-        let project_defaults = TaskDefaults {
+        let mut project = Project::new("Test".to_string(), "#111111".to_string(), 1);
+        project.defaults = TaskDefaults {
             tags: vec!["project".to_string()],
             ..Default::default()
         };
+        let chain = vec![&project];
 
         let (tags, _due, _scheduled) = resolve_creation_defaults(
             &settings,
-            Some(&project_defaults),
+            &chain,
             today,
             Some(vec!["urgent".to_string()]),
             None,
@@ -2148,14 +2128,16 @@ mod tests {
             },
             ..Default::default()
         };
-        let project_defaults = TaskDefaults {
+        let mut project = Project::new("Test".to_string(), "#111111".to_string(), 1);
+        project.defaults = TaskDefaults {
             due: Some("in_1_week".to_string()),
             scheduled: Some("in_1_month".to_string()),
             ..Default::default()
         };
+        let chain = vec![&project];
 
         let (_tags, due, scheduled) =
-            resolve_creation_defaults(&settings, Some(&project_defaults), today, None, None, None);
+            resolve_creation_defaults(&settings, &chain, today, None, None, None);
 
         // scheduled = in_1_month from 2026-06-14 = 2026-07-14.
         assert_eq!(scheduled, "2026-07-14".to_string());
@@ -2178,7 +2160,7 @@ mod tests {
 
         let (tags, due, scheduled) = resolve_creation_defaults(
             &settings,
-            None,
+            &[],
             today,
             Some(vec!["explicit".to_string()]),
             Some("2026-08-01".to_string()),
@@ -2188,6 +2170,80 @@ mod tests {
         assert_eq!(tags, vec!["explicit".to_string(), "global".to_string()]);
         assert_eq!(due, Some("2026-08-01".to_string()));
         assert_eq!(scheduled, "2026-08-02".to_string());
+    }
+
+    #[test]
+    fn resolve_default_status_falls_through_to_grandparent_when_parent_has_no_override() {
+        let settings = Settings::default();
+        let mut grandparent = Project::new("Grandparent".to_string(), "#111111".to_string(), 1);
+        grandparent.board.default_status = Some("do".to_string());
+        let parent = Project::new("Parent".to_string(), "#222222".to_string(), 2);
+        let child = Project::new("Child".to_string(), "#333333".to_string(), 3);
+        let chain = vec![&child, &parent, &grandparent];
+
+        let result = resolve_default_status(&settings, &chain);
+
+        assert_eq!(result, "do");
+    }
+
+    #[test]
+    fn resolve_default_status_prefers_nearest_override_over_a_further_one() {
+        let settings = Settings::default();
+        let mut grandparent = Project::new("Grandparent".to_string(), "#111111".to_string(), 1);
+        grandparent.board.default_status = Some("do".to_string());
+        let mut parent = Project::new("Parent".to_string(), "#222222".to_string(), 2);
+        parent.board.default_status = Some("blocked".to_string());
+        let child = Project::new("Child".to_string(), "#333333".to_string(), 3);
+        let chain = vec![&child, &parent, &grandparent];
+
+        let result = resolve_default_status(&settings, &chain);
+
+        assert_eq!(result, "blocked");
+    }
+
+    #[test]
+    fn effective_default_tags_falls_through_to_grandparent() {
+        let global = TaskDefaults::default();
+        let mut grandparent = Project::new("Grandparent".to_string(), "#111111".to_string(), 1);
+        grandparent.defaults.tags = vec!["inherited".to_string()];
+        let parent = Project::new("Parent".to_string(), "#222222".to_string(), 2);
+        let child = Project::new("Child".to_string(), "#333333".to_string(), 3);
+        let chain = vec![&child, &parent, &grandparent];
+
+        let result = effective_default_tags(&global, &chain);
+
+        assert_eq!(result, vec!["inherited".to_string()]);
+    }
+
+    #[test]
+    fn effective_default_estimated_minutes_falls_through_to_grandparent() {
+        let global = TaskDefaults::default();
+        let mut grandparent = Project::new("Grandparent".to_string(), "#111111".to_string(), 1);
+        grandparent.defaults.estimated_minutes = Some(90);
+        let parent = Project::new("Parent".to_string(), "#222222".to_string(), 2);
+        let child = Project::new("Child".to_string(), "#333333".to_string(), 3);
+        let chain = vec![&child, &parent, &grandparent];
+
+        let result = effective_default_estimated_minutes(&global, &chain);
+
+        assert_eq!(result, Some(90));
+    }
+
+    #[test]
+    fn resolve_creation_defaults_due_code_falls_through_to_grandparent() {
+        let settings = Settings::default();
+        let mut grandparent = Project::new("Grandparent".to_string(), "#111111".to_string(), 1);
+        grandparent.defaults.due = Some("next_day".to_string());
+        let parent = Project::new("Parent".to_string(), "#222222".to_string(), 2);
+        let child = Project::new("Child".to_string(), "#333333".to_string(), 3);
+        let chain = vec![&child, &parent, &grandparent];
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 20).unwrap();
+
+        let (_, resolved_due, resolved_scheduled) =
+            resolve_creation_defaults(&settings, &chain, today, None, None, None);
+
+        assert_eq!(resolved_scheduled, "2026-06-20");
+        assert_eq!(resolved_due, Some("2026-06-21".to_string()));
     }
 
     #[test]
@@ -2704,39 +2760,45 @@ mod tests {
     #[test]
     fn resolve_default_status_uses_project_board_default_when_valid() {
         let settings = Settings::default();
-        let board = ProjectBoard {
+        let mut project = Project::new("Test".to_string(), "#111111".to_string(), 1);
+        project.board = ProjectBoard {
             statuses: vec!["backlog".to_string(), "done".to_string()],
             default_status: Some("done".to_string()),
             ..Default::default()
         };
+        let chain = vec![&project];
 
-        assert_eq!(resolve_default_status(&settings, Some(&board)), "done");
+        assert_eq!(resolve_default_status(&settings, &chain), "done");
     }
 
     #[test]
     fn resolve_default_status_prefers_project_board_default_over_settings_defaults() {
         let mut settings = Settings::default();
         settings.defaults.status = Some("do".to_string());
-        let board = ProjectBoard {
+        let mut project = Project::new("Test".to_string(), "#111111".to_string(), 1);
+        project.board = ProjectBoard {
             statuses: vec!["done".to_string()],
             default_status: Some("done".to_string()),
             ..Default::default()
         };
+        let chain = vec![&project];
 
-        assert_eq!(resolve_default_status(&settings, Some(&board)), "done");
+        assert_eq!(resolve_default_status(&settings, &chain), "done");
     }
 
     #[test]
     fn resolve_default_status_falls_back_to_settings_defaults_when_board_default_is_invalid() {
         let mut settings = Settings::default();
         settings.defaults.status = Some("do".to_string());
-        let board = ProjectBoard {
+        let mut project = Project::new("Test".to_string(), "#111111".to_string(), 1);
+        project.board = ProjectBoard {
             statuses: vec!["backlog".to_string()],
             default_status: Some("nonexistent".to_string()),
             ..Default::default()
         };
+        let chain = vec![&project];
 
-        assert_eq!(resolve_default_status(&settings, Some(&board)), "do");
+        assert_eq!(resolve_default_status(&settings, &chain), "do");
     }
 
     #[test]
@@ -2745,7 +2807,7 @@ mod tests {
         settings.defaults.status = Some("nonexistent".to_string());
 
         // Settings::default()'s "backlog" status has order 1.
-        assert_eq!(resolve_default_status(&settings, None), "backlog");
+        assert_eq!(resolve_default_status(&settings, &[]), "backlog");
     }
 
     #[test]
@@ -2757,7 +2819,7 @@ mod tests {
             ..Default::default()
         };
 
-        assert_eq!(resolve_default_status(&settings, None), "backlog");
+        assert_eq!(resolve_default_status(&settings, &[]), "backlog");
     }
 
     #[test]
@@ -2782,7 +2844,7 @@ mod tests {
             ..Default::default()
         };
 
-        assert_eq!(resolve_default_status(&settings, None), "now");
+        assert_eq!(resolve_default_status(&settings, &[]), "now");
     }
 
     #[test]
@@ -3377,7 +3439,7 @@ mod tests {
         let settings = Settings::default();
         let date = chrono::NaiveDate::from_ymd_opt(2026, 6, 16).unwrap();
 
-        let task = build_series_occurrence(&series, &settings, None, date);
+        let task = build_series_occurrence(&series, &settings, &[], date);
 
         assert_eq!(task.title, "Water the plants");
         assert_eq!(task.project, Some("Home".to_string()));
@@ -3397,7 +3459,7 @@ mod tests {
         let settings = Settings::default();
         let date = chrono::NaiveDate::from_ymd_opt(2026, 6, 20).unwrap();
 
-        let task = build_series_occurrence(&series, &settings, None, date);
+        let task = build_series_occurrence(&series, &settings, &[], date);
 
         // due_rule is DefaultCode("next_day"), so due should be one day after *this*
         // occurrence's own scheduled date (06-21), not one day after the series'
@@ -3415,7 +3477,7 @@ mod tests {
         let settings = Settings::default();
         let date = chrono::NaiveDate::from_ymd_opt(2026, 6, 16).unwrap();
 
-        let task = build_series_occurrence(&series, &settings, None, date);
+        let task = build_series_occurrence(&series, &settings, &[], date);
 
         assert_eq!(task.due, None);
     }
@@ -3429,9 +3491,9 @@ mod tests {
         let settings = Settings::default();
         let date = chrono::NaiveDate::from_ymd_opt(2026, 6, 16).unwrap();
 
-        let task = build_series_occurrence(&series, &settings, None, date);
+        let task = build_series_occurrence(&series, &settings, &[], date);
 
-        assert_eq!(task.status, resolve_default_status(&settings, None));
+        assert_eq!(task.status, resolve_default_status(&settings, &[]));
     }
 
     #[test]
@@ -3445,7 +3507,7 @@ mod tests {
         let through = chrono::NaiveDate::from_ymd_opt(2026, 6, 18).unwrap();
 
         let created =
-            generate_series_occurrences(dir.path(), &settings, None, &mut series, through).unwrap();
+            generate_series_occurrences(dir.path(), &settings, &[], &mut series, through).unwrap();
 
         assert_eq!(created.len(), 3);
         let saved = storage::list_tasks(dir.path()).unwrap();
@@ -3465,7 +3527,7 @@ mod tests {
         let through = chrono::NaiveDate::from_ymd_opt(2026, 6, 19).unwrap();
 
         let created =
-            generate_series_occurrences(dir.path(), &settings, None, &mut series, through).unwrap();
+            generate_series_occurrences(dir.path(), &settings, &[], &mut series, through).unwrap();
 
         assert_eq!(created.len(), 2);
         assert_eq!(created[0].scheduled, Some("2026-06-18".to_string()));
@@ -3485,7 +3547,7 @@ mod tests {
         let through = chrono::NaiveDate::from_ymd_opt(2026, 6, 17).unwrap();
 
         let created =
-            generate_series_occurrences(dir.path(), &settings, None, &mut series, through).unwrap();
+            generate_series_occurrences(dir.path(), &settings, &[], &mut series, through).unwrap();
 
         assert!(created.is_empty());
         assert_eq!(series.generated_until, "2026-06-17");
@@ -3503,7 +3565,7 @@ mod tests {
         let through = chrono::NaiveDate::from_ymd_opt(2026, 6, 30).unwrap();
 
         let created =
-            generate_series_occurrences(dir.path(), &settings, None, &mut series, through).unwrap();
+            generate_series_occurrences(dir.path(), &settings, &[], &mut series, through).unwrap();
 
         assert_eq!(created.len(), 1);
         assert_eq!(series.generated_until, "2026-06-16");
@@ -3520,7 +3582,7 @@ mod tests {
         series.generated_until = "not-a-date".to_string();
         let through = chrono::NaiveDate::from_ymd_opt(2026, 6, 20).unwrap();
 
-        let result = generate_series_occurrences(dir.path(), &settings, None, &mut series, through);
+        let result = generate_series_occurrences(dir.path(), &settings, &[], &mut series, through);
 
         assert!(result.is_err());
     }
@@ -3544,21 +3606,16 @@ mod tests {
         // First call: a wide baseline window, as `create_recurring_task` does.
         let baseline_horizon = chrono::NaiveDate::from_ymd_opt(2026, 8, 14).unwrap();
         let baseline_created =
-            generate_series_occurrences(dir.path(), &settings, None, &mut series, baseline_horizon)
+            generate_series_occurrences(dir.path(), &settings, &[], &mut series, baseline_horizon)
                 .unwrap();
         assert_eq!(baseline_created.len(), 60);
         assert_eq!(series.generated_until, "2026-08-14");
 
         // Second call: a much nearer-term "through", as Week view's initial mount does.
         let near_term_through = chrono::NaiveDate::from_ymd_opt(2026, 6, 22).unwrap();
-        let second_call_created = generate_series_occurrences(
-            dir.path(),
-            &settings,
-            None,
-            &mut series,
-            near_term_through,
-        )
-        .unwrap();
+        let second_call_created =
+            generate_series_occurrences(dir.path(), &settings, &[], &mut series, near_term_through)
+                .unwrap();
 
         assert!(second_call_created.is_empty());
         assert_eq!(series.generated_until, "2026-08-14");
@@ -3567,7 +3624,7 @@ mod tests {
         // no-op, not a re-generation of the range the buggy version would have
         // forgotten about after the second call rewound the watermark.
         let third_call_created =
-            generate_series_occurrences(dir.path(), &settings, None, &mut series, baseline_horizon)
+            generate_series_occurrences(dir.path(), &settings, &[], &mut series, baseline_horizon)
                 .unwrap();
 
         assert!(third_call_created.is_empty());
