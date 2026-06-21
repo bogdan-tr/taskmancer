@@ -57,6 +57,65 @@ describe("parseTaskInput", () => {
     expect(result.project).toBe("Vacation");
   });
 
+  test("a bare +token with no slash is unaffected by path resolution", () => {
+    const result = parseTaskInput("Plan trip +Vacation and relax", NOW);
+
+    expect(result.title).toBe("Plan trip and relax");
+    expect(result.project).toBe("Vacation");
+  });
+
+  test("extracts a single-level project path with no quoting needed", () => {
+    const result = parseTaskInput("Fix the bug +Work/ClientA", NOW);
+
+    expect(result.title).toBe("Fix the bug");
+    expect(result.project).toBe("Work/ClientA");
+  });
+
+  test("extracts a multi-level project path", () => {
+    const result = parseTaskInput("Fix the bug +Work/ClientA/Phase1", NOW);
+
+    expect(result.project).toBe("Work/ClientA/Phase1");
+  });
+
+  test("extracts a project path with a quoted segment that doesn't span tokens", () => {
+    const result = parseTaskInput('Fix the bug +Work/"ClientA"', NOW);
+
+    expect(result.project).toBe("Work/ClientA");
+  });
+
+  test("extracts a project path with a quoted segment spanning multiple whitespace tokens", () => {
+    const result = parseTaskInput('Fix the bug +Work/"Client A"', NOW);
+
+    expect(result.title).toBe("Fix the bug");
+    expect(result.project).toBe("Work/Client A");
+  });
+
+  test("a quoted segment can appear first in the path", () => {
+    const result = parseTaskInput('Fix the bug +"Client A"/Phase1', NOW);
+
+    expect(result.project).toBe("Client A/Phase1");
+  });
+
+  test("text after a project path continues as part of the title", () => {
+    const result = parseTaskInput('Fix the bug +Work/"Client A" before friday', NOW);
+
+    expect(result.title).toBe("Fix the bug before friday");
+    expect(result.project).toBe("Work/Client A");
+  });
+
+  test("falls back to the bare token when a quote is never closed", () => {
+    const result = parseTaskInput('Fix the bug +Work/"Client A', NOW);
+
+    expect(result.project).toBe('Work/"Client');
+    expect(result.title).toBe("Fix the bug A");
+  });
+
+  test("falls back to the bare token for an empty path segment", () => {
+    const result = parseTaskInput("Fix the bug +Work//ClientA", NOW);
+
+    expect(result.project).toBe("Work//ClientA");
+  });
+
   test.each([
     ["!high", "high"],
     ["!medium", "medium"],

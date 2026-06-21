@@ -6,6 +6,7 @@
     findActiveToken,
     MAX_SUGGESTIONS,
     preferredSuggestionText,
+    projectPathSuggestions,
     type ActiveToken,
   } from "$lib/autocomplete";
   import { isLightColor } from "$lib/colorPresets";
@@ -16,7 +17,7 @@
   import { FALLBACK_PRIORITIES, priorityColor, priorityLabel, sortedPriorities } from "$lib/priorities.svelte";
   import { resolveProjectColor } from "$lib/projectColor";
   import { projectsState } from "$lib/projects.svelte";
-  import { projectPath, selfAndAncestors } from "$lib/projectTree";
+  import { findProjectByPath, projectPath, selfAndAncestors } from "$lib/projectTree";
   import {
     dueRuleFromDefaultCode,
     formatDueRule,
@@ -200,16 +201,26 @@
 
   /**
    * The project the task will be created under: the `+Project` quick-add
-   * token (matched by name, first match wins — see the NL parser's
-   * documented same-name-subproject limitation), else this dialog's
+   * token — a `/`-separated ancestor path (e.g. `Work/Client A`) resolved
+   * unambiguously via `findProjectByPath`, else matched by bare name, first
+   * match wins (see the NL parser's documented same-name-subproject
+   * limitation for the bare-name case specifically) — else this dialog's
    * `projectFilter` (matched by id — `KanbanBoard` passes its own id-based
    * filter straight through), else the configured default project (also
-   * matched by id).
+   * matched by id). An unresolved path (e.g. a typo'd segment) falls
+   * through to `projectFilter`/the default project rather than attempting
+   * any partial/fallback match — see the project-path design spec.
    */
   let matchedProject = $derived.by(() => {
     if (parsed.project) {
-      const typed = parsed.project.toLowerCase();
-      return projectsState.items.find((project) => project.name.toLowerCase() === typed);
+      if (parsed.project.includes("/")) {
+        const resolved = findProjectByPath(projectsState.items, parsed.project.split("/"));
+        if (resolved) return resolved;
+      } else {
+        const typed = parsed.project.toLowerCase();
+        const resolved = projectsState.items.find((project) => project.name.toLowerCase() === typed);
+        if (resolved) return resolved;
+      }
     }
     if (projectFilter) {
       return projectsState.items.find((project) => project.id === projectFilter);
@@ -293,12 +304,6 @@
     isLightColor(previewProjectColor) ? "var(--color-ink)" : previewProjectColor,
   );
 
-  // The `+Project` quick-add token is a single whitespace-delimited word, so
-  // only single-word project names can be completed through it.
-  let projectNames = $derived(
-    projectsState.items.map((project) => project.name).filter((name) => !/\s/.test(name)),
-  );
-
   let activeToken: ActiveToken | undefined = $state();
   let suggestions: string[] = $state([]);
   let activeSuggestionIndex = $state(0);
@@ -356,14 +361,17 @@
       return;
     }
 
-    const options =
-      token.prefix === "#"
-        ? tagsState.items
-        : token.prefix === "!"
-          ? priorityOptions
-          : token.prefix === "@"
-            ? statusOptions
-            : projectNames;
+    if (token.prefix === "+") {
+      // Handles its own collision-disambiguation and "/"-drill-down — see
+      // `projectPathSuggestions`'s own doc comment. Already behaves
+      // correctly for an empty `token.text` (browses every project), so no
+      // separate bare-prefix branch is needed here unlike the other prefixes.
+      suggestions = projectPathSuggestions(projectsState.items, token.text);
+      activeSuggestionIndex = 0;
+      return;
+    }
+
+    const options = token.prefix === "#" ? tagsState.items : token.prefix === "!" ? priorityOptions : statusOptions;
 
     // A bare prefix (no text yet) browses every option — `filterSuggestions`
     // itself always returns nothing for an empty prefix, so that case is
@@ -912,6 +920,11 @@
     font-size: var(--text-sm);
     color: var(--color-ink-faint);
     text-align: right;
+    /* A deep project path (e.g. "Work/ClientA/Phase1/Deep1") has no
+       whitespace anywhere for the browser to wrap at by default, so
+       without this it overflows its `minmax(0, 1fr)` column and runs
+       offscreen instead of wrapping — same fix as `.syntax-hint` above. */
+    overflow-wrap: break-word;
   }
 
   .field-row dd.filled {

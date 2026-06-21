@@ -3,7 +3,13 @@ import type { DueRule, RecurrenceFrequency } from "./recurrence";
 export interface ParsedTaskInput {
   title: string;
   tags: string[];
-  /** The display name of the project this task is filed under, resolved from typed/autocompleted text — see `projectId`. */
+  /**
+   * The display name of the project this task is filed under, resolved
+   * from typed/autocompleted text — see `projectId`. A `/`-separated
+   * ancestor path (e.g. "Work/Client A") when the `+Project` token named
+   * a specific nested subproject rather than a bare leaf name — see
+   * `tryResolveProjectPath`.
+   */
   project?: string;
   /**
    * The id of the project this task should actually be saved under, once
@@ -602,9 +608,96 @@ function tryResolveRecurrencePhrase(
 }
 
 /**
+ * Splits `raw` into path segments on `/`, respecting `"`-quoted segments (a
+ * quoted segment may contain `/` and spaces; an unquoted segment may
+ * contain neither). Returns `undefined` for anything malformed — an
+ * unterminated quote, a stray `"` outside a segment's very start, or an
+ * empty segment (e.g. a leading/trailing/doubled `/`) — so the caller can
+ * fall back to treating the whole thing as an ordinary bare name instead.
+ */
+export function parsePathSegments(raw: string): string[] | undefined {
+  const segments: string[] = [];
+  let current = "";
+  let inQuotes = false;
+  let closedQuoteThisSegment = false;
+
+  for (const ch of raw) {
+    if (ch === '"') {
+      if (!inQuotes && current === "" && !closedQuoteThisSegment) {
+        inQuotes = true;
+      } else if (inQuotes) {
+        inQuotes = false;
+        closedQuoteThisSegment = true;
+      } else {
+        return undefined;
+      }
+      continue;
+    }
+
+    if (ch === "/" && !inQuotes) {
+      segments.push(current);
+      current = "";
+      closedQuoteThisSegment = false;
+      continue;
+    }
+
+    if (!inQuotes && closedQuoteThisSegment) {
+      return undefined;
+    }
+    current += ch;
+  }
+
+  if (inQuotes) return undefined;
+  segments.push(current);
+
+  return segments.some((segment) => segment === "") ? undefined : segments;
+}
+
+/**
+ * Attempts to resolve a `+Project` token starting at `tokens[index]` as a
+ * `/`-separated ancestor path (e.g. `+Work/ClientA` or, for a segment
+ * containing whitespace, `+Work/"Client A"`), for disambiguating same-named
+ * subprojects under different parents. A quoted segment may span multiple
+ * of the caller's original whitespace-split tokens — this pulls in as many
+ * subsequent tokens as needed (rejoining them with a single space) until
+ * every opened quote is closed, then splits the reassembled text on
+ * unquoted `/` characters via `parsePathSegments`.
+ *
+ * Returns `undefined` — leaving `parseTaskInput`'s existing single-word
+ * `project = token.slice(1)` assignment completely unchanged — whenever
+ * there's no real path here at all: a bare `+Project` with no `/`, a
+ * malformed quote, or a quote left unterminated through the end of the
+ * input.
+ */
+function tryResolveProjectPath(
+  tokens: string[],
+  index: number,
+): { segments: string[]; consumed: number } | undefined {
+  const first = tokens[index];
+  if (first === undefined || !first.startsWith("+") || first.length <= 1) return undefined;
+
+  let raw = first.slice(1);
+  let consumed = 0;
+  while ((raw.match(/"/g)?.length ?? 0) % 2 !== 0) {
+    const next = tokens[index + consumed + 1];
+    if (next === undefined) return undefined;
+    raw += ` ${next}`;
+    consumed += 1;
+  }
+
+  const segments = parsePathSegments(raw);
+  if (!segments || segments.length < 2) return undefined;
+
+  return { segments, consumed };
+}
+
+/**
  * Parses quick-add syntax out of a free-text task title:
  * - `#tag` adds a tag
- * - `+Project` sets the project (last one wins)
+ * - `+Project` sets the project (last one wins) — `+Work/"Client A"` (a
+ *   `/`-separated path, quoting any segment containing whitespace)
+ *   targets a specific nested subproject unambiguously instead of matching
+ *   the first same-named project anywhere — see `tryResolveProjectPath`.
  * - `!high` / `!medium` / `!low` (or `!h`/`!m`/`!l`), or a bare `high` /
  *   `medium` / `low` word, sets the priority. If `knownPriorities` is given,
  *   `!<id-or-label>` and a bare `<id-or-label>` word also match (case-
@@ -673,6 +766,12 @@ export function parseTaskInput(
     }
 
     if (token.startsWith("+") && token.length > 1) {
+      const pathMatch = tryResolveProjectPath(tokens, i);
+      if (pathMatch) {
+        project = pathMatch.segments.join("/");
+        i += pathMatch.consumed;
+        continue;
+      }
       project = token.slice(1);
       continue;
     }

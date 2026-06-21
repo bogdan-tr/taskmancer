@@ -46,12 +46,16 @@
         {/each}
       </div>
     </div>
-    <span class="group-label">Presets</span>
   {/if}
-  <div class="color-grid" role="group" aria-label={label}>
-    {#each PRESET_COLORS as preset, index (preset)}
-      {@render swatchButton(preset, `${PRESET_COLOR_NAMES[index]} (${preset})`)}
-    {/each}
+  <div class="color-group">
+    {#if shadeSuggestions.length > 0}
+      <span class="group-label">Presets</span>
+    {/if}
+    <div class="color-grid" role="group" aria-label={label}>
+      {#each PRESET_COLORS as preset, index (preset)}
+        {@render swatchButton(preset, `${PRESET_COLOR_NAMES[index]} (${preset})`)}
+      {/each}
+    </div>
   </div>
   <div class="custom-color">
     <span class="preview-swatch" style="background: {value}" aria-hidden="true"></span>

@@ -5,8 +5,23 @@ import {
   filterSuggestions,
   findActiveToken,
   preferredSuggestionText,
+  projectPathSuggestions,
   splitTagsInput,
 } from "./autocomplete";
+import type { Project } from "./types";
+
+function project(id: string, name: string, parentId?: string): Project {
+  return {
+    id,
+    name,
+    color: "#111111",
+    parent_id: parentId,
+    order: 1,
+    created: "2026-06-11T10:00:00+00:00",
+    board: { statuses: [] },
+    defaults: { tags: [] },
+  };
+}
 
 describe("findActiveToken", () => {
   it("finds a #tag token at the end of the string", () => {
@@ -176,6 +191,82 @@ describe("applyTokenSuggestion", () => {
       value: "+Project ",
       cursor: 9,
     });
+  });
+});
+
+describe("projectPathSuggestions", () => {
+  it("suggests a unique name bare, unquoted", () => {
+    const projects = [project("p1", "Vacation")];
+
+    expect(projectPathSuggestions(projects, "Vac")).toEqual(["Vacation"]);
+  });
+
+  it("quotes a unique multi-word name", () => {
+    const projects = [project("p1", "My Project")];
+
+    expect(projectPathSuggestions(projects, "My")).toEqual(['"My Project"']);
+  });
+
+  it("suggests the full disambiguating path for a colliding name", () => {
+    const projects = [
+      project("work", "Work"),
+      project("personal", "Personal"),
+      project("hw1", "Homework", "work"),
+      project("hw2", "Homework", "personal"),
+    ];
+
+    expect(projectPathSuggestions(projects, "Home")).toEqual(["Personal/Homework", "Work/Homework"]);
+  });
+
+  it("quotes a multi-word segment within a disambiguating path", () => {
+    const projects = [
+      project("work", "Work"),
+      project("personal", "Personal"),
+      project("hw1", "Client A", "work"),
+      project("hw2", "Client A", "personal"),
+    ];
+
+    expect(projectPathSuggestions(projects, "Client")).toContain('Personal/"Client A"');
+  });
+
+  it("browses every project for an empty typed prefix", () => {
+    const projects = [project("p1", "Alpha"), project("p2", "Beta")];
+
+    expect(projectPathSuggestions(projects, "")).toEqual(["Alpha", "Beta"]);
+  });
+
+  it("matches case-insensitively", () => {
+    const projects = [project("p1", "Vacation")];
+
+    expect(projectPathSuggestions(projects, "vac")).toEqual(["Vacation"]);
+  });
+
+  it("drills down into a resolved parent's children", () => {
+    const projects = [project("work", "Work"), project("a1", "Client A", "work"), project("a2", "Client B", "work")];
+
+    expect(projectPathSuggestions(projects, "Work/Cli")).toEqual(['Work/"Client A"', 'Work/"Client B"']);
+  });
+
+  it("drills down through a quoted parent segment", () => {
+    const projects = [
+      project("client", "Client A"),
+      project("p1", "Phase 1", "client"),
+      project("p2", "Phase 2", "client"),
+    ];
+
+    expect(projectPathSuggestions(projects, '"Client A"/Phase 1')).toEqual(['"Client A"/"Phase 1"']);
+  });
+
+  it("suggests nothing when the parent path before the last slash doesn't resolve", () => {
+    const projects = [project("work", "Work"), project("a1", "Client A", "work")];
+
+    expect(projectPathSuggestions(projects, "Bogus/Cli")).toEqual([]);
+  });
+
+  it("suggests nothing for an unparseable parent path", () => {
+    const projects = [project("work", "Work")];
+
+    expect(projectPathSuggestions(projects, 'Work/"Unclosed/Cli')).toEqual([]);
   });
 });
 

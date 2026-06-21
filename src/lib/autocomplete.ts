@@ -1,3 +1,7 @@
+import { parsePathSegments } from "./naturalLanguage";
+import { childrenOf, findProjectByPath, formatProjectPathToken, projectPath } from "./projectTree";
+import type { Project } from "./types";
+
 /** Maximum number of suggestions shown in an autocomplete dropdown. */
 export const MAX_SUGGESTIONS = 8;
 
@@ -70,6 +74,64 @@ export function filterSuggestions(options: string[], prefix: string): string[] {
   }
 
   return matches.sort((a, b) => a.localeCompare(b)).slice(0, MAX_SUGGESTIONS);
+}
+
+/**
+ * Computes ready-to-insert `+Project` autocomplete suggestions for
+ * `typedText` (the text already typed after the `+`), disambiguating
+ * same-named projects with a quoted `/`-path instead of a bare name. Two
+ * modes, chosen by whether `typedText` contains an (unquoted-or-not — any)
+ * `/`:
+ *
+ * - **No `/` yet:** a flat leaf-name search across every project,
+ *   regardless of nesting depth — matches today's behavior for the common
+ *   case of knowing a project's name without caring where it's nested. A
+ *   name that's unique across the whole list suggests its bare name
+ *   (quoted only if it contains whitespace); a name shared by more than
+ *   one project suggests each one's full, unambiguous path instead.
+ * - **A `/` has been typed:** splits on the *last* `/`, parses everything
+ *   before it as a path (via `parsePathSegments`, so an already-closed
+ *   quoted segment in the parent portion is handled correctly) and
+ *   resolves it via `findProjectByPath`. If it resolves, suggests that
+ *   project's direct children matching whatever's typed after the last
+ *   `/` (a leading unclosed quote on the in-progress leaf is stripped
+ *   before matching) — always as the *full* path, since the user has
+ *   already committed to path-typing. An unresolved parent path suggests
+ *   nothing — there's nothing to suggest children of yet.
+ */
+export function projectPathSuggestions(projects: Project[], typedText: string): string[] {
+  const lastSlash = typedText.lastIndexOf("/");
+
+  if (lastSlash === -1) {
+    const lowerTyped = typedText.toLowerCase();
+    const nameCounts = new Map<string, number>();
+    for (const project of projects) {
+      const key = project.name.toLowerCase();
+      nameCounts.set(key, (nameCounts.get(key) ?? 0) + 1);
+    }
+
+    const inserts = projects
+      .filter((project) => project.name.toLowerCase().startsWith(lowerTyped))
+      .map((project) => {
+        const collides = (nameCounts.get(project.name.toLowerCase()) ?? 0) > 1;
+        if (collides) return formatProjectPathToken(projectPath(projects, project.id).split("/"));
+        return /\s/.test(project.name) ? `"${project.name}"` : project.name;
+      });
+
+    return [...new Set(inserts)].sort((a, b) => a.localeCompare(b)).slice(0, MAX_SUGGESTIONS);
+  }
+
+  const parentSegments = parsePathSegments(typedText.slice(0, lastSlash));
+  if (!parentSegments) return [];
+  const parent = findProjectByPath(projects, parentSegments);
+  if (!parent) return [];
+
+  const typedLeaf = typedText.slice(lastSlash + 1).replace(/^"/, "").toLowerCase();
+  const inserts = childrenOf(projects, parent.id)
+    .filter((project) => project.name.toLowerCase().startsWith(typedLeaf))
+    .map((project) => formatProjectPathToken(projectPath(projects, project.id).split("/")));
+
+  return [...new Set(inserts)].sort((a, b) => a.localeCompare(b)).slice(0, MAX_SUGGESTIONS);
 }
 
 /**

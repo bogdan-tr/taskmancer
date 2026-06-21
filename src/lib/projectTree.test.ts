@@ -4,6 +4,7 @@ import {
   childrenOf,
   computeZoneOrderUpdates,
   descendantsOf,
+  findProjectByPath,
   projectPath,
   selfAndAncestors,
   wouldCreateCycle,
@@ -241,5 +242,67 @@ describe("projectPath", () => {
     const projects = fixtureTree();
 
     expect(projectPath(projects, "does-not-exist")).toBe("");
+  });
+});
+
+describe("findProjectByPath", () => {
+  it("resolves a single-segment path to a top-level project", () => {
+    const projects = fixtureTree();
+
+    expect(findProjectByPath(projects, ["Root A"])?.id).toBe("root_a");
+  });
+
+  it("resolves a multi-level path", () => {
+    const projects = fixtureTree();
+
+    expect(findProjectByPath(projects, ["Root A", "Child A1", "Grandchild A1a"])?.id).toBe(
+      "grandchild_a1a",
+    );
+  });
+
+  it("matches case-insensitively at every level", () => {
+    const projects = fixtureTree();
+
+    expect(findProjectByPath(projects, ["root a", "CHILD A1"])?.id).toBe("child_a1");
+  });
+
+  it("returns undefined when an intermediate segment has no match", () => {
+    const projects = fixtureTree();
+
+    expect(findProjectByPath(projects, ["Root A", "Bogus", "Grandchild A1a"])).toBeUndefined();
+  });
+
+  it("returns undefined when the final segment has no match", () => {
+    const projects = fixtureTree();
+
+    expect(findProjectByPath(projects, ["Root A", "Child A1", "Bogus"])).toBeUndefined();
+  });
+
+  it("returns undefined for an empty segments array", () => {
+    const projects = fixtureTree();
+
+    expect(findProjectByPath(projects, [])).toBeUndefined();
+  });
+
+  it("disambiguates same-named projects under different parents", () => {
+    const base = (id: string, name: string, parentId: string | undefined, order: number): Project => ({
+      id,
+      name,
+      color: "#111111",
+      parent_id: parentId,
+      order,
+      created: "2026-06-11T10:00:00+00:00",
+      board: { statuses: [] },
+      defaults: { tags: [] },
+    });
+    const projects = [
+      base("work", "Work", undefined, 1),
+      base("personal", "Personal", undefined, 2),
+      base("homework_work", "Homework", "work", 1),
+      base("homework_personal", "Homework", "personal", 1),
+    ];
+
+    expect(findProjectByPath(projects, ["Work", "Homework"])?.id).toBe("homework_work");
+    expect(findProjectByPath(projects, ["Personal", "Homework"])?.id).toBe("homework_personal");
   });
 });

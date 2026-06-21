@@ -35,6 +35,44 @@ export function projectPath(projects: Project[], id: string): string {
   return [...ancestorsRootFirst, self].map((p) => p.name).join("/");
 }
 
+/**
+ * Formats root-first path `segments` (e.g. from `projectPath`, split back
+ * apart) as a literal `+Project` quick-add token's text — the inverse of
+ * `parsePathSegments` in `naturalLanguage.ts` — quoting any segment that
+ * contains whitespace so the result round-trips back through the parser
+ * unambiguously (e.g. `["Work", "Client A"]` becomes `Work/"Client A"`).
+ */
+export function formatProjectPathToken(segments: string[]): string {
+  return segments.map((segment) => (/\s/.test(segment) ? `"${segment}"` : segment)).join("/");
+}
+
+/**
+ * Resolves a root-first ancestor path (e.g. `["Work", "Client A"]`, the
+ * counterpart to `projectPath`'s string form) to the project it names: at
+ * each level, the first child (or, for the first segment, the first
+ * top-level project) whose name matches case-insensitively — mirroring
+ * `find_project`'s existing case-insensitivity. Returns `undefined` as soon
+ * as any level has no match (an invalid/typo'd path doesn't fall back to
+ * matching the last segment as a bare name elsewhere in the tree — that
+ * would be more confusing than just not matching), or if `segments` is
+ * empty.
+ */
+export function findProjectByPath(projects: Project[], segments: string[]): Project | undefined {
+  if (segments.length === 0) return undefined;
+
+  let parentId: string | undefined = undefined;
+  let match: Project | undefined;
+
+  for (const segment of segments) {
+    const lowerSegment = segment.toLowerCase();
+    match = childrenOf(projects, parentId).find((p) => p.name.toLowerCase() === lowerSegment);
+    if (!match) return undefined;
+    parentId = match.id;
+  }
+
+  return match;
+}
+
 /** Returns every transitive descendant of the project identified by `id` (children, grandchildren, ...). */
 export function descendantsOf(projects: Project[], id: string): Project[] {
   const result: Project[] = [];
