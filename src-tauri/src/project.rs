@@ -49,6 +49,12 @@ pub struct Project {
     pub id: String,
     pub name: String,
     pub color: String,
+    /// The id of this project's parent, or `None` for a top-level project.
+    /// Nesting is arbitrary depth — a project named here may itself have a
+    /// non-`None` `parent_id`. See `crate::project_tree` for helpers that
+    /// walk this relationship.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
     #[serde(default)]
     pub order: i64,
     pub created: String,
@@ -64,13 +70,15 @@ pub struct Project {
 }
 
 impl Project {
-    /// Creates a new project with a freshly generated id and the current
-    /// time as `created`.
+    /// Creates a new top-level project with a freshly generated id and the
+    /// current time as `created`. Callers creating a subproject set
+    /// `parent_id` on the returned value directly (it's a public field).
     pub fn new(name: String, color: String, order: i64) -> Self {
         Project {
             id: Uuid::new_v4().to_string(),
             name,
             color,
+            parent_id: None,
             order,
             created: Utc::now().to_rfc3339(),
             board: ProjectBoard::default(),
@@ -146,5 +154,32 @@ mod tests {
         let project: Project = serde_json::from_str(json).expect("parsing should succeed");
 
         assert_eq!(project.board.ink_mode, None);
+    }
+
+    #[test]
+    fn new_project_has_no_parent() {
+        let project = Project::new("Homework".to_string(), "#ff0000".to_string(), 1);
+
+        assert_eq!(project.parent_id, None);
+    }
+
+    #[test]
+    fn parent_id_is_none_when_absent_from_json() {
+        let json = r##"{"id":"abc","name":"Inbox","color":"#000000","created":"2026-06-11T10:00:00+00:00"}"##;
+
+        let project: Project = serde_json::from_str(json).expect("parsing should succeed");
+
+        assert_eq!(project.parent_id, None);
+    }
+
+    #[test]
+    fn parent_id_round_trips_when_set() {
+        let mut project = Project::new("Homework".to_string(), "#ff0000".to_string(), 1);
+        project.parent_id = Some("parent-123".to_string());
+
+        let json = serde_json::to_string(&project).expect("serialization should succeed");
+        let parsed: Project = serde_json::from_str(&json).expect("parsing should succeed");
+
+        assert_eq!(parsed.parent_id, Some("parent-123".to_string()));
     }
 }

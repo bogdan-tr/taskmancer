@@ -1,6 +1,7 @@
 mod commands;
 mod project;
 mod project_storage;
+mod project_tree;
 mod recurrence;
 mod series;
 mod series_storage;

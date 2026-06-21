@@ -1308,6 +1308,7 @@ fn apply_project_update(
         id: existing.id.clone(),
         name,
         color: update.color,
+        parent_id: existing.parent_id.clone(),
         order: update.order,
         created: existing.created.clone(),
         board: update.board,
