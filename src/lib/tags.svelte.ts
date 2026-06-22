@@ -1,4 +1,4 @@
-import { listTasks } from "./api";
+import { refreshTasks, tasksState } from "./tasks.svelte";
 
 /**
  * Boxed in an object because Svelte 5 forbids exporting a reassigned `$state`
@@ -8,19 +8,19 @@ export const tagsState = $state<{ items: string[] }>({ items: [] });
 
 /**
  * Reloads the set of distinct tags in use across all tasks, for tag
- * autocomplete. On failure the previously loaded tags are left in place.
+ * autocomplete. Delegates the actual fetch to `refreshTasks` (rather than
+ * calling `listTasks` itself) so every existing call site of this function
+ * also keeps the shared `tasksState` fresh, for free. On failure the
+ * previously loaded tags are left in place, mirroring `refreshTasks`' own
+ * failure behavior.
  */
 export async function refreshTags(): Promise<void> {
-  try {
-    const tasks = await listTasks();
-    const unique = new Set<string>();
-    for (const task of tasks) {
-      for (const tag of task.tags) {
-        unique.add(tag);
-      }
+  await refreshTasks();
+  const unique = new Set<string>();
+  for (const task of tasksState.items) {
+    for (const tag of task.tags) {
+      unique.add(tag);
     }
-    tagsState.items = [...unique].sort((a, b) => a.localeCompare(b));
-  } catch {
-    // Keep the previously loaded tags.
   }
+  tagsState.items = [...unique].sort((a, b) => a.localeCompare(b));
 }

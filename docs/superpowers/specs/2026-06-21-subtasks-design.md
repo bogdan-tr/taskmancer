@@ -1,7 +1,7 @@
 # Subtasks — Design Spec
 
 **Date:** 2026-06-21
-**Status:** Approved by user, queued for implementation after the NL `+Project` path disambiguation work ships (see `2026-06-21-nl-project-path-design.md`) and after a manual-testing pass on Subprojects.
+**Status:** Implementation in progress. See `2026-06-21-subtasks-plan.md` for the task-by-task build plan and current progress.
 **Scope:** Subtasks only, as described in `next_instructions.md`. Depends on Subprojects (already shipped) — a subtask is implemented as an automatically-generated subproject for a task, reusing the existing project tree/board/settings-inheritance machinery rather than inventing a parallel system.
 
 ## Context
@@ -36,6 +36,16 @@ No subtask-specific design work had happened before this spec — the only prior
 ### Lifecycle: all subtasks done
 - When every (non-cancelled — see below) subtask becomes done, a one-time popup offers to mark the parent task done and/or delete the container. It's a real choice: dismissing without picking either option means it **will not auto-reshow** for that completion. It can only re-trigger if a subtask is later un-done and then all become done again — a fresh transition, not a repeat of the old one.
 - **Not explicitly asked, decided here as a small implementation detail:** cancelled subtasks don't count toward the "done" numerator (so a cancelled item doesn't read as "completed work"), but they also don't block the all-done popup from firing — the check is "every *non-cancelled* subtask is done," not "every subtask, full stop." A subtask that was cancelled is no longer active work either way.
+
+## Implementation-bridging decisions
+
+The decisions above leave a handful of mechanical gaps the Q&A never reached (they're below the level a clarifying question is worth asking — concrete, low-risk, and reversible). Made while writing the implementation plan, grounded in what two research passes found actually exists in the code today:
+
+- **No new field on `Project`.** The "no back-pointer" decision means there's no marker on a container project saying "I'm a container, owned by task X." Every place that needs to know this (hiding it from the sidebar, the breadcrumb override, empty-container cleanup) does a reverse lookup instead — `tasks.find(t => t.subtask_project_id === project.id)` — over data that's already loaded both backend and frontend side. This is a derived computation, not a stored fact, consistent with how `isSubtask`/`subtasksOf` already need the same kind of reverse lookup.
+- **Pre-filling the Create Subtask modal reuses the quick-add token syntax, not new override props.** `AddTaskModal.svelte` has no prop today for pre-filling tags/priority/due/scheduled directly — only `projectFilter`. Rather than threading five new override props through it, the "Create Subtask" entry points seed the modal's *initial title text* with the literal tokens the parent task would produce (`#tag1 #tag2 !high due:2026-06-27 sch:2026-06-25 est 2h `), with the cursor placed after them for the user to type their own title. This reuses 100% of the existing parsing/preview pipeline for free and keeps `AddTaskModal` itself completely unaware that "subtasks" exist as a concept — it just got a different initial title string, the same as if the user had typed those tokens themselves.
+- **`sub "<parent task name>"` resolves asynchronously, but the preview can't be.** Resolving the keyword to a real container project sometimes means *creating* one (a backend round-trip), which can't happen synchronously inside a `$derived` preview computation. Resolution to a real project id is deferred to submit time; while typing, the preview shows a plain `"Subtask of {parent task title}"` label instead of an actual resolved project path — which is accurate information anyway, since the container's name *will* equal the parent's title once it exists.
+- **`sub` needs the same quoting convention as `+Project`'s path syntax**, for the identical structural reason: a task title is almost always multiple words, and there's no other way to bound where the parent name ends and the new subtask's own title begins. `sub "Fix the bug" Buy milk too` unambiguously means a subtask titled "Buy milk too" under "Fix the bug"; an unquoted multi-word title is not supported (mirrors `+Project`'s existing single-word-without-quotes baseline). The lookahead/quote-consuming logic is shared with `tryResolveProjectPath` via a small extracted primitive rather than duplicated.
+- **`sub` takes precedence over `+Project`** if both somehow appear (an unlikely but possible typing accident) — `sub` is the more specific signal.
 
 ## Relationship to the NL project-path work
 

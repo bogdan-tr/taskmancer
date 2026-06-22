@@ -22,6 +22,7 @@ const sampleSettings: Settings = {
   card_lightness: 0.5,
   bar_lightness: 0.38,
   ink_mode: "auto",
+  show_subproject_tasks_default: false,
 };
 
 vi.mock("./api", () => ({

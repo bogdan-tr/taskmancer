@@ -15,10 +15,22 @@
     onUpdate: (task: Task, scope?: SeriesEditScope) => void;
     onDelete: (id: string, scope?: SeriesEditScope) => void;
     onRemoveRecurrence: (id: string) => void;
+    /** The global task list, threaded down to `TaskCard` for its own subtask lookups — see its prop doc for why it must be global, not board-scoped. */
+    allTasks: Task[];
+    onCreateSubtask: (task: Task) => void;
   }
 
-  let { boardColumns, groupByPriority, onConsider, onFinalize, onUpdate, onDelete, onRemoveRecurrence }: Props =
-    $props();
+  let {
+    boardColumns,
+    groupByPriority,
+    onConsider,
+    onFinalize,
+    onUpdate,
+    onDelete,
+    onRemoveRecurrence,
+    allTasks,
+    onCreateSubtask,
+  }: Props = $props();
 </script>
 
 <div class="board">
@@ -45,7 +57,7 @@
             onfinalize={(event) => onFinalize(column.id, bucketIndex, event)}
           >
             {#each bucket.tasks as task (task.id)}
-              <TaskCard {task} {onUpdate} {onDelete} {onRemoveRecurrence} />
+              <TaskCard {task} {onUpdate} {onDelete} {onRemoveRecurrence} {allTasks} {onCreateSubtask} />
             {/each}
           </ul>
         </div>

@@ -7,6 +7,8 @@
   import { childrenOf, computeZoneOrderUpdates } from "$lib/projectTree";
   import { isExpanded, toggleExpanded } from "$lib/projectTree.svelte";
   import { sidebarState } from "$lib/sidebar.svelte";
+  import { containerOwner } from "$lib/subtasks";
+  import { tasksState } from "$lib/tasks.svelte";
   import type { Project } from "$lib/types";
   import ProjectTreeNode from "./ProjectTreeNode.svelte";
 
@@ -21,7 +23,12 @@
 
   let { project, depth, onCreateSubproject }: Props = $props();
 
-  let children = $derived(childrenOf(projectsState.items, project.id));
+  /** Excludes any auto-generated subtask container — see `Sidebar.svelte`'s matching filter on its own top-level list. */
+  let children = $derived(
+    childrenOf(projectsState.items, project.id).filter(
+      (child) => containerOwner(child.id, tasksState.items) === undefined,
+    ),
+  );
   let hasChildren = $derived(children.length > 0);
   let expanded = $derived(isExpanded(project.id));
 

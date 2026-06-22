@@ -20,6 +20,7 @@
     setNlDueDates,
     setShowPriorityChip,
     setShowPriorityGroups,
+    setShowSubtasks,
     setWeekStartsOn,
     type CardColorMode,
     type DedupeFinishedTasksKeep,
@@ -44,6 +45,10 @@
 
   function handleShowPriorityChipChange(event: Event) {
     setShowPriorityChip((event.currentTarget as HTMLInputElement).checked);
+  }
+
+  function handleShowSubtasksChange(event: Event) {
+    setShowSubtasks((event.currentTarget as HTMLInputElement).checked);
   }
 
   function handleWeekStartsOnChange(event: Event) {
@@ -160,6 +165,17 @@
       <span class="toggle-description">
         Display the priority name and dot on each task card. When off, the priority chip is
         hidden, but the card's priority accent color is still shown.
+      </span>
+    </span>
+  </label>
+
+  <label class="toggle-row">
+    <input type="checkbox" checked={displayState.showSubtasks} onchange={handleShowSubtasksChange} />
+    <span class="toggle-text">
+      <span class="toggle-label">Show subtasks</span>
+      <span class="toggle-description">
+        Show subtasks nested under their parent task on Board, Week, and Calendar. When off,
+        subtasks are hidden from view entirely rather than shown as ordinary standalone cards.
       </span>
     </span>
   </label>

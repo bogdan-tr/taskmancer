@@ -20,6 +20,7 @@
   } from "$lib/recurrence";
   import { settingsState } from "$lib/settings.svelte";
   import { FALLBACK_STATUSES, sortedStatuses } from "$lib/statuses.svelte";
+  import { isSubtask, subtasksOf } from "$lib/subtasks";
   import {
     emptyToUndefined,
     formatTags,
@@ -51,12 +52,29 @@
       endDate: string | undefined,
     ) => void;
     onCancel: () => void;
+    /** The global task list, for the one-level-deep rule gating the "Create Subtask" button, the cascade-delete confirmation count, and the recurrence read-only state — see `TaskCard.svelte`'s matching prop doc for why this must be global, not board-scoped. */
+    allTasks?: Task[];
+    /** Opens the Add Task modal pre-filled to create a subtask of the opened task. Omitted (no button rendered) when the caller has nothing to wire it to. */
+    onCreateSubtask?: (task: Task) => void;
   }
 
-  let { open, task, onSave, onDelete, onRemoveRecurrence, onUpdateRecurrence, onCancel }: Props = $props();
+  let {
+    open,
+    task,
+    onSave,
+    onDelete,
+    onRemoveRecurrence,
+    onUpdateRecurrence,
+    onCancel,
+    allTasks = [],
+    onCreateSubtask,
+  }: Props = $props();
 
   const priorities = $derived(settingsState.current?.priorities ?? FALLBACK_PRIORITIES);
   const statuses = $derived(sortedStatuses(settingsState.current?.statuses ?? FALLBACK_STATUSES));
+  /** Hides the "Create Subtask" button when the opened task is itself a subtask (one-level-deep rule). */
+  const isThisTaskSubtask = $derived(task ? isSubtask(task, allTasks) : false);
+  const taskSubtasks = $derived(task ? subtasksOf(task, allTasks) : []);
 
   let dialogEl: HTMLDialogElement | undefined = $state();
 
@@ -553,9 +571,11 @@
                 : ""} · Due: {formatDueRule(seriesInfo.due_rule)}
               {#if !seriesInfo.active}
                 (recurrence removed)
+              {:else if isThisTaskSubtask}
+                (from parent — can't be changed here)
               {/if}
             </span>
-            {#if seriesInfo.active}
+            {#if seriesInfo.active && !isThisTaskSubtask}
               <RecurrenceBuilderDialog
                 value={recurrenceBuilderValue}
                 triggerLabel="Edit recurrence"
@@ -569,7 +589,7 @@
             <span class="recurrence-info-summary">Loading…</span>
           {/if}
         </div>
-        {#if seriesInfo?.active !== false}
+        {#if seriesInfo?.active !== false && !isThisTaskSubtask}
           <button type="button" class="remove-recurrence-link" onclick={handleRemoveRecurrenceClick}>
             Remove recurrence
           </button>
@@ -577,6 +597,11 @@
       {/if}
       {#if editError}
         <p class="edit-error" role="alert">{editError}</p>
+      {/if}
+      {#if !isThisTaskSubtask && onCreateSubtask}
+        <button type="button" class="create-subtask-link" onclick={() => onCreateSubtask(task)}>
+          + Create subtask
+        </button>
       {/if}
       <div class="edit-actions">
         <button type="submit">Save</button>
@@ -590,7 +615,11 @@
 <ConfirmDialog
   open={showDeleteConfirm}
   title="Delete task"
-  message={task ? `Delete "${task.title}"? This can't be undone.` : ""}
+  message={task
+    ? taskSubtasks.length > 0
+      ? `Delete "${task.title}"? This will also delete ${taskSubtasks.length} subtask${taskSubtasks.length === 1 ? "" : "s"}. This can't be undone.`
+      : `Delete "${task.title}"? This can't be undone.`
+    : ""}
   confirmLabel="Delete"
   onConfirm={confirmDelete}
   onCancel={cancelDelete}
@@ -821,6 +850,22 @@
 
   .remove-recurrence-link:hover {
     color: var(--color-danger);
+  }
+
+  .create-subtask-link {
+    align-self: flex-start;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--color-ink-muted);
+    font-size: var(--text-xs);
+    font-weight: 600;
+    text-decoration: underline;
+    cursor: pointer;
+  }
+
+  .create-subtask-link:hover {
+    color: var(--color-accent);
   }
 
   .recurrence-info {

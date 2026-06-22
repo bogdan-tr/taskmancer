@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  applySubtaskTokenSuggestion,
   applyTagsSuggestion,
   applyTokenSuggestion,
   filterSuggestions,
+  findActiveSubtaskToken,
   findActiveToken,
   preferredSuggestionText,
   projectPathSuggestions,
@@ -128,6 +130,63 @@ describe("findActiveToken", () => {
 
   it("returns undefined when ! is part of a larger word", () => {
     expect(findActiveToken("a!b", 3)).toBeUndefined();
+  });
+});
+
+describe("findActiveSubtaskToken", () => {
+  it("finds a sub keyword's partial text at the end of the string", () => {
+    expect(findActiveSubtaskToken("Reproduce it sub Fi", 19)).toEqual({
+      text: "Fi",
+      start: 17,
+      end: 19,
+    });
+  });
+
+  it("finds it at the very start of the string", () => {
+    expect(findActiveSubtaskToken("sub Fi", 6)).toEqual({ text: "Fi", start: 4, end: 6 });
+  });
+
+  it("returns undefined for a bare sub with no partial text yet", () => {
+    expect(findActiveSubtaskToken("Reproduce it sub ", 17)).toBeUndefined();
+  });
+
+  it("returns undefined when sub is part of a larger word", () => {
+    expect(findActiveSubtaskToken("subscribe Fi", 12)).toBeUndefined();
+  });
+
+  it("returns undefined when there's no sub keyword at all", () => {
+    expect(findActiveSubtaskToken("Just a title", 12)).toBeUndefined();
+  });
+
+  it("is case-insensitive", () => {
+    expect(findActiveSubtaskToken("Reproduce it SUB Fi", 19)).toEqual({
+      text: "Fi",
+      start: 17,
+      end: 19,
+    });
+  });
+});
+
+describe("applySubtaskTokenSuggestion", () => {
+  it("replaces only the partial text, leaving the sub keyword untouched", () => {
+    const token = findActiveSubtaskToken("Reproduce it sub Fi", 19);
+    if (!token) throw new Error("expected a token");
+
+    expect(applySubtaskTokenSuggestion("Reproduce it sub Fi", token, '"Fix the bug"')).toEqual({
+      value: 'Reproduce it sub "Fix the bug" ',
+      cursor: 31,
+    });
+  });
+
+  it("doesn't add a trailing space when one is already present", () => {
+    const value = "Reproduce it sub Fi other text";
+    const token = findActiveSubtaskToken(value.slice(0, 19), 19);
+    if (!token) throw new Error("expected a token");
+
+    expect(applySubtaskTokenSuggestion(value, token, "Refactor")).toEqual({
+      value: "Reproduce it sub Refactor other text",
+      cursor: 25,
+    });
   });
 });
 

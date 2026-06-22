@@ -146,6 +146,16 @@ export async function deleteProject(
   return invoke<DeleteProjectResult>("delete_project", { projectId, taskStrategy });
 }
 
+/** Returns `parentTaskId`'s subtask container, creating it on first call. */
+export async function ensureSubtaskContainer(parentTaskId: string): Promise<Project> {
+  return invoke<Project>("ensure_subtask_container", { parentTaskId });
+}
+
+/** Disbands `taskId`'s subtask container, moving its subtasks into `taskId`'s own project and removing the now-unused container. The subtasks themselves are kept, not deleted. Returns the updated task (its `subtask_project_id` cleared). */
+export async function deleteSubtaskContainer(taskId: string): Promise<Task> {
+  return invoke<Task>("delete_subtask_container", { taskId });
+}
+
 export async function getSettings(): Promise<Settings> {
   return invoke<Settings>("get_settings");
 }

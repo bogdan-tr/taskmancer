@@ -137,6 +137,12 @@ pub struct TaskDefaults {
 /// `ink_mode` is the global default text-color mode (one of [`INK_MODES`])
 /// for "color code" mode's Kanban card/bar text. A project's
 /// `ProjectBoard.ink_mode` overrides this when set.
+///
+/// `show_subproject_tasks_default` is the global default for whether
+/// viewing a project's board/week/calendar rolls up its descendant
+/// subprojects' tasks too. A project's `ProjectBoard.show_subproject_tasks`
+/// overrides this when set (see [`crate::project::ProjectBoard`]). Defaults
+/// to `false` — rollup is opt-in per project, not automatic.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Settings {
     #[serde(default)]
@@ -159,6 +165,8 @@ pub struct Settings {
     pub bar_lightness: f64,
     #[serde(default = "default_ink_mode")]
     pub ink_mode: String,
+    #[serde(default)]
+    pub show_subproject_tasks_default: bool,
 }
 
 impl Default for Settings {
@@ -237,6 +245,7 @@ impl Default for Settings {
             card_lightness: default_card_lightness(),
             bar_lightness: default_bar_lightness(),
             ink_mode: default_ink_mode(),
+            show_subproject_tasks_default: false,
         }
     }
 }

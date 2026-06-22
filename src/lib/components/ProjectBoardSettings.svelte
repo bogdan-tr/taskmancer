@@ -63,6 +63,10 @@
   let baselineShowPreviousWeeks = $derived(
     project.board.show_previous_weeks === undefined ? "" : String(project.board.show_previous_weeks),
   );
+  /** "" = inherit the global default, "true"/"false" = explicit override. */
+  let baselineShowSubprojectTasks = $derived(
+    project.board.show_subproject_tasks === undefined ? "" : String(project.board.show_subproject_tasks),
+  );
   let baselineCardLightnessOverride = $derived(project.board.card_lightness !== undefined);
   let baselineCardLightness = $derived(
     Math.round((project.board.card_lightness ?? settingsState.current?.card_lightness ?? 0.5) * 100),
@@ -77,6 +81,7 @@
   let draftStatuses = $state<string[]>([]);
   let draftDefault = $state("");
   let draftShowPreviousWeeks = $state("");
+  let draftShowSubprojectTasks = $state("");
   let draftCardLightnessOverride = $state(false);
   let draftCardLightness = $state(50);
   let draftBarLightnessOverride = $state(false);
@@ -94,6 +99,7 @@
       draftStatuses = [...baselineStatuses];
       draftDefault = baselineDefault;
       draftShowPreviousWeeks = baselineShowPreviousWeeks;
+      draftShowSubprojectTasks = baselineShowSubprojectTasks;
       draftCardLightnessOverride = baselineCardLightnessOverride;
       draftCardLightness = baselineCardLightness;
       draftBarLightnessOverride = baselineBarLightnessOverride;
@@ -111,6 +117,7 @@
       { statuses: baselineStatuses, default_status: project.board.default_status },
     ) ||
       draftShowPreviousWeeks !== baselineShowPreviousWeeks ||
+      draftShowSubprojectTasks !== baselineShowSubprojectTasks ||
       draftCardLightnessOverride !== baselineCardLightnessOverride ||
       (draftCardLightnessOverride && draftCardLightness !== baselineCardLightness) ||
       draftBarLightnessOverride !== baselineBarLightnessOverride ||
@@ -157,6 +164,7 @@
     draftStatuses = [...baselineStatuses];
     draftDefault = baselineDefault;
     draftShowPreviousWeeks = baselineShowPreviousWeeks;
+    draftShowSubprojectTasks = baselineShowSubprojectTasks;
     draftCardLightnessOverride = baselineCardLightnessOverride;
     draftCardLightness = baselineCardLightness;
     draftBarLightnessOverride = baselineBarLightnessOverride;
@@ -176,6 +184,8 @@
           statuses: draftStatuses,
           default_status: draftDefault || undefined,
           show_previous_weeks: draftShowPreviousWeeks === "" ? undefined : draftShowPreviousWeeks === "true",
+          show_subproject_tasks:
+            draftShowSubprojectTasks === "" ? undefined : draftShowSubprojectTasks === "true",
           card_lightness: draftCardLightnessOverride ? draftCardLightness / 100 : undefined,
           bar_lightness: draftBarLightnessOverride ? draftBarLightness / 100 : undefined,
           ink_mode: draftInkModeOverride ? draftInkMode : undefined,
@@ -301,6 +311,20 @@
     </select>
     <p class="hint">
       Overrides the global Display setting for this project's Week view only.
+    </p>
+  </div>
+
+  <div class="field">
+    <label for="show-subproject-tasks">Show subprojects' tasks</label>
+    <select id="show-subproject-tasks" bind:value={draftShowSubprojectTasks}>
+      <option value="">Use global default</option>
+      <option value="true">Roll up subprojects' tasks here</option>
+      <option value="false">Only this project's own tasks</option>
+    </select>
+    <p class="hint">
+      When on, viewing this project's board/week/calendar also shows every descendant subproject's
+      tasks (origin-labeled). Off by default — a subtask's own glued nested row on its parent
+      task's card is unaffected either way.
     </p>
   </div>
 

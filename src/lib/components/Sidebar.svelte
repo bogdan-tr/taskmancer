@@ -9,6 +9,8 @@
   import { childrenOf, computeZoneOrderUpdates } from "$lib/projectTree";
   import { expandIfUnset } from "$lib/projectTree.svelte";
   import { sidebarState, toggleSidebar } from "$lib/sidebar.svelte";
+  import { containerOwner } from "$lib/subtasks";
+  import { tasksState } from "$lib/tasks.svelte";
   import type { Project } from "$lib/types";
 
   const FLIP_DURATION_MS = 150;
@@ -17,7 +19,12 @@
   let subprojectParent: Project | undefined = $state(undefined);
   let dropError = $state("");
 
-  let topLevelProjects = $derived(childrenOf(projectsState.items, undefined));
+  /** Top-level projects, minus any auto-generated subtask container — those are reachable only via their owning task's own card/views, never the sidebar. */
+  let topLevelProjects = $derived(
+    childrenOf(projectsState.items, undefined).filter(
+      (project) => containerOwner(project.id, tasksState.items) === undefined,
+    ),
+  );
   let zoneItems = $state<Project[]>([]);
   $effect(() => {
     zoneItems = topLevelProjects;

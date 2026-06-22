@@ -22,6 +22,15 @@ export interface Task {
   tracked_minutes: number;
   /** The id of the `Series` this task was generated from, if any. `undefined` for a normal, non-recurring task. */
   series_id?: string;
+  /**
+   * The id of this task's auto-generated "subtask container" `Project`, if
+   * it has ever had a subtask. `undefined` until the first subtask is
+   * created, and reset back to `undefined` when the container becomes
+   * empty and is cleaned up. The container itself stores no back-pointer
+   * to this task — see `subtasks.ts`'s `containerOwner` for the reverse
+   * lookup.
+   */
+  subtask_project_id?: string;
   notes: string;
 }
 
@@ -46,6 +55,8 @@ export interface ProjectBoard {
   bar_lightness?: number;
   /** Overrides `Settings.ink_mode` for this project's color-coded card/bar text. `undefined` inherits the global default. */
   ink_mode?: InkMode;
+  /** Overrides `Settings.show_subproject_tasks_default` for whether viewing this project's board/week/calendar rolls up its descendant subprojects' tasks too. `undefined` inherits the global default. */
+  show_subproject_tasks?: boolean;
 }
 
 /**
@@ -174,6 +185,8 @@ export interface Settings {
   bar_lightness: number;
   /** Global default text-color mode for "color code" mode's card/bar text. See `ProjectBoard.ink_mode`. */
   ink_mode: InkMode;
+  /** Global default for whether viewing a project's board/week/calendar rolls up its descendant subprojects' tasks too. See `ProjectBoard.show_subproject_tasks`. */
+  show_subproject_tasks_default: boolean;
 }
 
 /**

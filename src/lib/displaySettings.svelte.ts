@@ -9,6 +9,7 @@ const CARD_COLOR_MODE_KEY = "taskmancer:card-color-mode";
 const DUE_DATE_GLOW_KEY = "taskmancer:due-date-glow";
 const DEDUPE_FINISHED_TASKS_KEY = "taskmancer:dedupe-finished-tasks";
 const DEDUPE_FINISHED_TASKS_KEEP_KEY = "taskmancer:dedupe-finished-tasks-keep";
+const SHOW_SUBTASKS_KEY = "taskmancer:show-subtasks";
 
 export const MIN_FONT_SCALE = 80;
 export const MAX_FONT_SCALE = 140;
@@ -43,6 +44,9 @@ export type DedupeFinishedTasksKeep = "scheduled" | "due";
 export const DEFAULT_DEDUPE_FINISHED_TASKS = false;
 export const DEFAULT_DEDUPE_FINISHED_TASKS_KEEP: DedupeFinishedTasksKeep = "due";
 
+/** Whether subtasks render at all — nested under their parent on Board/Week/Calendar, or vanish from view entirely when off (not just un-nested). */
+export const DEFAULT_SHOW_SUBTASKS = true;
+
 /**
  * Boxed in an object because Svelte 5 forbids exporting a reassigned `$state`
  * binding directly from a module — only its properties may be mutated.
@@ -59,6 +63,7 @@ export const displayState = $state<{
   dueDateGlow: boolean;
   dedupeFinishedTasks: boolean;
   dedupeFinishedTasksKeep: DedupeFinishedTasksKeep;
+  showSubtasks: boolean;
 }>({
   fontScale: DEFAULT_FONT_SCALE,
   columnWidth: DEFAULT_COLUMN_WIDTH,
@@ -71,6 +76,7 @@ export const displayState = $state<{
   dueDateGlow: DEFAULT_DUE_DATE_GLOW,
   dedupeFinishedTasks: DEFAULT_DEDUPE_FINISHED_TASKS,
   dedupeFinishedTasksKeep: DEFAULT_DEDUPE_FINISHED_TASKS_KEEP,
+  showSubtasks: DEFAULT_SHOW_SUBTASKS,
 });
 
 function clamp(value: number, min: number, max: number): number {
@@ -193,6 +199,16 @@ export function setDedupeFinishedTasksKeep(value: DedupeFinishedTasksKeep): void
   }
 }
 
+/** Toggles whether subtasks render at all and persists it. */
+export function setShowSubtasks(value: boolean): void {
+  displayState.showSubtasks = value;
+  try {
+    localStorage.setItem(SHOW_SUBTASKS_KEY, value ? "true" : "false");
+  } catch {
+    // Persistence is best-effort; the choice still applies for this session.
+  }
+}
+
 /** Parses a persisted numeric setting, falling back to `fallback` when missing, invalid, or out of range. */
 function parseStoredNumber(raw: string | null, min: number, max: number, fallback: number): number {
   if (raw === null) return fallback;
@@ -214,6 +230,7 @@ export function initDisplay(): void {
   let storedDueDateGlow: string | null = null;
   let storedDedupeFinishedTasks: string | null = null;
   let storedDedupeFinishedTasksKeep: string | null = null;
+  let storedShowSubtasks: string | null = null;
   try {
     storedFontScale = localStorage.getItem(FONT_SCALE_KEY);
     storedColumnWidth = localStorage.getItem(COLUMN_WIDTH_KEY);
@@ -226,6 +243,7 @@ export function initDisplay(): void {
     storedDueDateGlow = localStorage.getItem(DUE_DATE_GLOW_KEY);
     storedDedupeFinishedTasks = localStorage.getItem(DEDUPE_FINISHED_TASKS_KEY);
     storedDedupeFinishedTasksKeep = localStorage.getItem(DEDUPE_FINISHED_TASKS_KEEP_KEY);
+    storedShowSubtasks = localStorage.getItem(SHOW_SUBTASKS_KEY);
   } catch {
     // Fall back to defaults below.
   }
@@ -249,4 +267,5 @@ export function initDisplay(): void {
   setDedupeFinishedTasksKeep(
     storedDedupeFinishedTasksKeep === "scheduled" ? "scheduled" : DEFAULT_DEDUPE_FINISHED_TASKS_KEEP,
   );
+  setShowSubtasks(storedShowSubtasks === null ? DEFAULT_SHOW_SUBTASKS : storedShowSubtasks === "true");
 }

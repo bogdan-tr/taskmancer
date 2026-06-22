@@ -28,6 +28,12 @@ pub const DEFAULT_PROJECT_COLOR: &str = "#3b82f6";
 /// `ink_mode` overrides `Settings::ink_mode` for this project's color-coded
 /// card/bar text when set (one of [`crate::settings::INK_MODES`]); `None`
 /// inherits the global default.
+///
+/// `show_subproject_tasks` overrides `Settings::show_subproject_tasks_default`
+/// for whether viewing *this* project's board/week/calendar rolls up its
+/// descendant subprojects' tasks too; `None` inherits the global default
+/// (itself defaulting to `false` — rollup is opt-in, not automatic, per the
+/// Subtasks-feedback round that introduced this field).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct ProjectBoard {
     #[serde(default)]
@@ -42,6 +48,8 @@ pub struct ProjectBoard {
     pub bar_lightness: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ink_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_subproject_tasks: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

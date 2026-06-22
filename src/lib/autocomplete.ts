@@ -41,6 +41,58 @@ export function findActiveToken(value: string, cursor: number): ActiveToken | un
 }
 
 /**
+ * Matches an in-progress `sub <partial-name>` keyword at the end of a
+ * string, requiring at least one character of partial text. "sub" is a
+ * whole word, not a single special character like `#+!@`, so it needs its
+ * own pattern rather than fitting into `ACTIVE_TOKEN_PATTERN` — and unlike
+ * those, a bare `sub ` shows nothing rather than browsing every task: the
+ * task list can be far larger than the project/priority/status lists the
+ * other prefixes browse-all for, the same "too many to usefully browse"
+ * judgment `AddTaskModal` already applies to tags past a threshold.
+ */
+const ACTIVE_SUB_KEYWORD_PATTERN = /(?:^|\s)sub\s+(\S+)$/i;
+
+export interface ActiveSubtaskToken {
+  /** The partial parent-task name typed so far. */
+  text: string;
+  /** Index of the partial text's first character within the source string (after the `sub` keyword and its following space, neither of which get replaced on selection). */
+  start: number;
+  /** Index immediately after the partial text's last character (the cursor position). */
+  end: number;
+}
+
+/**
+ * Finds an in-progress `sub <partial-name>` keyword immediately before
+ * `cursor`, for triggering subtask-parent-name autocomplete. Returns
+ * `undefined` if the cursor isn't immediately after such a keyword, or
+ * there's no partial text yet.
+ */
+export function findActiveSubtaskToken(value: string, cursor: number): ActiveSubtaskToken | undefined {
+  const beforeCursor = value.slice(0, cursor);
+  const match = ACTIVE_SUB_KEYWORD_PATTERN.exec(beforeCursor);
+  if (!match) return undefined;
+
+  const [, text] = match;
+  return { text, start: cursor - text.length, end: cursor };
+}
+
+/**
+ * Replaces an `ActiveSubtaskToken`'s partial text (not the `sub` keyword
+ * itself, which is left as-is) with `suggestion`, mirroring
+ * `applyTokenSuggestion`'s trailing-space behavior.
+ */
+export function applySubtaskTokenSuggestion(
+  value: string,
+  token: ActiveSubtaskToken,
+  suggestion: string,
+): { value: string; cursor: number } {
+  const needsTrailingSpace = token.end >= value.length || !/\s/.test(value[token.end]);
+  const replacement = `${suggestion}${needsTrailingSpace ? " " : ""}`;
+  const newValue = value.slice(0, token.start) + replacement + value.slice(token.end);
+  return { value: newValue, cursor: token.start + replacement.length };
+}
+
+/**
  * Prefers a human-readable `label` for an autocomplete suggestion, falling
  * back to `id` when the label contains whitespace — a multi-word value can't
  * round-trip through a single bare token like `@label`/`!label`, so offering

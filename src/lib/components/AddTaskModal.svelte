@@ -1,14 +1,20 @@
 <script lang="ts">
   import { tick } from "svelte";
   import {
+    applySubtaskTokenSuggestion,
+    applyTagsSuggestion,
     applyTokenSuggestion,
     filterSuggestions,
+    findActiveSubtaskToken,
     findActiveToken,
     MAX_SUGGESTIONS,
     preferredSuggestionText,
     projectPathSuggestions,
+    splitTagsInput,
+    type ActiveSubtaskToken,
     type ActiveToken,
   } from "$lib/autocomplete";
+  import { ensureSubtaskContainer, getSeries } from "$lib/api";
   import { isLightColor } from "$lib/colorPresets";
   import { displayState } from "$lib/displaySettings.svelte";
   import { formatDueDateDisplay } from "$lib/dueDateDisplay";
@@ -18,6 +24,7 @@
   import { resolveProjectColor } from "$lib/projectColor";
   import { projectsState } from "$lib/projects.svelte";
   import { findProjectByPath, projectPath, selfAndAncestors } from "$lib/projectTree";
+  import { containerOwner, isSubtask, subtaskNameSuggestions } from "$lib/subtasks";
   import {
     dueRuleFromDefaultCode,
     formatDueRule,
@@ -29,9 +36,12 @@
     type RecurrenceFrequency,
   } from "$lib/recurrence";
   import { settingsState } from "$lib/settings.svelte";
+  import { tasksState } from "$lib/tasks.svelte";
   import { FALLBACK_STATUSES, sortedStatuses, statusLabel } from "$lib/statuses.svelte";
-  import { tagsState } from "$lib/tags.svelte";
+  import { formatTags, parseTags } from "$lib/taskFields";
   import { effectiveDefaultCode, resolveTaskPreview } from "$lib/taskPreview";
+  import { tagsState } from "$lib/tags.svelte";
+  import type { Series, Task } from "$lib/types";
   import Autocomplete from "./Autocomplete.svelte";
   import DatePickerPopover from "./DatePickerPopover.svelte";
   import RecurrenceBuilderDialog from "./RecurrenceBuilderDialog.svelte";
@@ -43,9 +53,30 @@
     errorMessage?: string;
     /** When set, this dialog was opened from a project-scoped board: new tasks default to this project. */
     projectFilter?: string;
+    /**
+     * Candidate tasks for resolving `parentTaskId` against — see
+     * `matchedParentTask`. `KanbanBoard` passes its own currently-visible
+     * task list, not literally every task in the app: a deliberate scoping
+     * choice, not a limitation — you can only mark something a subtask of
+     * a task you can currently see on the open board (which is the full
+     * task list whenever no project filter is active, e.g. the "All Tasks"
+     * view).
+     */
+    allTasks?: Task[];
+    /**
+     * Set by the "Create Subtask" entry points (a button on the task card,
+     * the task edit dialog, or a Week/Calendar bar popover) to mark this
+     * new task as a subtask of the task with this id. Deliberately a real
+     * id, not text the user could accidentally delete while typing their
+     * own title (the title field starts completely blank for this path) —
+     * see the Subtasks design spec's revision after the original
+     * text-token prefill turned out to both clutter the title and silently
+     * lose the link if that text got edited.
+     */
+    parentTaskId?: string;
   }
 
-  let { open, onClose, onSubmit, errorMessage = "", projectFilter }: Props = $props();
+  let { open, onClose, onSubmit, errorMessage = "", projectFilter, allTasks = [], parentTaskId }: Props = $props();
 
   let dialogEl: HTMLDialogElement | undefined = $state();
   let inputEl: HTMLInputElement | undefined = $state();
@@ -65,7 +96,32 @@
   let statusOptions = $derived(
     sortedStatuses(statuses).map((status) => preferredSuggestionText(status.id, status.label)),
   );
-  let parsed = $derived(parseTaskInput(title, undefined, knownPriorities, knownStatuses));
+
+  /**
+   * The task that owns the subtask container currently being viewed
+   * (`projectFilter` is that container's own project id), if any — i.e.
+   * this dialog was opened via the plain "+ Add task" button while
+   * already looking at a subtask's own board, not via a "Create Subtask"
+   * button or a typed `sub <name>` token. Any task created here is
+   * automatically a subtask of this owner, the same as if `sub
+   * "<owner>"` had been typed — see `matchedParentTask`'s own doc
+   * comment for why this takes priority over a typed `sub` token (which
+   * is disabled entirely in this context, just below).
+   *
+   * Looked up against the global `tasksState`, not the `allTasks` prop —
+   * on the container's *own* board, `allTasks` (sourced from that board's
+   * `visibleTasks`) is exactly the subtasks themselves; the owning parent
+   * task lives in a different project entirely and is never part of it,
+   * so this reverse lookup would otherwise never resolve.
+   */
+  let viewedContainerOwner = $derived(
+    projectFilter ? containerOwner(projectFilter, tasksState.items) : undefined,
+  );
+  let parsed = $derived(
+    parseTaskInput(title, undefined, knownPriorities, knownStatuses, {
+      disableSubtaskKeyword: viewedContainerOwner !== undefined,
+    }),
+  );
 
   // Explicit estimated-time controls. Until the user actually edits one of
   // these inputs, they stay in sync with the *fully resolved* estimate
@@ -99,6 +155,69 @@
   let dueManuallySet = $state(false);
   let draftScheduledOverride: string | undefined = $state(undefined);
   let scheduledManuallySet = $state(false);
+
+  /**
+   * Priority/Tags manual overrides — the same precedence model as
+   * Due/Scheduled above (manual control wins over whatever quick-add
+   * token is typed, until cleared), but for fields that previously had no
+   * direct control at all (only the `!priority`/`#tag` quick-add tokens).
+   * Added so a subtask's inherited attributes (see the parent-inheritance
+   * effect below) land somewhere editable without cluttering the title
+   * text — the actual fix for "I don't like how the text field gets
+   * filled up with everything."
+   */
+  let draftPriorityOverride: string | undefined = $state(undefined);
+  let priorityManuallySet = $state(false);
+  let draftTagsInput = $state("");
+  let tagsManuallySet = $state(false);
+  let tagSuggestions: string[] = $state([]);
+  let tagSuggestionIndex = $state(0);
+
+  function handlePriorityChange() {
+    priorityManuallySet = true;
+  }
+
+  function updateTagSuggestions() {
+    const { current } = splitTagsInput(draftTagsInput);
+    tagSuggestions = filterSuggestions(tagsState.items, current);
+    tagSuggestionIndex = 0;
+  }
+
+  function selectTagSuggestion(suggestion: string) {
+    const { prefix } = splitTagsInput(draftTagsInput);
+    draftTagsInput = applyTagsSuggestion(prefix, suggestion);
+    tagsManuallySet = true;
+    tagSuggestions = [];
+  }
+
+  function handleTagsInput() {
+    tagsManuallySet = true;
+    updateTagSuggestions();
+  }
+
+  function handleTagsKeydown(event: KeyboardEvent) {
+    if (tagSuggestions.length === 0) return;
+
+    switch (event.key) {
+      case "ArrowDown":
+        event.preventDefault();
+        tagSuggestionIndex = (tagSuggestionIndex + 1) % tagSuggestions.length;
+        break;
+      case "ArrowUp":
+        event.preventDefault();
+        tagSuggestionIndex = (tagSuggestionIndex - 1 + tagSuggestions.length) % tagSuggestions.length;
+        break;
+      case "Enter":
+      case "Tab":
+        event.preventDefault();
+        selectTagSuggestion(tagSuggestions[tagSuggestionIndex]);
+        break;
+      case "Escape":
+        event.preventDefault();
+        tagSuggestions = [];
+        break;
+    }
+  }
 
   function handleDueSelect(iso: string) {
     draftDueOverride = iso;
@@ -166,6 +285,98 @@
   }
 
   /**
+   * The existing task this new task should become a subtask of, in
+   * priority order:
+   * 1. `parentTaskId` — set directly by a "Create Subtask" button, the
+   *    most explicit signal.
+   * 2. `viewedContainerOwner` — this dialog is already scoped to a
+   *    subtask container's own board (`projectFilter` names it), so any
+   *    task created here is implicitly a subtask of its owner. The `sub`
+   *    keyword is disabled in this exact case (see `parsed` above) so
+   *    there's never a conflicting explicit target to prefer instead —
+   *    nesting a subtask under a subtask is the one-level-deep rule's
+   *    job to prevent, not a second, different parent to silently swap
+   *    in.
+   * 3. A typed `sub <name>` quick-add token, matched case-insensitively
+   *    against active (non-done, non-cancelled), non-subtask tasks only
+   *    (the one-level-deep rule, and the same autocomplete-candidate
+   *    filter `subtaskNameSuggestions` already applies), first match
+   *    wins.
+   * Resolving the actual container project id happens at submit time in
+   * `handleSubmit`, not here, since that can require creating one (an
+   * async round-trip a `$derived` preview can't make — see the design
+   * spec's "preview can't be async" decision); the preview shows a plain
+   * `"Subtask of {title}"` label instead.
+   */
+  let matchedParentTask = $derived.by(() => {
+    if (parentTaskId) return allTasks.find((t) => t.id === parentTaskId);
+    if (viewedContainerOwner) return viewedContainerOwner;
+    if (!parsed.subtaskParentName) return undefined;
+    const typed = parsed.subtaskParentName.toLowerCase();
+    const doneStatusId = settingsState.current?.done_status;
+    const cancelledStatusId = settingsState.current?.cancelled_status;
+    return allTasks.find(
+      (t) =>
+        t.title.toLowerCase() === typed &&
+        t.status !== doneStatusId &&
+        t.status !== cancelledStatusId &&
+        !isSubtask(t, allTasks),
+    );
+  });
+
+  /**
+   * The recurring `Series` belonging to `matchedParentTask`, if it has
+   * one — fetched fresh whenever the matched parent (or its `series_id`)
+   * changes, the same way `TaskEditDialog`'s own `loadSeriesInfo` does for
+   * an opened task. `Task` only ever carries `series_id`, never the
+   * series' own frequency/due rule/end date, so this is the only way to
+   * see them. `loadedParentSeriesId` is a plain (non-reactive) tracker, not
+   * `$state` — the effect below both reads `matchedParentTask?.series_id`
+   * and conditionally writes `parentSeriesInfo`, and tracking "have I
+   * already loaded this one" via a *different* state variable than the
+   * one being read would risk the exact self-triggering effect loop
+   * already found and fixed once elsewhere in this file (see
+   * `inheritFromParent`'s own history).
+   */
+  let parentSeriesInfo = $state<Series | undefined>(undefined);
+  let loadedParentSeriesId: string | undefined = undefined;
+
+  async function loadParentSeriesInfo(seriesId: string) {
+    try {
+      const result = await getSeries(seriesId);
+      if (matchedParentTask?.series_id === seriesId) {
+        parentSeriesInfo = result;
+      }
+    } catch {
+      if (matchedParentTask?.series_id === seriesId) {
+        parentSeriesInfo = undefined;
+      }
+    }
+  }
+
+  $effect(() => {
+    const seriesId = matchedParentTask?.series_id;
+    if (seriesId === loadedParentSeriesId) return;
+    loadedParentSeriesId = seriesId;
+    if (!seriesId) {
+      parentSeriesInfo = undefined;
+      return;
+    }
+    void loadParentSeriesInfo(seriesId);
+  });
+
+  /**
+   * Whether this subtask's recurrence is locked to its (active-recurring)
+   * parent's pattern — per the Subtasks design spec's recurrence-
+   * inheritance decision, a subtask can never have an independently
+   * different pattern than its parent. Drives `effectiveParsed.recurrence`/
+   * `.dueRule` below (forced to the parent's values, overriding whatever
+   * was typed or built) and the read-only Recurrence/Due rows in the
+   * template (no Build button, no date picker).
+   */
+  let lockedToParentRecurrence = $derived(parentSeriesInfo?.active === true);
+
+  /**
    * `parsed`, with the explicit estimated-time/due/scheduled/recurrence
    * controls overriding their quick-add tokens once manually set. A manual
    * due override (either the calendar-popup's literal date or the
@@ -175,11 +386,34 @@
    */
   let effectiveParsed: ParsedTaskInput = $derived({
     ...parsed,
-    due: dueRuleManuallySet ? undefined : dueManuallySet ? draftDueOverride : parsed.due,
-    dueRule: dueRuleManuallySet ? draftDueRuleOverride : dueManuallySet ? undefined : parsed.dueRule,
+    priority: priorityManuallySet ? draftPriorityOverride : parsed.priority,
+    tags: tagsManuallySet ? parseTags(draftTagsInput) : parsed.tags,
+    // Locked to the parent's recurrence (see `lockedToParentRecurrence`'s
+    // own doc comment) overrides every other due/recurrence source —
+    // manual override, quick-add token, or recurrence builder alike —
+    // since a subtask's pattern can never independently differ from its
+    // parent's.
+    due: lockedToParentRecurrence
+      ? undefined
+      : dueRuleManuallySet
+        ? undefined
+        : dueManuallySet
+          ? draftDueOverride
+          : parsed.due,
+    dueRule: lockedToParentRecurrence
+      ? parentSeriesInfo?.due_rule
+      : dueRuleManuallySet
+        ? draftDueRuleOverride
+        : dueManuallySet
+          ? undefined
+          : parsed.dueRule,
     scheduled: scheduledManuallySet ? draftScheduledOverride : parsed.scheduled,
     estimatedMinutes: estimateManuallySet ? explicitEstimatedMinutes : parsed.estimatedMinutes,
-    recurrence: recurrenceManuallySet ? draftRecurrenceOverride : parsed.recurrence,
+    recurrence: lockedToParentRecurrence
+      ? { frequency: parentSeriesInfo!.frequency, endDate: parentSeriesInfo!.end_date }
+      : recurrenceManuallySet
+        ? draftRecurrenceOverride
+        : parsed.recurrence,
   });
 
   function handleEstimateInput() {
@@ -244,7 +478,7 @@
       defaultProjectName,
       globalDefaults,
       projectDefaultsChain: projectChain.map((p) => p.defaults),
-      matchedProjectName: matchedProjectPath,
+      matchedProjectName: matchedParentTask ? `Subtask of ${matchedParentTask.title}` : matchedProjectPath,
       priorities,
       statuses,
       projectBoardDefaultStatusChain: projectChain.map((p) => p.board.default_status),
@@ -296,6 +530,82 @@
     draftEstimatedMinutes = resolved?.minutes;
   });
 
+  /** Mirrors `preview.priorityId`/`preview.tags` into the editable controls, live, the same way the estimated-time boxes above mirror `preview.estimatedMinutes` — until manually touched. */
+  $effect(() => {
+    if (priorityManuallySet) return;
+    draftPriorityOverride = preview.priorityId;
+  });
+  $effect(() => {
+    if (tagsManuallySet) return;
+    draftTagsInput = formatTags(preview.tags);
+  });
+
+  /**
+   * The id of the parent task whose attributes were last copied into the
+   * draft overrides below, so the inheriting effect only fires once per
+   * matched parent rather than re-clobbering a field the user already
+   * edited on every unrelated reactive re-run. Reset to `undefined`
+   * whenever the dialog (re)opens — see the open effect.
+   */
+  let lastInheritedFromParentId: string | undefined = undefined;
+
+  /**
+   * The actual fix for "fill out the attributes, not the text field, with
+   * the possibility to overwrite inherited parent attributes": copies
+   * `parentTask`'s current tags/priority/due/scheduled/estimated time into
+   * the same manual-override channels a direct edit would use — landing
+   * them in the already-editable controls instead of as inert text in the
+   * title, and overwritable exactly the same way a manual edit always
+   * overwrites a quick-add token. Status is deliberately not copied — a
+   * new subtask always starts at the normal default status, never the
+   * parent's current one, per the design spec.
+   *
+   * Called directly from the open effect for the `parentTaskId`-driven
+   * "Create Subtask" buttons (known synchronously at open time — see its
+   * own comment for why that can't just rely on the effect below), and
+   * from the effect below for the NL `sub <name>` token, which can only
+   * resolve once the user has actually typed enough of it.
+   */
+  function inheritFromParent(parentTask: Task) {
+    lastInheritedFromParentId = parentTask.id;
+
+    draftPriorityOverride = parentTask.priority;
+    priorityManuallySet = true;
+    draftTagsInput = formatTags(parentTask.tags);
+    tagsManuallySet = true;
+    draftDueOverride = parentTask.due;
+    dueManuallySet = true;
+    dueRuleManuallySet = false;
+    draftScheduledOverride = parentTask.scheduled;
+    scheduledManuallySet = true;
+    const resolvedEstimate =
+      parentTask.estimated_minutes !== undefined
+        ? hoursAndMinutesFromMinutes(parentTask.estimated_minutes)
+        : undefined;
+    draftEstimatedHours = resolvedEstimate?.hours;
+    draftEstimatedMinutes = resolvedEstimate?.minutes;
+    estimateManuallySet = true;
+  }
+
+  /**
+   * Watches for `matchedParentTask` newly resolving from a typed `sub
+   * <name>` token while the dialog is already open (the `parentTaskId`
+   * case is handled synchronously in the open effect instead — see
+   * `inheritFromParent`'s own comment for why: this effect and the open
+   * effect's full-field reset can both fire in the same reactive flush
+   * when the dialog opens with `parentTaskId` already set, and relying on
+   * effect ordering between them to avoid the reset clobbering what this
+   * effect just inherited would be fragile).
+   */
+  $effect(() => {
+    if (!matchedParentTask) {
+      lastInheritedFromParentId = undefined;
+      return;
+    }
+    if (matchedParentTask.id === lastInheritedFromParentId) return;
+    inheritFromParent(matchedParentTask);
+  });
+
   let previewProjectColor = $derived(resolveProjectColor(matchedProject?.id, projectsState.items));
   // Falls back to the standard ink color for very light project colors (e.g.
   // a pale cream), which would otherwise be illegible as text — see TaskCard's
@@ -305,6 +615,7 @@
   );
 
   let activeToken: ActiveToken | undefined = $state();
+  let activeSubtaskToken: ActiveSubtaskToken | undefined = $state();
   let suggestions: string[] = $state([]);
   let activeSuggestionIndex = $state(0);
 
@@ -313,6 +624,11 @@
     if (open) {
       if (!dialogEl.open) {
         title = "";
+        draftPriorityOverride = undefined;
+        priorityManuallySet = false;
+        draftTagsInput = "";
+        tagsManuallySet = false;
+        tagSuggestions = [];
         draftEstimatedHours = undefined;
         draftEstimatedMinutes = undefined;
         estimateManuallySet = false;
@@ -324,8 +640,26 @@
         recurrenceManuallySet = false;
         draftDueRuleOverride = undefined;
         dueRuleManuallySet = false;
+        lastInheritedFromParentId = undefined;
+        parentSeriesInfo = undefined;
+        loadedParentSeriesId = undefined;
         suggestions = [];
         activeToken = undefined;
+        activeSubtaskToken = undefined;
+        // Inherit synchronously here (not left to the effect below) for
+        // both cases where the parent is already known at open time — the
+        // `parentTaskId`-driven "Create Subtask" buttons, and opening the
+        // plain "+ Add task" button while already viewing a subtask
+        // container's own board — see `inheritFromParent`'s comment for
+        // why relying on the other effect's timing here is fragile. Only
+        // the typed `sub <name>` case is left to that effect, since it
+        // genuinely can't resolve until enough is typed.
+        const openedForParent = parentTaskId
+          ? allTasks.find((t) => t.id === parentTaskId)
+          : projectFilter
+            ? containerOwner(projectFilter, tasksState.items)
+            : undefined;
+        if (openedForParent) inheritFromParent(openedForParent);
         dialogEl.showModal();
         inputEl?.focus();
         inputEl?.setSelectionRange(title.length, title.length);
@@ -351,9 +685,23 @@
     activeToken = token;
 
     if (!token) {
-      suggestions = [];
+      // `findActiveToken`'s `#+!@` patterns and `findActiveSubtaskToken`'s
+      // word-based `sub ` pattern never both match the same cursor
+      // position, so checking this one only when the other found nothing
+      // is unambiguous, not a priority choice between two real matches.
+      activeSubtaskToken = findActiveSubtaskToken(value, cursor);
+      suggestions = activeSubtaskToken
+        ? subtaskNameSuggestions(
+            allTasks,
+            activeSubtaskToken.text,
+            settingsState.current?.done_status,
+            settingsState.current?.cancelled_status,
+          )
+        : [];
+      activeSuggestionIndex = 0;
       return;
     }
+    activeSubtaskToken = undefined;
 
     if (token.prefix === "#" && tagsState.items.length >= MAX_LISTABLE_TAGS) {
       suggestions = [];
@@ -381,6 +729,18 @@
   }
 
   async function selectSuggestion(suggestion: string) {
+    if (activeSubtaskToken) {
+      const result = applySubtaskTokenSuggestion(title, activeSubtaskToken, suggestion);
+      title = result.value;
+      suggestions = [];
+      activeSubtaskToken = undefined;
+
+      await tick();
+      inputEl?.setSelectionRange(result.cursor, result.cursor);
+      inputEl?.focus();
+      return;
+    }
+
     if (!activeToken) return;
 
     const result = applyTokenSuggestion(title, activeToken, suggestion);
@@ -415,6 +775,7 @@
         event.preventDefault();
         suggestions = [];
         activeToken = undefined;
+        activeSubtaskToken = undefined;
         break;
     }
   }
@@ -438,11 +799,17 @@
   async function handleSubmit(event: Event) {
     event.preventDefault();
     if (!parsed.title) return;
-    // `matchedProject` (see its own `$derived` above) already resolves the
-    // effective project — by +Project name, by this dialog's id-based
-    // projectFilter, or by the default project — reused here directly as
-    // the actual submission's id, rather than re-deriving it.
-    const projectId = matchedProject?.id;
+    // `matchedParentTask` takes precedence: ensuring its subtask container
+    // exists (creating it on first use) is the one piece of resolution
+    // that can't happen in the live preview (see `matchedParentTask`'s own
+    // doc comment) — only here, right before actually submitting.
+    // Otherwise `matchedProject` (see its own `$derived` above) already
+    // resolves the effective project — by +Project name, by this dialog's
+    // id-based projectFilter, or by the default project — reused here
+    // directly as the actual submission's id, rather than re-deriving it.
+    const projectId = matchedParentTask
+      ? (await ensureSubtaskContainer(matchedParentTask.id)).id
+      : matchedProject?.id;
     if (effectiveParsed.recurrence) {
       await onSubmit({
         ...effectiveParsed,
@@ -564,8 +931,20 @@
       <div class="field-row">
         <dt>Priority</dt>
         <span class="syntax-hint">high / medium / low</span>
-        <dd class="filled" style={`color: ${priorityColor(priorities, preview.priorityId)}`}>
-          {priorityLabel(priorities, preview.priorityId)}
+        <dd class="priority-editable">
+          <select
+            aria-label="Priority"
+            value={draftPriorityOverride ?? preview.priorityId}
+            onchange={(event) => {
+              draftPriorityOverride = event.currentTarget.value;
+              handlePriorityChange();
+            }}
+            style={`color: ${priorityColor(priorities, draftPriorityOverride ?? preview.priorityId)}`}
+          >
+            {#each sortedPriorities(priorities) as level (level.id)}
+              <option value={level.id}>{level.label}</option>
+            {/each}
+          </select>
         </dd>
       </div>
       <div class="field-row">
@@ -576,14 +955,34 @@
       <div class="field-row">
         <dt>Tags</dt>
         <span class="syntax-hint">#tag</span>
-        <dd class="tags">
-          {#if preview.tags.length > 0}
-            {#each preview.tags as tag (tag)}
-              <span class="chip">#{tag}</span>
-            {/each}
-          {:else}
-            —
-          {/if}
+        <dd class="tags-editable">
+          <input
+            type="text"
+            value={draftTagsInput}
+            placeholder="comma, separated"
+            role="combobox"
+            aria-label="Tags"
+            aria-expanded={tagSuggestions.length > 0}
+            aria-controls="add-task-tags-suggestions"
+            aria-autocomplete="list"
+            aria-activedescendant={tagSuggestions.length > 0
+              ? `add-task-tags-suggestions-option-${tagSuggestionIndex}`
+              : undefined}
+            oninput={(event) => {
+              draftTagsInput = event.currentTarget.value;
+              handleTagsInput();
+            }}
+            onkeydown={handleTagsKeydown}
+            onblur={() => (tagSuggestions = [])}
+          />
+          <Autocomplete
+            id="add-task-tags-suggestions"
+            items={tagSuggestions}
+            activeIndex={tagSuggestionIndex}
+            onSelect={selectTagSuggestion}
+            onHover={(index) => (tagSuggestionIndex = index)}
+            prefix="#"
+          />
         </dd>
       </div>
       <div class="field-row">
@@ -603,7 +1002,11 @@
       <div class="field-row">
         <dt>Due</dt>
         <span class="syntax-hint">
-          {effectiveParsed.recurrence ? "due <phrase> / due in <n> days / due <weekday>s" : "due <phrase> / due na"}
+          {lockedToParentRecurrence
+            ? "locked to parent"
+            : effectiveParsed.recurrence
+              ? "due <phrase> / due in <n> days / due <weekday>s"
+              : "due <phrase> / due na"}
         </span>
         <dd class="date-value" class:filled={!!preview.due}>
           <span>
@@ -617,14 +1020,19 @@
             {:else}
               {preview.due ?? "—"}
             {/if}
+            {#if lockedToParentRecurrence}
+              (from parent)
+            {/if}
           </span>
-          <DatePickerPopover
-            selected={dueSelectedForPicker}
-            triggerLabel="Pick due date"
-            clearLabel="Never"
-            onSelect={handleDueSelect}
-            onClear={handleDueNever}
-          />
+          {#if !lockedToParentRecurrence}
+            <DatePickerPopover
+              selected={dueSelectedForPicker}
+              triggerLabel="Pick due date"
+              clearLabel="Never"
+              onSelect={handleDueSelect}
+              onClear={handleDueNever}
+            />
+          {/if}
         </dd>
       </div>
       <div class="field-row">
@@ -657,25 +1065,32 @@
       </div>
       <div class="field-row">
         <dt>Recurrence</dt>
-        <span class="syntax-hint">every &lt;phrase&gt; [until &lt;phrase&gt;]</span>
+        <span class="syntax-hint">
+          {lockedToParentRecurrence ? "locked to parent" : "every <phrase> [until <phrase>]"}
+        </span>
         <dd class="date-value" class:filled={!!effectiveParsed.recurrence}>
           <span>
             {#if effectiveParsed.recurrence}
               {formatRecurrenceFrequency(effectiveParsed.recurrence.frequency)}{effectiveParsed.recurrence.endDate
                 ? ` until ${effectiveParsed.recurrence.endDate}`
                 : ""}
+              {#if lockedToParentRecurrence}
+                (from parent)
+              {/if}
             {:else}
               —
             {/if}
           </span>
-          <RecurrenceBuilderDialog
-            value={effectiveParsed.recurrence
-              ? { frequency: effectiveParsed.recurrence.frequency, endDate: effectiveParsed.recurrence.endDate, dueRule: seriesDueRule }
-              : undefined}
-            triggerLabel="Build"
-            onApply={handleRecurrenceApply}
-            onClear={handleRecurrenceClear}
-          />
+          {#if !lockedToParentRecurrence}
+            <RecurrenceBuilderDialog
+              value={effectiveParsed.recurrence
+                ? { frequency: effectiveParsed.recurrence.frequency, endDate: effectiveParsed.recurrence.endDate, dueRule: seriesDueRule }
+                : undefined}
+              triggerLabel="Build"
+              onApply={handleRecurrenceApply}
+              onClear={handleRecurrenceClear}
+            />
+          {/if}
         </dd>
       </div>
     </dl>
@@ -932,13 +1347,6 @@
     font-weight: 600;
   }
 
-  .field-row dd.tags {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: flex-end;
-    gap: var(--space-3xs);
-  }
-
   .field-row dd.date-value {
     display: flex;
     align-items: center;
@@ -981,15 +1389,47 @@
     outline: none;
   }
 
-  .chip {
-    font-size: var(--text-xs);
-    line-height: var(--leading-tight);
-    padding: var(--space-3xs) var(--space-xs);
-    border-radius: var(--radius-pill);
-    background: var(--color-accent-soft);
-    border: 1px solid transparent;
-    color: var(--color-accent);
+  .field-row dd.priority-editable {
+    display: flex;
+    justify-content: flex-end;
+  }
+
+  .field-row dd.priority-editable select {
+    padding: var(--space-3xs) var(--space-2xs);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--color-border);
+    background: var(--color-surface);
+    font: inherit;
+    font-size: var(--text-sm);
     font-weight: 600;
+  }
+
+  .field-row dd.priority-editable select:focus-visible {
+    border-color: var(--color-accent);
+    box-shadow: 0 0 0 3px var(--color-accent-soft);
+    outline: none;
+  }
+
+  .field-row dd.tags-editable {
+    position: relative;
+    text-align: left;
+  }
+
+  .field-row dd.tags-editable input {
+    width: 100%;
+    padding: var(--space-3xs) var(--space-2xs);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--color-border);
+    background: var(--color-surface);
+    color: var(--color-ink);
+    font: inherit;
+    font-size: var(--text-sm);
+  }
+
+  .field-row dd.tags-editable input:focus-visible {
+    border-color: var(--color-accent);
+    box-shadow: 0 0 0 3px var(--color-accent-soft);
+    outline: none;
   }
 
   .due-today {

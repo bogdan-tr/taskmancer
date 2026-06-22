@@ -116,6 +116,57 @@ describe("parseTaskInput", () => {
     expect(result.project).toBe("Work//ClientA");
   });
 
+  test("extracts a single-word subtask parent name with no quoting needed", () => {
+    const result = parseTaskInput("Reproduce it sub Refactor", NOW);
+
+    expect(result.title).toBe("Reproduce it");
+    expect(result.subtaskParentName).toBe("Refactor");
+  });
+
+  test("extracts a quoted multi-word subtask parent name spanning multiple tokens", () => {
+    const result = parseTaskInput('Reproduce it sub "Fix the bug"', NOW);
+
+    expect(result.title).toBe("Reproduce it");
+    expect(result.subtaskParentName).toBe("Fix the bug");
+  });
+
+  test("text after a quoted subtask parent name continues as part of the title", () => {
+    const result = parseTaskInput('sub "Fix the bug" Reproduce it', NOW);
+
+    expect(result.title).toBe("Reproduce it");
+    expect(result.subtaskParentName).toBe("Fix the bug");
+  });
+
+  test("leaves an unquoted multi-word subtask parent name only as the first word", () => {
+    const result = parseTaskInput("sub Fix the bug", NOW);
+
+    expect(result.subtaskParentName).toBe("Fix");
+    expect(result.title).toBe("the bug");
+  });
+
+  test("leaves sub untouched in the title when its quote is never closed", () => {
+    const result = parseTaskInput('Reproduce it sub "Fix the bug', NOW);
+
+    expect(result.subtaskParentName).toBeUndefined();
+    expect(result.title).toBe('Reproduce it sub "Fix the bug');
+  });
+
+  test("leaves sub untouched in the title for an empty quoted parent name", () => {
+    const result = parseTaskInput('Reproduce it sub ""', NOW);
+
+    expect(result.subtaskParentName).toBeUndefined();
+    expect(result.title).toBe('Reproduce it sub ""');
+  });
+
+  test("treats sub as a literal word when disableSubtaskKeyword is set", () => {
+    const result = parseTaskInput('Reproduce it sub "Fix the bug"', NOW, undefined, undefined, {
+      disableSubtaskKeyword: true,
+    });
+
+    expect(result.subtaskParentName).toBeUndefined();
+    expect(result.title).toBe('Reproduce it sub "Fix the bug"');
+  });
+
   test.each([
     ["!high", "high"],
     ["!medium", "medium"],

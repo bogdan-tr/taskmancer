@@ -65,6 +65,8 @@ pub fn run() {
             commands::create_project,
             commands::update_project,
             commands::delete_project,
+            commands::ensure_subtask_container,
+            commands::delete_subtask_container,
             commands::get_settings,
             commands::save_settings,
             commands::count_tasks_by_priority,

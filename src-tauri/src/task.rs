@@ -70,6 +70,18 @@ pub struct Task {
     /// `apply_task_update`'s "just this one" handling in the command layer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub series_id: Option<String>,
+    /// The id of this task's auto-generated "subtask container" `Project`,
+    /// if it has ever had a subtask (see
+    /// `commands::get_or_create_subtask_container`). `None` until the
+    /// first subtask is created, and reset back to `None` when the
+    /// container becomes empty and is cleaned up (see
+    /// `commands::owning_task_if_container_now_empty`). The container
+    /// itself stores no back-pointer to this task — callers needing the
+    /// reverse direction (a project id -> its owning task) do a reverse
+    /// scan over the task list instead, since there's no other place a
+    /// subtask container's identity is recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subtask_project_id: Option<String>,
     #[serde(skip)]
     pub notes: String,
 }
@@ -106,6 +118,7 @@ impl Task {
             estimated_minutes: None,
             tracked_minutes: 0,
             series_id: None,
+            subtask_project_id: None,
             notes: String::new(),
         }
     }
@@ -161,6 +174,7 @@ mod tests {
         task.estimated_minutes = Some(90);
         task.tracked_minutes = 45;
         task.series_id = Some("series-abc123".to_string());
+        task.subtask_project_id = Some("container-project-id".to_string());
         task.notes = "Some free-form notes about the assignment.".to_string();
 
         let markdown = task.to_markdown().expect("serialization should succeed");
@@ -194,6 +208,7 @@ mod tests {
         assert_eq!(task.estimated_minutes, None);
         assert_eq!(task.tracked_minutes, 0);
         assert_eq!(task.series_id, None);
+        assert_eq!(task.subtask_project_id, None);
     }
 
     #[test]
@@ -238,6 +253,45 @@ mod tests {
         let task = Task::from_markdown(markdown).expect("parsing should succeed");
 
         assert_eq!(task.series_id, None);
+    }
+
+    #[test]
+    fn new_task_has_no_subtask_project_id() {
+        let task = Task::new("Write report".to_string());
+
+        assert_eq!(task.subtask_project_id, None);
+    }
+
+    #[test]
+    fn to_markdown_omits_subtask_project_id_when_unset() {
+        let task = Task::new("Demo".to_string());
+
+        let markdown = task.to_markdown().expect("serialization should succeed");
+
+        assert!(!markdown.contains("subtask_project_id"));
+    }
+
+    #[test]
+    fn to_markdown_then_from_markdown_round_trips_a_subtask_project_id() {
+        let mut task = Task::new("Fix the bug".to_string());
+        task.subtask_project_id = Some("container-project-id".to_string());
+
+        let markdown = task.to_markdown().expect("serialization should succeed");
+        let parsed = Task::from_markdown(&markdown).expect("parsing should succeed");
+
+        assert_eq!(
+            parsed.subtask_project_id,
+            Some("container-project-id".to_string())
+        );
+    }
+
+    #[test]
+    fn from_markdown_defaults_subtask_project_id_to_none_when_absent() {
+        let markdown = "---\nid: abc123\ntitle: Demo\ncreated: 2026-06-11T10:00:00+00:00\n---\n\n";
+
+        let task = Task::from_markdown(markdown).expect("parsing should succeed");
+
+        assert_eq!(task.subtask_project_id, None);
     }
 
     #[test]

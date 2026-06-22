@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { goto } from "$app/navigation";
   import { page } from "$app/state";
   import { applyTagsSuggestion, filterSuggestions, splitTagsInput } from "$lib/autocomplete";
   import {
@@ -21,13 +22,15 @@
     FALLBACK_PRIORITIES,
     priorityColor,
     priorityLabel,
+    priorityRank,
     sortedPriorities,
   } from "$lib/priorities.svelte";
   import { resolveCardLightness, resolveInkMode, resolveProjectColor } from "$lib/projectColor";
   import { projectsState } from "$lib/projects.svelte";
   import type { SeriesEditScope } from "$lib/recurrence";
   import { settingsState } from "$lib/settings.svelte";
-  import { FALLBACK_STATUSES, statusColor } from "$lib/statuses.svelte";
+  import { FALLBACK_STATUSES, statusColor, statusLabel } from "$lib/statuses.svelte";
+  import { isSubtask, relevantSubtasksOf, subtaskProgress, subtasksOf } from "$lib/subtasks";
   import {
     emptyToUndefined,
     formatTags,
@@ -37,21 +40,75 @@
   } from "$lib/taskFields";
   import { tagsState } from "$lib/tags.svelte";
   import type { Task } from "$lib/types";
+  import { formatDateISO } from "$lib/weekRange";
   import Autocomplete from "./Autocomplete.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
   import DatePickerPopover from "./DatePickerPopover.svelte";
   import SeriesScopeDialog from "./SeriesScopeDialog.svelte";
+  import StatusPickerDialog from "./StatusPickerDialog.svelte";
 
   interface Props {
     task: Task;
     onUpdate: (task: Task, scope?: SeriesEditScope) => void;
     onDelete: (id: string, scope?: SeriesEditScope) => void;
     onRemoveRecurrence: (id: string) => void;
+    /**
+     * The global task list (`tasksState.items`, not the current board's
+     * `visibleTasks`) — for finding this task's own subtasks and for
+     * hiding the "Create Subtask" button on a task that's itself already
+     * a subtask. Must be the global list: when this card is rendered on
+     * its *own* subtask container's board, the board-scoped list would
+     * never include the owning parent task (it lives in a different
+     * project entirely), making every subtask-relationship check here
+     * silently wrong.
+     */
+    allTasks?: Task[];
+    /** Opens the Add Task modal pre-filled to create a subtask of `task`. */
+    onCreateSubtask?: (task: Task) => void;
   }
 
-  let { task, onUpdate, onDelete, onRemoveRecurrence }: Props = $props();
+  let { task, onUpdate, onDelete, onRemoveRecurrence, allTasks = [], onCreateSubtask }: Props = $props();
 
   const priorities = $derived(settingsState.current?.priorities ?? FALLBACK_PRIORITIES);
+  /** `true` when `task` is itself a subtask — hides the "Create Subtask" button (one-level-deep rule). */
+  const isThisTaskSubtask = $derived(isSubtask(task, allTasks));
+  /** "Today", recomputed per render rather than tracked live — matches `KanbanBoard`'s own one-shot `formatDateISO(new Date())` calls. Used to collapse a recurring subtask's many pre-generated occurrences down to the one currently relevant (see `relevantSubtasksOf`). */
+  const today = $derived(formatDateISO(new Date()));
+  /** Nested rows render priority-sorted (highest first), per the original feature request. */
+  const taskSubtasks = $derived(
+    [...relevantSubtasksOf(task, allTasks, today)].sort(
+      (a, b) => priorityRank(priorities, a.priority) - priorityRank(priorities, b.priority),
+    ),
+  );
+  /** Every generated occurrence of every subtask, unlike `taskSubtasks` above — for the delete-confirmation count, since deleting `task` cascades to every one of them, not just the currently relevant occurrence of each. */
+  const taskSubtasksFullCount = $derived(subtasksOf(task, allTasks).length);
+  const taskSubtaskProgress = $derived(
+    subtaskProgress(
+      task,
+      allTasks,
+      settingsState.current?.done_status,
+      settingsState.current?.cancelled_status,
+      today,
+    ),
+  );
+
+  /** The subtask whose status picker is currently open, if any. */
+  let statusPickerSubtask: Task | undefined = $state(undefined);
+
+  function handleSubtaskStatusClick(subtask: Task) {
+    statusPickerSubtask = subtask;
+  }
+
+  function selectSubtaskStatus(statusId: string) {
+    if (statusPickerSubtask) {
+      onUpdate({ ...statusPickerSubtask, status: statusId });
+    }
+    statusPickerSubtask = undefined;
+  }
+
+  function closeStatusPicker() {
+    statusPickerSubtask = undefined;
+  }
   const projectColor = $derived(resolveProjectColor(task.project_id, projectsState.items));
   const projectName = $derived(projectsState.items.find((p) => p.id === task.project_id)?.name);
   /** The project currently being viewed (from the URL), or `undefined` on the non-project-scoped "All Tasks" route. */
@@ -335,10 +392,28 @@
     showDeleteConfirm = false;
   }
 
+  /**
+   * Clicking the title of a task that owns a subtask container navigates to
+   * that container's own board instead of opening inline edit — per the
+   * "subtasks are like tasks in a subproject, where the parent task is the
+   * subproject" framing, the title click is this task's "open the
+   * subproject" affordance. Editing the parent task's own fields (and
+   * reaching the Create Subtask button) moves to the dedicated edit icon
+   * below for exactly this case; a task with no container keeps today's
+   * plain click-to-edit behavior unchanged.
+   */
+  function handleTitleClick() {
+    if (task.subtask_project_id) {
+      void goto(`/projects/${task.subtask_project_id}`);
+    } else {
+      startEdit();
+    }
+  }
+
   function handleTitleKeydown(event: KeyboardEvent) {
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
-      startEdit();
+      handleTitleClick();
     }
   }
 </script>
@@ -486,9 +561,17 @@
         Notes
         <textarea bind:value={draftNotes} rows="3"></textarea>
       </label>
-      {#if task.series_id !== undefined}
+      {#if task.series_id !== undefined && !isThisTaskSubtask}
         <button type="button" class="remove-recurrence-link" onclick={handleRemoveRecurrenceClick}>
           Remove recurrence
+        </button>
+      {/if}
+      {#if task.series_id !== undefined && isThisTaskSubtask}
+        <p class="recurrence-locked-note">Recurs with its parent task — can't be changed here.</p>
+      {/if}
+      {#if !isThisTaskSubtask && onCreateSubtask}
+        <button type="button" class="create-subtask-button" onclick={() => onCreateSubtask(task)}>
+          + Create subtask
         </button>
       {/if}
       {#if editError}
@@ -501,14 +584,23 @@
       </div>
     </form>
   {:else}
-    <div
-      class="task-title"
-      role="button"
-      tabindex="0"
-      onclick={startEdit}
-      onkeydown={handleTitleKeydown}
-    >
-      {task.title}
+    <div class="task-title-row">
+      <div
+        class="task-title"
+        role="button"
+        tabindex="0"
+        onclick={handleTitleClick}
+        onkeydown={handleTitleKeydown}
+      >
+        {task.title}
+      </div>
+      {#if task.subtask_project_id}
+        <button type="button" class="edit-icon-button" onclick={startEdit} aria-label="Edit task" title="Edit task">
+          <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M11 2l3 3-7.5 7.5L3 13l.5-3.5L11 2z" />
+          </svg>
+        </button>
+      {/if}
     </div>
     {#if isDone}
       <span class="task-done-check" aria-hidden="true">
@@ -574,13 +666,44 @@
       {#each task.tags as tag (tag)}
         <span class="chip tag">#{tag}</span>
       {/each}
+      {#if taskSubtaskProgress.total > 0}
+        <span class="chip subtask-progress" title="Subtasks done">
+          {taskSubtaskProgress.done}/{taskSubtaskProgress.total}
+        </span>
+      {/if}
     </div>
+
+    {#if displayState.showSubtasks && taskSubtasks.length > 0}
+      <ul class="subtask-list">
+        {#each taskSubtasks as subtask (subtask.id)}
+          <li class="subtask-row">
+            <span
+              class="subtask-priority-dot"
+              style="--priority-color: {priorityColor(priorities, subtask.priority)}"
+              title={priorityLabel(priorities, subtask.priority)}
+              aria-hidden="true"
+            ></span>
+            <span class="subtask-title">{subtask.title}</span>
+            <button
+              type="button"
+              class="subtask-status-dot"
+              style="--status-color: {statusColor(statuses, subtask.status)}"
+              title={statusLabel(statuses, subtask.status)}
+              aria-label={`Change status of subtask "${subtask.title}" (currently ${statusLabel(statuses, subtask.status)})`}
+              onclick={() => handleSubtaskStatusClick(subtask)}
+            ></button>
+          </li>
+        {/each}
+      </ul>
+    {/if}
   {/if}
 
   <ConfirmDialog
     open={showDeleteConfirm}
     title="Delete task"
-    message={`Delete "${task.title}"? This can't be undone.`}
+    message={taskSubtasksFullCount > 0
+      ? `Delete "${task.title}"? This will also delete ${taskSubtasksFullCount} subtask${taskSubtasksFullCount === 1 ? "" : "s"}. This can't be undone.`
+      : `Delete "${task.title}"? This can't be undone.`}
     confirmLabel="Delete"
     onConfirm={confirmDelete}
     onCancel={cancelDelete}
@@ -602,6 +725,15 @@
     onThis={handleScopeThis}
     onFuture={handleScopeFuture}
     onCancel={cancelScopeDialog}
+  />
+
+  <StatusPickerDialog
+    open={statusPickerSubtask !== undefined}
+    taskTitle={statusPickerSubtask?.title ?? ""}
+    {statuses}
+    currentStatusId={statusPickerSubtask?.status ?? ""}
+    onSelect={selectSubtaskStatus}
+    onCancel={closeStatusPicker}
   />
 </li>
 
@@ -733,12 +865,45 @@
     visibility: hidden;
   }
 
+  .task-title-row {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-2xs);
+  }
+
   .task-title {
+    flex: 1;
+    min-width: 0;
     cursor: pointer;
     font-size: var(--text-sm);
     font-weight: 600;
     line-height: var(--leading-tight);
     word-break: break-word;
+  }
+
+  .edit-icon-button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 1.25rem;
+    height: 1.25rem;
+    margin-top: 1px;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--color-ink-faint);
+    cursor: pointer;
+    transition: color var(--duration-fast) var(--ease-out-expo);
+  }
+
+  .edit-icon-button:hover {
+    color: var(--color-accent);
+  }
+
+  .edit-icon-button:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
   }
 
   .task-title:hover {
@@ -848,6 +1013,84 @@
     border-radius: var(--radius-pill);
     background: var(--task-priority-color, var(--color-border-strong));
     flex-shrink: 0;
+  }
+
+  .chip.subtask-progress {
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .subtask-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3xs);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .subtask-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    padding: var(--space-3xs) var(--space-2xs);
+    border-radius: var(--radius-sm);
+    background: var(--color-canvas);
+    font-size: var(--text-xs);
+  }
+
+  .subtask-priority-dot {
+    width: 0.4rem;
+    height: 0.4rem;
+    border-radius: var(--radius-pill);
+    background: var(--priority-color, var(--color-border-strong));
+    flex-shrink: 0;
+  }
+
+  .subtask-title {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--color-ink);
+  }
+
+  .subtask-status-dot {
+    width: 0.65rem;
+    height: 0.65rem;
+    flex-shrink: 0;
+    padding: 0;
+    border: none;
+    border-radius: var(--radius-pill);
+    background: var(--status-color, var(--color-border-strong));
+    cursor: pointer;
+    transition: transform var(--duration-fast) var(--ease-out-expo);
+  }
+
+  .subtask-status-dot:hover {
+    transform: scale(1.2);
+  }
+
+  .subtask-status-dot:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+
+  .create-subtask-button {
+    align-self: flex-start;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--color-ink-muted);
+    font-size: var(--text-xs);
+    font-weight: 600;
+    cursor: pointer;
+    text-decoration: underline;
+  }
+
+  .create-subtask-button:hover {
+    color: var(--color-accent);
   }
 
   .edit-form {
@@ -1020,5 +1263,14 @@
 
   .remove-recurrence-link:hover {
     color: var(--color-danger);
+  }
+
+  .recurrence-locked-note {
+    margin: 0;
+    font-size: var(--text-xs);
+    font-weight: 600;
+    text-transform: none;
+    letter-spacing: normal;
+    color: var(--color-ink-faint);
   }
 </style>

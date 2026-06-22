@@ -1,10 +1,12 @@
 <script lang="ts">
+  import { goto } from "$app/navigation";
   import { onMount } from "svelte";
   import type { DndEvent } from "svelte-dnd-action";
   import {
     createRecurringTask,
     createTask,
     deleteSeriesOccurrence,
+    deleteSubtaskContainer,
     deleteTask,
     ensureOccurrencesUntil,
     finishDay,
@@ -17,6 +19,7 @@
   } from "$lib/api";
   import { isVisibleOnBoard } from "$lib/boardVisibility";
   import AddTaskModal from "$lib/components/AddTaskModal.svelte";
+  import AllSubtasksDoneDialog from "$lib/components/AllSubtasksDoneDialog.svelte";
   import CalendarView from "$lib/components/CalendarView.svelte";
   import ConfirmDialog from "$lib/components/ConfirmDialog.svelte";
   import KanbanGrid from "$lib/components/KanbanGrid.svelte";
@@ -39,7 +42,7 @@
   import type { ParsedTaskInput } from "$lib/naturalLanguage";
   import { FALLBACK_PRIORITIES } from "$lib/priorities.svelte";
   import { effectiveBoardStatuses } from "$lib/projectBoardSettings";
-  import { projectsState } from "$lib/projects.svelte";
+  import { projectsState, refreshProjects } from "$lib/projects.svelte";
   import { descendantsOf, selfAndAncestors } from "$lib/projectTree";
   import type { DueRule, RecurrenceFrequency, SeriesEditScope } from "$lib/recurrence";
   import { settingsState } from "$lib/settings.svelte";
@@ -50,6 +53,15 @@
     statusColor,
     statusLabel,
   } from "$lib/statuses.svelte";
+  import {
+    allDoneQueueState,
+    checkAllDoneTransitions,
+    dequeueAllDone,
+    dismissAllDonePermanently,
+  } from "$lib/subtaskCompletionQueue.svelte";
+  import { containerOwner, subtasksOf } from "$lib/subtasks";
+  import { refreshTasks, tasksState } from "$lib/tasks.svelte";
+  import { isHiddenAsSubtask } from "$lib/subtaskVisibility";
   import { refreshTags } from "$lib/tags.svelte";
   import type { Task } from "$lib/types";
   import { formatDateISO } from "$lib/weekRange";
@@ -81,15 +93,36 @@
     projectFilter ? projectsState.items.find((p) => p.id === projectFilter) : undefined,
   );
 
-  /** `projectFilter` plus every one of its descendant subprojects' ids — viewing a parent project rolls up all of its descendants' tasks too. */
-  let rollupProjectIds = $derived(
-    projectFilter
-      ? [projectFilter, ...descendantsOf(projectsState.items, projectFilter).map((p) => p.id)]
-      : [],
-  );
-
   /** The full ancestor chain for the current project (own board first, then ancestors' boards, nearest-first), or empty when this board isn't project-scoped. */
   let projectChain = $derived(project ? selfAndAncestors(projectsState.items, project.id) : []);
+
+  /** The nearest `board.show_subproject_tasks` override in `projectChain`, else the global default — opt-in, defaulting to `false`, per the Subtasks-feedback round that introduced this setting. */
+  let showSubprojectTasks = $derived(
+    projectChain.find((p) => p.board.show_subproject_tasks !== undefined)?.board.show_subproject_tasks ??
+      settingsState.current?.show_subproject_tasks_default ??
+      false,
+  );
+
+  /**
+   * `projectFilter` plus every one of its descendant subprojects' ids
+   * worth rolling up — a "real" descendant subproject only counts when
+   * `showSubprojectTasks` is enabled for the viewed project (rollup is
+   * opt-in, see `showSubprojectTasks`'s own doc comment), but a hidden
+   * subtask container is *always* included regardless of that toggle: the
+   * glued nested-row feature on `TaskCard` needs its owning task's
+   * subtasks present in `visibleTasks` everywhere that task's own card
+   * renders, and a subtask container is never a "subproject" from the
+   * user's perspective in the first place, just this feature's internal
+   * plumbing.
+   */
+  let rollupProjectIds = $derived.by(() => {
+    if (!projectFilter) return [];
+    const descendants = descendantsOf(projectsState.items, projectFilter);
+    const included = showSubprojectTasks
+      ? descendants
+      : descendants.filter((p) => containerOwner(p.id, tasksState.items) !== undefined);
+    return [projectFilter, ...included.map((p) => p.id)];
+  });
 
   /**
    * The status ids shown as columns on this board, in display order: the
@@ -150,6 +183,8 @@
   let isLoading = $state(true);
   let errorMessage = $state("");
   let modalOpen = $state(false);
+  /** Seeds `AddTaskModal`'s `parentTaskId` — set by `openCreateSubtask`, `undefined` for the ordinary "+ Add task" entry point. */
+  let subtaskParentIdForModal: string | undefined = $state(undefined);
   let finishDayConfirmOpen = $state(false);
   let finishDayMessage = $state("");
   let isFinishingDay = $state(false);
@@ -165,6 +200,136 @@
    */
   let visibleTasks: Task[] = $state([]);
 
+  /**
+   * `visibleTasks` minus any subtask that shouldn't render as a standalone
+   * bar here — passed to `WeekView`/`CalendarView` instead of `visibleTasks`
+   * directly, mirroring the equivalent exclusion `boardVisible` (inside
+   * `refresh`/`replaceTask`) applies to the Kanban grid's own buckets. See
+   * `isHiddenAsSubtask`'s own doc comment for the exact rule.
+   */
+  let weekCalendarTasks = $derived(
+    visibleTasks.filter((task) => !isHiddenAsSubtask(task, visibleTasks, projectFilter)),
+  );
+
+  /** Opens the add-task modal, optionally pre-marking it as creating a subtask of the given task (the "Create Subtask" entry points). */
+  function openAddTaskModal(parentTaskId?: string) {
+    subtaskParentIdForModal = parentTaskId;
+    modalOpen = true;
+  }
+
+  function openCreateSubtask(task: Task) {
+    openAddTaskModal(task.id);
+  }
+
+  /**
+   * The task that owns the subtask container currently being viewed, if
+   * `projectFilter` names one — i.e. this board *is* a subtask's own
+   * board, not the parent's. Looked up against the global `tasksState`
+   * (kept fresh via `refreshTags`/`refreshTasks`), not `visibleTasks`,
+   * since on this exact board `visibleTasks` is just the subtasks
+   * themselves — the owner task lives in a different project entirely
+   * and is never part of it.
+   */
+  let containerOwnerTask = $derived(
+    projectFilter ? containerOwner(projectFilter, tasksState.items) : undefined,
+  );
+
+  /**
+   * Whichever queued task id is up next for the all-done popup — only
+   * ever resolves while actively viewing *that exact task's* own subtask
+   * board (not merely "some board with a queued task"), since
+   * `checkAllDoneTransitions` below only ever queues an id while this
+   * same condition already held. The explicit id match here is a second,
+   * defensive guarantee of "move it to just the subtask view": if two
+   * different parents both have queued popups, navigating to parent A's
+   * board must never show parent B's dialog.
+   */
+  let allDoneDialogTask = $derived(
+    allDoneQueueState.items.length > 0 && containerOwnerTask?.id === allDoneQueueState.items[0]
+      ? containerOwnerTask
+      : undefined,
+  );
+
+  /**
+   * Re-checks for an all-subtasks-done transition, but only while
+   * actively viewing the subtask container's own board (`containerOwnerTask`
+   * is defined) — previously this ran unconditionally against
+   * `visibleTasks` on *every* board, which meant the popup could fire
+   * while viewing the parent's own project or the global "All Tasks" view
+   * (wherever the parent task happened to be loaded), never the subtask
+   * board itself. `visibleTasks` here is exactly the owner's own
+   * subtasks (this board's entire content), so `[containerOwnerTask,
+   * ...visibleTasks]` gives `checkAllDoneTransitions` everything it needs
+   * to evaluate just this one task. The actual "already shown"/"never
+   * ask again" tracking lives in `subtaskCompletionQueue.svelte.ts`'s
+   * persisted module-level state, not here — see its own doc comment.
+   */
+  $effect(() => {
+    if (!containerOwnerTask) return;
+    checkAllDoneTransitions(
+      [containerOwnerTask, ...visibleTasks],
+      settingsState.current?.done_status,
+      settingsState.current?.cancelled_status,
+      formatDateISO(new Date()),
+    );
+  });
+
+  /**
+   * Marks the subtask board's owning parent task done — shared by the
+   * all-done dialog's "Mark parent done" action and the persistent header
+   * button that's always available on a subtask board regardless of
+   * whether the dialog happens to be open. Only dequeues when responding
+   * to an actually-open dialog; the header button can fire with nothing
+   * queued at all, and must not silently drop some unrelated queued
+   * popup if one exists.
+   *
+   * Once done, the subtask container's job is finished — it's disbanded
+   * (subtasks moved back into the parent's own project, container
+   * removed; see `deleteSubtaskContainer`) and the user is sent back to
+   * the parent task's own board, since this one is about to stop
+   * existing. Navigation only happens on success: if disbanding the
+   * container fails, staying put with the error shown is more useful
+   * than leaving the user on a board that's silently out of sync with
+   * the backend.
+   */
+  async function handleMarkParentDone() {
+    const task = allDoneDialogTask ?? containerOwnerTask;
+    if (allDoneDialogTask) dequeueAllDone();
+    const doneStatusId = settingsState.current?.done_status;
+    if (!task || !doneStatusId) return;
+    await handleUpdate({ ...task, status: doneStatusId });
+    try {
+      await deleteSubtaskContainer(task.id);
+      await refreshProjects();
+      await refreshTasks();
+      errorMessage = "";
+      await goto(task.project_id ? `/projects/${task.project_id}` : "/");
+    } catch (error) {
+      errorMessage = getErrorMessage(error, "Failed to remove the subtask list");
+    }
+  }
+
+  /** Deletes every current subtask of the popup's task — the backend auto-clears the now-empty container and the task's own `subtask_project_id` once the last one is gone (see `delete_task`'s cascade-cleanup), so no separate "delete container" step is needed here. */
+  async function handleDeleteSubtaskList() {
+    const task = allDoneDialogTask ?? containerOwnerTask;
+    if (allDoneDialogTask) dequeueAllDone();
+    if (!task) return;
+    try {
+      for (const subtask of subtasksOf(task, visibleTasks)) {
+        await deleteTask(subtask.id);
+        removeTask(subtask.id);
+      }
+      await refresh();
+      errorMessage = "";
+    } catch (error) {
+      errorMessage = getErrorMessage(error, "Failed to delete subtasks");
+    }
+  }
+
+  function handleDismissAllDonePermanently() {
+    if (allDoneDialogTask) dismissAllDonePermanently(allDoneDialogTask.id);
+  }
+
   async function refresh() {
     try {
       const allTasks = await listTasks();
@@ -173,7 +338,9 @@
         : allTasks;
       visibleTasks = visible;
       const today = formatDateISO(new Date());
-      const boardVisible = visible.filter((task) => isVisibleOnBoard(task, today));
+      const boardVisible = visible.filter(
+        (task) => isVisibleOnBoard(task, today) && !isHiddenAsSubtask(task, visible, projectFilter),
+      );
       buckets = groupByStatusAndPriority(boardVisible, priorities, boardStatusIds, groupByPriority);
       recomputeHasOther();
       errorMessage = "";
@@ -198,6 +365,24 @@
       } else {
         const task = await createTask(parsed, parsed.projectId);
         replaceTask(task);
+      }
+      // Creating a subtask (via the "Create Subtask" buttons' `parentTaskId`,
+      // or a typed `sub <name>` token) also mutates its *parent* task
+      // server-side (`ensureSubtaskContainer` sets `subtask_project_id`) and
+      // creates a brand new container `Project`, but neither the parent's
+      // locally-cached copy in `visibleTasks` nor the new container's entry
+      // in the global `projectsState` (used by the container's own board
+      // page to look itself up) sees that — `replaceTask` above only
+      // patches the newly-created subtask itself. Without this, the new
+      // subtask would render as a standalone card (nothing in the
+      // locally-cached parent yet identifies it as a subtask) and clicking
+      // through to the container's board would 404 ("Project not found"),
+      // until some unrelated reload happened to refresh both caches. A full
+      // refresh of both is the simplest fix, mirroring `confirmFinishDay`'s
+      // identical reasoning for a server-side change that's impractical to
+      // patch precisely client-side.
+      if (subtaskParentIdForModal !== undefined || parsed.subtaskParentName !== undefined) {
+        await Promise.all([refresh(), refreshProjects()]);
       }
       errorMessage = "";
       finishDayMessage = "";
@@ -270,9 +455,11 @@
         : visibleTasks.map((task) => (task.id === updated.id ? updated : task));
 
     const withoutUpdated = removeTaskFromBuckets(buckets, updated.id);
-    buckets = isVisibleOnBoard(updated, formatDateISO(new Date()))
-      ? insertTaskIntoBuckets(withoutUpdated, updated, priorities, groupByPriority)
-      : withoutUpdated;
+    buckets =
+      isVisibleOnBoard(updated, formatDateISO(new Date())) &&
+      !isHiddenAsSubtask(updated, visibleTasks, projectFilter)
+        ? insertTaskIntoBuckets(withoutUpdated, updated, priorities, groupByPriority)
+        : withoutUpdated;
     recomputeHasOther();
   }
 
@@ -449,7 +636,7 @@
 
     if (event.ctrlKey && event.key.toLowerCase() === "t") {
       event.preventDefault();
-      modalOpen = true;
+      openAddTaskModal();
     }
   }
 
@@ -534,6 +721,11 @@
           {isFinishingDay ? "Finishing day…" : "Finish day"}
         </button>
       {/if}
+      {#if containerOwnerTask}
+        <button type="button" class="mark-parent-done-button" onclick={handleMarkParentDone}>
+          Mark parent done
+        </button>
+      {/if}
       {#if project}
         <a
           class="icon-button settings-link"
@@ -563,7 +755,7 @@
       <button
         type="button"
         class="icon-button add-task-button"
-        onclick={() => (modalOpen = true)}
+        onclick={() => openAddTaskModal()}
         aria-label="Add task"
         title="Add task (Ctrl+T)"
       >
@@ -592,6 +784,8 @@
     onSubmit={handleAddTask}
     {projectFilter}
     {errorMessage}
+    allTasks={visibleTasks}
+    parentTaskId={subtaskParentIdForModal}
   />
 
   {#if errorMessage && !modalOpen}
@@ -611,26 +805,39 @@
     onCancel={() => (finishDayConfirmOpen = false)}
   />
 
+  <AllSubtasksDoneDialog
+    open={allDoneDialogTask !== undefined}
+    task={allDoneDialogTask}
+    onMarkDone={handleMarkParentDone}
+    onDeleteSubtasks={handleDeleteSubtaskList}
+    onDismiss={dequeueAllDone}
+    onDismissPermanently={handleDismissAllDonePermanently}
+  />
+
   {#if isLoading}
     <p class="loading">Loading tasks…</p>
   {:else if activeView === "week"}
     <WeekView
-      tasks={visibleTasks}
+      tasks={weekCalendarTasks}
+      allTasks={tasksState.items}
       onUpdate={handleUpdate}
       onDelete={handleDelete}
       onRemoveRecurrence={handleRemoveRecurrence}
       onUpdateRecurrence={handleUpdateRecurrence}
       {showPreviousWeeksColumn}
       onEnsureOccurrences={ensureOccurrencesThrough}
+      onCreateSubtask={openCreateSubtask}
     />
   {:else if activeView === "calendar"}
     <CalendarView
-      tasks={visibleTasks}
+      tasks={weekCalendarTasks}
+      allTasks={tasksState.items}
       onUpdate={handleUpdate}
       onDelete={handleDelete}
       onRemoveRecurrence={handleRemoveRecurrence}
       onUpdateRecurrence={handleUpdateRecurrence}
       onEnsureOccurrences={ensureOccurrencesThrough}
+      onCreateSubtask={openCreateSubtask}
     />
   {:else}
     <KanbanGrid
@@ -641,6 +848,8 @@
       onUpdate={handleUpdate}
       onDelete={handleDelete}
       onRemoveRecurrence={handleRemoveRecurrence}
+      allTasks={tasksState.items}
+      onCreateSubtask={openCreateSubtask}
     />
   {/if}
 </main>
@@ -815,6 +1024,31 @@
   .finish-day-button:disabled {
     cursor: not-allowed;
     opacity: 0.6;
+  }
+
+  .mark-parent-done-button {
+    height: 2.5rem;
+    padding: 0 var(--space-md);
+    flex-shrink: 0;
+    border: 1px solid color-mix(in oklch, var(--color-accent) 45%, transparent);
+    border-radius: var(--radius-md);
+    background: var(--color-accent-soft);
+    color: var(--color-accent);
+    font-weight: 600;
+    font-size: var(--text-sm);
+    cursor: pointer;
+    box-shadow: var(--shadow-sm);
+    transition:
+      background var(--duration-fast) var(--ease-out-expo),
+      box-shadow var(--duration-fast) var(--ease-out-expo),
+      transform var(--duration-fast) var(--ease-out-expo);
+  }
+
+  .mark-parent-done-button:hover {
+    background: var(--color-accent);
+    color: var(--color-accent-ink);
+    box-shadow: var(--shadow-md);
+    transform: translateY(-1px);
   }
 
   .error {
