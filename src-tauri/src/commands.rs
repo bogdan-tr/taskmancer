@@ -884,15 +884,44 @@ pub fn delete_task(state: State<AppState>, id: String) -> Result<(), String> {
     storage::delete_task(&state.tasks_dir, &id).map_err(|e| e.to_string())
 }
 
-/// Disbands `task_id`'s subtask container: every current subtask is moved
-/// into `task_id`'s own project (see
-/// [`subtasks_to_reassign_and_container_to_remove`]) and the now-unused
+/// Forces every task in `tasks` to `done_status`, except ones already at
+/// `cancelled_status` (left untouched — cancelled is a deliberate "won't
+/// do," not an oversight to override). Used by [`delete_subtask_container`]
+/// when the parent task is marked done: every outstanding subtask,
+/// including every still-pending occurrence of a recurring one, is
+/// completed alongside the parent, rather than coming back as an ordinary,
+/// still-incomplete task once the container disappears.
+fn force_done_except_cancelled(
+    tasks: Vec<Task>,
+    done_status: &str,
+    cancelled_status: Option<&str>,
+) -> Vec<Task> {
+    tasks
+        .into_iter()
+        .map(|t| {
+            if Some(t.status.as_str()) == cancelled_status {
+                t
+            } else {
+                Task {
+                    status: done_status.to_string(),
+                    ..t
+                }
+            }
+        })
+        .collect()
+}
+
+/// Disbands `task_id`'s subtask container: every current subtask is marked
+/// done (see [`force_done_except_cancelled`] — a recurring subtask's still-
+/// pending occurrences are completed too, not left to come back as
+/// ordinary incomplete tasks) and moved into `task_id`'s own project (see
+/// [`subtasks_to_reassign_and_container_to_remove`]), and the now-unused
 /// container project is removed — but unlike [`delete_task`]'s cascade, the
 /// subtasks themselves are kept, not deleted. Used when the parent task is
 /// marked done: the design spec wants the temporary "subproject" view gone
 /// once its purpose is served, while the work recorded in each subtask
-/// stays around as an ordinary task. A no-op (returns the task unchanged)
-/// if `task_id` has no container.
+/// stays around as an ordinary, completed task. A no-op (returns the task
+/// unchanged) if `task_id` has no container.
 #[tauri::command]
 pub fn delete_subtask_container(state: State<AppState>, task_id: String) -> Result<Task, String> {
     let _guard = state.projects_lock.lock().map_err(|e| e.to_string())?;
@@ -912,7 +941,12 @@ pub fn delete_subtask_container(state: State<AppState>, task_id: String) -> Resu
     let tasks = storage::list_tasks(&state.tasks_dir).map_err(|e| e.to_string())?;
     let (reassigned, _) =
         subtasks_to_reassign_and_container_to_remove(&tasks, &task_id, &target_project_id);
-    for subtask in &reassigned {
+    let completed = force_done_except_cancelled(
+        reassigned,
+        &settings.done_status,
+        settings.cancelled_status.as_deref(),
+    );
+    for subtask in &completed {
         storage::update_task(&state.tasks_dir, subtask).map_err(|e| e.to_string())?;
     }
 
@@ -3626,6 +3660,53 @@ mod tests {
 
         assert!(reassigned.is_empty());
         assert!(container_id.is_none());
+    }
+
+    #[test]
+    fn force_done_except_cancelled_completes_every_outstanding_subtask() {
+        let mut backlog = Task::new("Reproduce it".to_string());
+        backlog.status = "backlog".to_string();
+        let mut in_progress = Task::new("Write the fix".to_string());
+        in_progress.status = "in_progress".to_string();
+
+        let result =
+            force_done_except_cancelled(vec![backlog, in_progress], "done", Some("cancelled"));
+
+        assert!(result.iter().all(|t| t.status == "done"));
+    }
+
+    #[test]
+    fn force_done_except_cancelled_leaves_cancelled_subtasks_untouched() {
+        let mut cancelled = Task::new("Abandoned".to_string());
+        cancelled.status = "cancelled".to_string();
+
+        let result = force_done_except_cancelled(vec![cancelled], "done", Some("cancelled"));
+
+        assert_eq!(result[0].status, "cancelled");
+    }
+
+    #[test]
+    fn force_done_except_cancelled_completes_every_pending_occurrence_of_a_recurring_subtask() {
+        let mut today = Task::new("Hi".to_string());
+        today.series_id = Some("hi-series".to_string());
+        today.status = "backlog".to_string();
+        let mut future = Task::new("Hi".to_string());
+        future.series_id = Some("hi-series".to_string());
+        future.status = "backlog".to_string();
+
+        let result = force_done_except_cancelled(vec![today, future], "done", Some("cancelled"));
+
+        assert!(result.iter().all(|t| t.status == "done"));
+    }
+
+    #[test]
+    fn force_done_except_cancelled_works_with_no_configured_cancelled_status() {
+        let mut backlog = Task::new("Reproduce it".to_string());
+        backlog.status = "backlog".to_string();
+
+        let result = force_done_except_cancelled(vec![backlog], "done", None);
+
+        assert_eq!(result[0].status, "done");
     }
 
     #[test]
