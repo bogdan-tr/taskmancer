@@ -23,6 +23,7 @@ const sampleSettings: Settings = {
   bar_lightness: 0.38,
   ink_mode: "auto",
   show_subproject_tasks_default: false,
+  parent_estimate_includes_own_value: false,
 };
 
 vi.mock("./api", () => ({

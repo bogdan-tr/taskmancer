@@ -143,6 +143,14 @@ pub struct TaskDefaults {
 /// subprojects' tasks too. A project's `ProjectBoard.show_subproject_tasks`
 /// overrides this when set (see [`crate::project::ProjectBoard`]). Defaults
 /// to `false` — rollup is opt-in per project, not automatic.
+///
+/// `parent_estimate_includes_own_value` controls how a task with subtasks'
+/// *displayed* estimated time is computed on the frontend: when `true`, its
+/// own `estimated_minutes` is added on top of its subtasks' total; when
+/// `false` (the default), the subtasks' total replaces it entirely. Purely
+/// a display preference — nothing in this struct or the backend ever
+/// recomputes or overwrites a task's stored `estimated_minutes` based on
+/// this; see the frontend's `effectiveEstimatedMinutes`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Settings {
     #[serde(default)]
@@ -167,6 +175,8 @@ pub struct Settings {
     pub ink_mode: String,
     #[serde(default)]
     pub show_subproject_tasks_default: bool,
+    #[serde(default)]
+    pub parent_estimate_includes_own_value: bool,
 }
 
 impl Default for Settings {
@@ -246,6 +256,7 @@ impl Default for Settings {
             bar_lightness: default_bar_lightness(),
             ink_mode: default_ink_mode(),
             show_subproject_tasks_default: false,
+            parent_estimate_includes_own_value: false,
         }
     }
 }
@@ -929,6 +940,20 @@ mod tests {
         assert!(validate_settings(&settings).is_ok());
         assert_eq!(settings.card_lightness, 0.5);
         assert_eq!(settings.bar_lightness, 0.38);
+    }
+
+    #[test]
+    fn default_settings_seed_does_not_include_a_tasks_own_estimate_in_its_parent_rollup() {
+        let settings = Settings::default();
+
+        assert!(!settings.parent_estimate_includes_own_value);
+    }
+
+    #[test]
+    fn deserializing_settings_without_parent_estimate_includes_own_value_defaults_to_false() {
+        let settings: Settings = serde_json::from_str("{}").unwrap();
+
+        assert!(!settings.parent_estimate_includes_own_value);
     }
 
     #[test]

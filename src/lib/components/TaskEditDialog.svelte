@@ -20,7 +20,7 @@
   } from "$lib/recurrence";
   import { settingsState } from "$lib/settings.svelte";
   import { FALLBACK_STATUSES, sortedStatuses } from "$lib/statuses.svelte";
-  import { isSubtask, subtasksOf } from "$lib/subtasks";
+  import { containerOwner, subtasksOf } from "$lib/subtasks";
   import {
     emptyToUndefined,
     formatTags,
@@ -72,8 +72,10 @@
 
   const priorities = $derived(settingsState.current?.priorities ?? FALLBACK_PRIORITIES);
   const statuses = $derived(sortedStatuses(settingsState.current?.statuses ?? FALLBACK_STATUSES));
+  /** The task that owns the opened task's container, if it's itself a subtask — `undefined` for a plain task. Used both for the "+ Create Subtask"/recurrence gating and to lock Project/Tags/Due/Scheduled to its values in the edit form (see the design spec's "only Priority and Estimated time stay independently editable" rule). */
+  const parentTask = $derived(task?.project_id ? containerOwner(task.project_id, allTasks) : undefined);
   /** Hides the "Create Subtask" button when the opened task is itself a subtask (one-level-deep rule). */
-  const isThisTaskSubtask = $derived(task ? isSubtask(task, allTasks) : false);
+  const isThisTaskSubtask = $derived(parentTask !== undefined);
   const taskSubtasks = $derived(task ? subtasksOf(task, allTasks) : []);
 
   let dialogEl: HTMLDialogElement | undefined = $state();
@@ -427,30 +429,34 @@
       </label>
       <label>
         Project
-        <div class="field-with-suggestions">
-          <input
-            type="text"
-            bind:value={draftProject}
-            placeholder="e.g. Inbox/Personal"
-            role="combobox"
-            aria-expanded={projectSuggestions.length > 0}
-            aria-controls="task-edit-project-suggestions"
-            aria-autocomplete="list"
-            aria-activedescendant={projectSuggestions.length > 0
-              ? `task-edit-project-suggestions-option-${projectSuggestionIndex}`
-              : undefined}
-            oninput={updateProjectSuggestions}
-            onkeydown={handleProjectKeydown}
-            onblur={() => (projectSuggestions = [])}
-          />
-          <Autocomplete
-            id="task-edit-project-suggestions"
-            items={projectSuggestions}
-            activeIndex={projectSuggestionIndex}
-            onSelect={selectProjectSuggestion}
-            onHover={(index) => (projectSuggestionIndex = index)}
-          />
-        </div>
+        {#if parentTask}
+          <span class="locked-field-value">Subtask of {parentTask.title}</span>
+        {:else}
+          <div class="field-with-suggestions">
+            <input
+              type="text"
+              bind:value={draftProject}
+              placeholder="e.g. Inbox/Personal"
+              role="combobox"
+              aria-expanded={projectSuggestions.length > 0}
+              aria-controls="task-edit-project-suggestions"
+              aria-autocomplete="list"
+              aria-activedescendant={projectSuggestions.length > 0
+                ? `task-edit-project-suggestions-option-${projectSuggestionIndex}`
+                : undefined}
+              oninput={updateProjectSuggestions}
+              onkeydown={handleProjectKeydown}
+              onblur={() => (projectSuggestions = [])}
+            />
+            <Autocomplete
+              id="task-edit-project-suggestions"
+              items={projectSuggestions}
+              activeIndex={projectSuggestionIndex}
+              onSelect={selectProjectSuggestion}
+              onHover={(index) => (projectSuggestionIndex = index)}
+            />
+          </div>
+        {/if}
       </label>
       <div class="field-row">
         <label>
@@ -472,57 +478,69 @@
       </div>
       <label>
         Tags
-        <div class="field-with-suggestions">
-          <input
-            type="text"
-            bind:value={draftTags}
-            placeholder="comma, separated"
-            role="combobox"
-            aria-expanded={tagSuggestions.length > 0}
-            aria-controls="task-edit-tags-suggestions"
-            aria-autocomplete="list"
-            aria-activedescendant={tagSuggestions.length > 0
-              ? `task-edit-tags-suggestions-option-${tagSuggestionIndex}`
-              : undefined}
-            oninput={updateTagSuggestions}
-            onkeydown={handleTagsKeydown}
-            onblur={() => (tagSuggestions = [])}
-          />
-          <Autocomplete
-            id="task-edit-tags-suggestions"
-            items={tagSuggestions}
-            activeIndex={tagSuggestionIndex}
-            onSelect={selectTagSuggestion}
-            onHover={(index) => (tagSuggestionIndex = index)}
-            prefix="#"
-          />
-        </div>
+        {#if parentTask}
+          <span class="locked-field-value">{draftTags || "—"} (from parent)</span>
+        {:else}
+          <div class="field-with-suggestions">
+            <input
+              type="text"
+              bind:value={draftTags}
+              placeholder="comma, separated"
+              role="combobox"
+              aria-expanded={tagSuggestions.length > 0}
+              aria-controls="task-edit-tags-suggestions"
+              aria-autocomplete="list"
+              aria-activedescendant={tagSuggestions.length > 0
+                ? `task-edit-tags-suggestions-option-${tagSuggestionIndex}`
+                : undefined}
+              oninput={updateTagSuggestions}
+              onkeydown={handleTagsKeydown}
+              onblur={() => (tagSuggestions = [])}
+            />
+            <Autocomplete
+              id="task-edit-tags-suggestions"
+              items={tagSuggestions}
+              activeIndex={tagSuggestionIndex}
+              onSelect={selectTagSuggestion}
+              onHover={(index) => (tagSuggestionIndex = index)}
+              prefix="#"
+            />
+          </div>
+        {/if}
       </label>
       <label>
         Scheduled
-        <span class="date-input-row">
-          <input type="text" bind:value={draftScheduled} placeholder="YYYY-MM-DD" />
-          <DatePickerPopover
-            selected={draftScheduled || undefined}
-            triggerLabel="Pick scheduled date"
-            clearLabel="Clear"
-            onSelect={(iso) => (draftScheduled = iso)}
-            onClear={() => (draftScheduled = "")}
-          />
-        </span>
+        {#if parentTask}
+          <span class="locked-field-value">{draftScheduled || "—"} (from parent)</span>
+        {:else}
+          <span class="date-input-row">
+            <input type="text" bind:value={draftScheduled} placeholder="YYYY-MM-DD" />
+            <DatePickerPopover
+              selected={draftScheduled || undefined}
+              triggerLabel="Pick scheduled date"
+              clearLabel="Clear"
+              onSelect={(iso) => (draftScheduled = iso)}
+              onClear={() => (draftScheduled = "")}
+            />
+          </span>
+        {/if}
       </label>
       <label>
         Due
-        <span class="date-input-row">
-          <input type="text" bind:value={draftDue} placeholder="YYYY-MM-DD" />
-          <DatePickerPopover
-            selected={draftDue || undefined}
-            triggerLabel="Pick due date"
-            clearLabel="Never"
-            onSelect={(iso) => (draftDue = iso)}
-            onClear={() => (draftDue = "")}
-          />
-        </span>
+        {#if parentTask}
+          <span class="locked-field-value">{draftDue || "—"} (from parent)</span>
+        {:else}
+          <span class="date-input-row">
+            <input type="text" bind:value={draftDue} placeholder="YYYY-MM-DD" />
+            <DatePickerPopover
+              selected={draftDue || undefined}
+              triggerLabel="Pick due date"
+              clearLabel="Never"
+              onSelect={(iso) => (draftDue = iso)}
+              onClear={() => (draftDue = "")}
+            />
+          </span>
+        {/if}
         {#if draftDue}
           {@const dueHint = formatDueDateDisplay(draftDue, new Date(), displayState.nlDueDates)}
           {#if dueHint}
@@ -753,6 +771,14 @@
     border-color: var(--color-accent);
     box-shadow: 0 0 0 3px var(--color-accent-soft);
     outline: none;
+  }
+
+  .locked-field-value {
+    font-size: var(--text-sm);
+    font-weight: 400;
+    text-transform: none;
+    letter-spacing: normal;
+    color: var(--color-ink-faint);
   }
 
   .due-hint {

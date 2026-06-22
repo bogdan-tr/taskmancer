@@ -383,34 +383,49 @@
    * recurrence builder's due-rule section) also clears whichever other
    * due override exists — the user's most recent, most explicit action
    * must win, not be silently overridden by a stale one.
+   *
+   * Once `matchedParentTask` is set, every attribute except Priority and
+   * Estimated time is forced straight from the parent's *current* field
+   * values instead — Tags/Scheduled always, Due/Recurrence either the
+   * parent's own pattern (when `lockedToParentRecurrence`) or none at all
+   * (a subtask of a non-recurring parent can't independently start
+   * recurring either). This overrides every other source for those
+   * fields — manual override, quick-add token, or recurrence builder
+   * alike — per the design spec: a subtask's attributes other than
+   * priority/estimate can never independently diverge from its parent's.
    */
   let effectiveParsed: ParsedTaskInput = $derived({
     ...parsed,
     priority: priorityManuallySet ? draftPriorityOverride : parsed.priority,
-    tags: tagsManuallySet ? parseTags(draftTagsInput) : parsed.tags,
-    // Locked to the parent's recurrence (see `lockedToParentRecurrence`'s
-    // own doc comment) overrides every other due/recurrence source —
-    // manual override, quick-add token, or recurrence builder alike —
-    // since a subtask's pattern can never independently differ from its
-    // parent's.
-    due: lockedToParentRecurrence
-      ? undefined
+    tags: matchedParentTask ? matchedParentTask.tags : tagsManuallySet ? parseTags(draftTagsInput) : parsed.tags,
+    due: matchedParentTask
+      ? lockedToParentRecurrence
+        ? undefined
+        : matchedParentTask.due
       : dueRuleManuallySet
         ? undefined
         : dueManuallySet
           ? draftDueOverride
           : parsed.due,
-    dueRule: lockedToParentRecurrence
-      ? parentSeriesInfo?.due_rule
+    dueRule: matchedParentTask
+      ? lockedToParentRecurrence
+        ? parentSeriesInfo?.due_rule
+        : undefined
       : dueRuleManuallySet
         ? draftDueRuleOverride
         : dueManuallySet
           ? undefined
           : parsed.dueRule,
-    scheduled: scheduledManuallySet ? draftScheduledOverride : parsed.scheduled,
+    scheduled: matchedParentTask
+      ? matchedParentTask.scheduled
+      : scheduledManuallySet
+        ? draftScheduledOverride
+        : parsed.scheduled,
     estimatedMinutes: estimateManuallySet ? explicitEstimatedMinutes : parsed.estimatedMinutes,
-    recurrence: lockedToParentRecurrence
-      ? { frequency: parentSeriesInfo!.frequency, endDate: parentSeriesInfo!.end_date }
+    recurrence: matchedParentTask
+      ? lockedToParentRecurrence
+        ? { frequency: parentSeriesInfo!.frequency, endDate: parentSeriesInfo!.end_date }
+        : undefined
       : recurrenceManuallySet
         ? draftRecurrenceOverride
         : parsed.recurrence,
@@ -550,15 +565,17 @@
   let lastInheritedFromParentId: string | undefined = undefined;
 
   /**
-   * The actual fix for "fill out the attributes, not the text field, with
-   * the possibility to overwrite inherited parent attributes": copies
-   * `parentTask`'s current tags/priority/due/scheduled/estimated time into
-   * the same manual-override channels a direct edit would use — landing
-   * them in the already-editable controls instead of as inert text in the
-   * title, and overwritable exactly the same way a manual edit always
-   * overwrites a quick-add token. Status is deliberately not copied — a
-   * new subtask always starts at the normal default status, never the
-   * parent's current one, per the design spec.
+   * Seeds the only two attributes a subtask creator can actually set
+   * independently of its parent — Priority and Estimated time — from
+   * `parentTask`'s current values, landing them in the same manual-
+   * override channels a direct edit would use (overwritable exactly the
+   * same way a manual edit always overwrites a quick-add token). Every
+   * other attribute (Tags, Due, Scheduled, Recurrence) is locked to the
+   * parent's value instead, forced directly in `effectiveParsed` below —
+   * not copied into an editable draft at all, since the whole point is
+   * that they can't independently diverge from the parent. Status is also
+   * not copied — a new subtask always starts at the normal default
+   * status, never the parent's current one, per the design spec.
    *
    * Called directly from the open effect for the `parentTaskId`-driven
    * "Create Subtask" buttons (known synchronously at open time — see its
@@ -571,13 +588,6 @@
 
     draftPriorityOverride = parentTask.priority;
     priorityManuallySet = true;
-    draftTagsInput = formatTags(parentTask.tags);
-    tagsManuallySet = true;
-    draftDueOverride = parentTask.due;
-    dueManuallySet = true;
-    dueRuleManuallySet = false;
-    draftScheduledOverride = parentTask.scheduled;
-    scheduledManuallySet = true;
     const resolvedEstimate =
       parentTask.estimated_minutes !== undefined
         ? hoursAndMinutesFromMinutes(parentTask.estimated_minutes)
@@ -954,55 +964,61 @@
       </div>
       <div class="field-row">
         <dt>Tags</dt>
-        <span class="syntax-hint">#tag</span>
-        <dd class="tags-editable">
-          <input
-            type="text"
-            value={draftTagsInput}
-            placeholder="comma, separated"
-            role="combobox"
-            aria-label="Tags"
-            aria-expanded={tagSuggestions.length > 0}
-            aria-controls="add-task-tags-suggestions"
-            aria-autocomplete="list"
-            aria-activedescendant={tagSuggestions.length > 0
-              ? `add-task-tags-suggestions-option-${tagSuggestionIndex}`
-              : undefined}
-            oninput={(event) => {
-              draftTagsInput = event.currentTarget.value;
-              handleTagsInput();
-            }}
-            onkeydown={handleTagsKeydown}
-            onblur={() => (tagSuggestions = [])}
-          />
-          <Autocomplete
-            id="add-task-tags-suggestions"
-            items={tagSuggestions}
-            activeIndex={tagSuggestionIndex}
-            onSelect={selectTagSuggestion}
-            onHover={(index) => (tagSuggestionIndex = index)}
-            prefix="#"
-          />
-        </dd>
+        <span class="syntax-hint">{matchedParentTask ? "locked to parent" : "#tag"}</span>
+        {#if matchedParentTask}
+          <dd class="filled">{formatTags(matchedParentTask.tags) || "—"} (from parent)</dd>
+        {:else}
+          <dd class="tags-editable">
+            <input
+              type="text"
+              value={draftTagsInput}
+              placeholder="comma, separated"
+              role="combobox"
+              aria-label="Tags"
+              aria-expanded={tagSuggestions.length > 0}
+              aria-controls="add-task-tags-suggestions"
+              aria-autocomplete="list"
+              aria-activedescendant={tagSuggestions.length > 0
+                ? `add-task-tags-suggestions-option-${tagSuggestionIndex}`
+                : undefined}
+              oninput={(event) => {
+                draftTagsInput = event.currentTarget.value;
+                handleTagsInput();
+              }}
+              onkeydown={handleTagsKeydown}
+              onblur={() => (tagSuggestions = [])}
+            />
+            <Autocomplete
+              id="add-task-tags-suggestions"
+              items={tagSuggestions}
+              activeIndex={tagSuggestionIndex}
+              onSelect={selectTagSuggestion}
+              onHover={(index) => (tagSuggestionIndex = index)}
+              prefix="#"
+            />
+          </dd>
+        {/if}
       </div>
       <div class="field-row">
         <dt>Scheduled</dt>
-        <span class="syntax-hint">sch &lt;phrase&gt;</span>
+        <span class="syntax-hint">{matchedParentTask ? "locked to parent" : "sch <phrase>"}</span>
         <dd class="date-value" class:filled={!!preview.scheduled}>
-          <span>{preview.scheduled ?? "—"}</span>
-          <DatePickerPopover
-            selected={scheduledSelectedForPicker}
-            triggerLabel="Pick scheduled date"
-            clearLabel="Clear"
-            onSelect={handleScheduledSelect}
-            onClear={handleScheduledClear}
-          />
+          <span>{preview.scheduled ?? "—"}{matchedParentTask ? " (from parent)" : ""}</span>
+          {#if !matchedParentTask}
+            <DatePickerPopover
+              selected={scheduledSelectedForPicker}
+              triggerLabel="Pick scheduled date"
+              clearLabel="Clear"
+              onSelect={handleScheduledSelect}
+              onClear={handleScheduledClear}
+            />
+          {/if}
         </dd>
       </div>
       <div class="field-row">
         <dt>Due</dt>
         <span class="syntax-hint">
-          {lockedToParentRecurrence
+          {matchedParentTask
             ? "locked to parent"
             : effectiveParsed.recurrence
               ? "due <phrase> / due in <n> days / due <weekday>s"
@@ -1020,11 +1036,11 @@
             {:else}
               {preview.due ?? "—"}
             {/if}
-            {#if lockedToParentRecurrence}
+            {#if matchedParentTask}
               (from parent)
             {/if}
           </span>
-          {#if !lockedToParentRecurrence}
+          {#if !matchedParentTask}
             <DatePickerPopover
               selected={dueSelectedForPicker}
               triggerLabel="Pick due date"
@@ -1066,7 +1082,7 @@
       <div class="field-row">
         <dt>Recurrence</dt>
         <span class="syntax-hint">
-          {lockedToParentRecurrence ? "locked to parent" : "every <phrase> [until <phrase>]"}
+          {matchedParentTask ? "locked to parent" : "every <phrase> [until <phrase>]"}
         </span>
         <dd class="date-value" class:filled={!!effectiveParsed.recurrence}>
           <span>
@@ -1074,14 +1090,14 @@
               {formatRecurrenceFrequency(effectiveParsed.recurrence.frequency)}{effectiveParsed.recurrence.endDate
                 ? ` until ${effectiveParsed.recurrence.endDate}`
                 : ""}
-              {#if lockedToParentRecurrence}
-                (from parent)
-              {/if}
             {:else}
               —
             {/if}
+            {#if matchedParentTask}
+              (from parent)
+            {/if}
           </span>
-          {#if !lockedToParentRecurrence}
+          {#if !matchedParentTask}
             <RecurrenceBuilderDialog
               value={effectiveParsed.recurrence
                 ? { frequency: effectiveParsed.recurrence.frequency, endDate: effectiveParsed.recurrence.endDate, dueRule: seriesDueRule }

@@ -5,6 +5,7 @@
   import GeneralSettings from "$lib/components/GeneralSettings.svelte";
   import PrioritySettings from "$lib/components/PrioritySettings.svelte";
   import StatusSettings from "$lib/components/StatusSettings.svelte";
+  import SubtasksSettings from "$lib/components/SubtasksSettings.svelte";
   import WeekViewSettings from "$lib/components/WeekViewSettings.svelte";
   import { setTheme, themeState } from "$lib/theme.svelte";
   import { THEMES, THEME_LABELS, type Theme } from "$lib/theme";
@@ -59,6 +60,7 @@
   <DisplaySettings />
   <CardAppearanceSettings />
   <WeekViewSettings />
+  <SubtasksSettings />
   <PrioritySettings />
   <StatusSettings />
   <DefaultsSettings />

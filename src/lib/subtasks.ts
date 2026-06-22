@@ -118,6 +118,41 @@ export function allSubtasksDone(
 }
 
 /**
+ * `parentTask`'s effective estimated time in minutes, rolling up its
+ * subtasks' estimates — a live display computation only, never written
+ * back to any stored field (see `Settings.parent_estimate_includes_own_value`'s
+ * own doc comment). Falls back to `parentTask.estimated_minutes` unchanged
+ * when it has no subtasks at all, so a plain task's estimate is never
+ * affected by this. Sums `relevantSubtasksOf` (one entry per recurring
+ * series, see its own doc comment) excluding cancelled subtasks — a
+ * cancelled subtask's estimate no more counts toward the total than its
+ * completion counts toward `subtaskProgress`. `includeOwnEstimate` adds
+ * `parentTask`'s own estimate on top of that sum instead of being replaced
+ * by it. Returns `undefined` (no chip to show) rather than `0` when
+ * nothing anywhere actually has an estimate set, so adding subtasks to a
+ * task that never had a time estimate doesn't conjure up a misleading
+ * "0m" badge.
+ */
+export function effectiveEstimatedMinutes(
+  parentTask: Task,
+  allTasks: Task[],
+  today: string,
+  cancelledStatusId: string | undefined,
+  includeOwnEstimate: boolean,
+): number | undefined {
+  const subtasks = relevantSubtasksOf(parentTask, allTasks, today).filter((t) => t.status !== cancelledStatusId);
+  if (subtasks.length === 0) return parentTask.estimated_minutes;
+
+  const hasAnyEstimate =
+    subtasks.some((t) => t.estimated_minutes !== undefined) ||
+    (includeOwnEstimate && parentTask.estimated_minutes !== undefined);
+  if (!hasAnyEstimate) return undefined;
+
+  const subtaskSum = subtasks.reduce((sum, t) => sum + (t.estimated_minutes ?? 0), 0);
+  return includeOwnEstimate ? subtaskSum + (parentTask.estimated_minutes ?? 0) : subtaskSum;
+}
+
+/**
  * Ready-to-insert `sub <name>` autocomplete suggestions for `typedText` —
  * active (non-done, non-cancelled), non-subtask task titles starting with
  * it, quoted when multi-word (mirroring `projectPathSuggestions`'s own

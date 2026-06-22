@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import {
   allSubtasksDone,
   containerOwner,
+  effectiveEstimatedMinutes,
   isSubtask,
   relevantSubtasksOf,
   subtaskNameSuggestions,
@@ -280,6 +281,83 @@ describe("allSubtasksDone", () => {
     });
 
     expect(allSubtasksDone(parent, [parent, today, future], "done", "cancelled", TODAY)).toBe(true);
+  });
+});
+
+describe("effectiveEstimatedMinutes", () => {
+  test("falls back to the parent's own estimate unchanged when it has no subtasks", () => {
+    const parent = makeTask({ id: "parent", estimated_minutes: 90 });
+
+    expect(effectiveEstimatedMinutes(parent, [parent], TODAY, "cancelled", false)).toBe(90);
+  });
+
+  test("is undefined when there are no subtasks and the parent has no estimate either", () => {
+    const parent = makeTask({ id: "parent" });
+
+    expect(effectiveEstimatedMinutes(parent, [parent], TODAY, "cancelled", false)).toBeUndefined();
+  });
+
+  test("sums non-cancelled subtasks' estimates, replacing the parent's own when includeOwnEstimate is false", () => {
+    const parent = makeTask({ id: "parent", subtask_project_id: "container", estimated_minutes: 999 });
+    const sub1 = makeTask({ id: "sub1", project_id: "container", estimated_minutes: 30 });
+    const sub2 = makeTask({ id: "sub2", project_id: "container", estimated_minutes: 45 });
+
+    expect(effectiveEstimatedMinutes(parent, [parent, sub1, sub2], TODAY, "cancelled", false)).toBe(75);
+  });
+
+  test("adds the parent's own estimate on top of the subtasks' sum when includeOwnEstimate is true", () => {
+    const parent = makeTask({ id: "parent", subtask_project_id: "container", estimated_minutes: 60 });
+    const sub1 = makeTask({ id: "sub1", project_id: "container", estimated_minutes: 30 });
+
+    expect(effectiveEstimatedMinutes(parent, [parent, sub1], TODAY, "cancelled", true)).toBe(90);
+  });
+
+  test("excludes a cancelled subtask's estimate from the sum", () => {
+    const parent = makeTask({ id: "parent", subtask_project_id: "container" });
+    const sub1 = makeTask({ id: "sub1", project_id: "container", estimated_minutes: 30 });
+    const cancelled = makeTask({
+      id: "cancelled",
+      project_id: "container",
+      status: "cancelled",
+      estimated_minutes: 1000,
+    });
+
+    expect(effectiveEstimatedMinutes(parent, [parent, sub1, cancelled], TODAY, "cancelled", false)).toBe(30);
+  });
+
+  test("treats a subtask with no estimate of its own as zero in the sum", () => {
+    const parent = makeTask({ id: "parent", subtask_project_id: "container" });
+    const estimated = makeTask({ id: "estimated", project_id: "container", estimated_minutes: 30 });
+    const unestimated = makeTask({ id: "unestimated", project_id: "container" });
+
+    expect(effectiveEstimatedMinutes(parent, [parent, estimated, unestimated], TODAY, "cancelled", false)).toBe(30);
+  });
+
+  test("is undefined (no misleading 0m badge) when subtasks exist but nothing anywhere has an estimate", () => {
+    const parent = makeTask({ id: "parent", subtask_project_id: "container" });
+    const sub1 = makeTask({ id: "sub1", project_id: "container" });
+
+    expect(effectiveEstimatedMinutes(parent, [parent, sub1], TODAY, "cancelled", false)).toBeUndefined();
+  });
+
+  test("sums only the currently-relevant occurrence of a recurring subtask, not every pre-generated one", () => {
+    const parent = makeTask({ id: "parent", subtask_project_id: "container" });
+    const today = makeTask({
+      id: "today",
+      project_id: "container",
+      series_id: "series-1",
+      estimated_minutes: 20,
+      scheduled: TODAY,
+    });
+    const future = makeTask({
+      id: "future",
+      project_id: "container",
+      series_id: "series-1",
+      estimated_minutes: 20,
+      scheduled: "2026-08-01",
+    });
+
+    expect(effectiveEstimatedMinutes(parent, [parent, today, future], TODAY, "cancelled", false)).toBe(20);
   });
 });
 

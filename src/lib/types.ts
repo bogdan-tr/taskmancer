@@ -187,6 +187,8 @@ export interface Settings {
   ink_mode: InkMode;
   /** Global default for whether viewing a project's board/week/calendar rolls up its descendant subprojects' tasks too. See `ProjectBoard.show_subproject_tasks`. */
   show_subproject_tasks_default: boolean;
+  /** Whether a task with subtasks' displayed estimated time adds its own `estimated_minutes` on top of its subtasks' total (`true`) or is replaced by that total entirely (`false`, the default). Display-only — never written back to any stored field. See `effectiveEstimatedMinutes`. */
+  parent_estimate_includes_own_value: boolean;
 }
 
 /**
