@@ -334,9 +334,7 @@
    * `$state` — the effect below both reads `matchedParentTask?.series_id`
    * and conditionally writes `parentSeriesInfo`, and tracking "have I
    * already loaded this one" via a *different* state variable than the
-   * one being read would risk the exact self-triggering effect loop
-   * already found and fixed once elsewhere in this file (see
-   * `inheritFromParent`'s own history).
+   * one being read would risk a self-triggering effect loop.
    */
   let parentSeriesInfo = $state<Series | undefined>(undefined);
   let loadedParentSeriesId: string | undefined = undefined;
@@ -393,10 +391,29 @@
    * fields — manual override, quick-add token, or recurrence builder
    * alike — per the design spec: a subtask's attributes other than
    * priority/estimate can never independently diverge from its parent's.
+   *
+   * Priority/Estimated time, by contrast, only *default* to the parent's
+   * values (the last fallback below, behind a manual box edit and a typed
+   * quick-add token) — staying genuinely independently settable, the way
+   * the design spec wants. This is a plain fallback chain rather than a
+   * one-time copy into the draft boxes (an earlier version of this dialog
+   * had `inheritFromParent` write `draftPriorityOverride`/the estimate
+   * boxes and flip `priorityManuallySet`/`estimateManuallySet` to `true`
+   * the moment a `sub <name>` token resolved — which then made those
+   * flags permanently prefer the inherited value over *any* further typed
+   * `high`/`est <n>` token in the title, since the flag can't tell "the
+   * user directly edited the box" apart from "this dialog auto-filled it
+   * on the parent's behalf"). Falling back to `matchedParentTask` here
+   * instead — after the typed token, not in place of it — fixes that: the
+   * boxes still show the parent's value as a sensible starting point
+   * (via the existing `preview.priorityId`/`.estimatedMinutes` mirroring
+   * effects below) until a token or a direct edit overrides it.
    */
   let effectiveParsed: ParsedTaskInput = $derived({
     ...parsed,
-    priority: priorityManuallySet ? draftPriorityOverride : parsed.priority,
+    priority: priorityManuallySet
+      ? draftPriorityOverride
+      : parsed.priority ?? matchedParentTask?.priority,
     tags: matchedParentTask ? matchedParentTask.tags : tagsManuallySet ? parseTags(draftTagsInput) : parsed.tags,
     due: matchedParentTask
       ? lockedToParentRecurrence
@@ -421,7 +438,9 @@
       : scheduledManuallySet
         ? draftScheduledOverride
         : parsed.scheduled,
-    estimatedMinutes: estimateManuallySet ? explicitEstimatedMinutes : parsed.estimatedMinutes,
+    estimatedMinutes: estimateManuallySet
+      ? explicitEstimatedMinutes
+      : parsed.estimatedMinutes ?? matchedParentTask?.estimated_minutes,
     recurrence: matchedParentTask
       ? lockedToParentRecurrence
         ? { frequency: parentSeriesInfo!.frequency, endDate: parentSeriesInfo!.end_date }
@@ -555,67 +574,6 @@
     draftTagsInput = formatTags(preview.tags);
   });
 
-  /**
-   * The id of the parent task whose attributes were last copied into the
-   * draft overrides below, so the inheriting effect only fires once per
-   * matched parent rather than re-clobbering a field the user already
-   * edited on every unrelated reactive re-run. Reset to `undefined`
-   * whenever the dialog (re)opens — see the open effect.
-   */
-  let lastInheritedFromParentId: string | undefined = undefined;
-
-  /**
-   * Seeds the only two attributes a subtask creator can actually set
-   * independently of its parent — Priority and Estimated time — from
-   * `parentTask`'s current values, landing them in the same manual-
-   * override channels a direct edit would use (overwritable exactly the
-   * same way a manual edit always overwrites a quick-add token). Every
-   * other attribute (Tags, Due, Scheduled, Recurrence) is locked to the
-   * parent's value instead, forced directly in `effectiveParsed` below —
-   * not copied into an editable draft at all, since the whole point is
-   * that they can't independently diverge from the parent. Status is also
-   * not copied — a new subtask always starts at the normal default
-   * status, never the parent's current one, per the design spec.
-   *
-   * Called directly from the open effect for the `parentTaskId`-driven
-   * "Create Subtask" buttons (known synchronously at open time — see its
-   * own comment for why that can't just rely on the effect below), and
-   * from the effect below for the NL `sub <name>` token, which can only
-   * resolve once the user has actually typed enough of it.
-   */
-  function inheritFromParent(parentTask: Task) {
-    lastInheritedFromParentId = parentTask.id;
-
-    draftPriorityOverride = parentTask.priority;
-    priorityManuallySet = true;
-    const resolvedEstimate =
-      parentTask.estimated_minutes !== undefined
-        ? hoursAndMinutesFromMinutes(parentTask.estimated_minutes)
-        : undefined;
-    draftEstimatedHours = resolvedEstimate?.hours;
-    draftEstimatedMinutes = resolvedEstimate?.minutes;
-    estimateManuallySet = true;
-  }
-
-  /**
-   * Watches for `matchedParentTask` newly resolving from a typed `sub
-   * <name>` token while the dialog is already open (the `parentTaskId`
-   * case is handled synchronously in the open effect instead — see
-   * `inheritFromParent`'s own comment for why: this effect and the open
-   * effect's full-field reset can both fire in the same reactive flush
-   * when the dialog opens with `parentTaskId` already set, and relying on
-   * effect ordering between them to avoid the reset clobbering what this
-   * effect just inherited would be fragile).
-   */
-  $effect(() => {
-    if (!matchedParentTask) {
-      lastInheritedFromParentId = undefined;
-      return;
-    }
-    if (matchedParentTask.id === lastInheritedFromParentId) return;
-    inheritFromParent(matchedParentTask);
-  });
-
   let previewProjectColor = $derived(resolveProjectColor(matchedProject?.id, projectsState.items));
   // Falls back to the standard ink color for very light project colors (e.g.
   // a pale cream), which would otherwise be illegible as text — see TaskCard's
@@ -650,26 +608,11 @@
         recurrenceManuallySet = false;
         draftDueRuleOverride = undefined;
         dueRuleManuallySet = false;
-        lastInheritedFromParentId = undefined;
         parentSeriesInfo = undefined;
         loadedParentSeriesId = undefined;
         suggestions = [];
         activeToken = undefined;
         activeSubtaskToken = undefined;
-        // Inherit synchronously here (not left to the effect below) for
-        // both cases where the parent is already known at open time — the
-        // `parentTaskId`-driven "Create Subtask" buttons, and opening the
-        // plain "+ Add task" button while already viewing a subtask
-        // container's own board — see `inheritFromParent`'s comment for
-        // why relying on the other effect's timing here is fragile. Only
-        // the typed `sub <name>` case is left to that effect, since it
-        // genuinely can't resolve until enough is typed.
-        const openedForParent = parentTaskId
-          ? allTasks.find((t) => t.id === parentTaskId)
-          : projectFilter
-            ? containerOwner(projectFilter, tasksState.items)
-            : undefined;
-        if (openedForParent) inheritFromParent(openedForParent);
         dialogEl.showModal();
         inputEl?.focus();
         inputEl?.setSelectionRange(title.length, title.length);
@@ -966,7 +909,7 @@
         <dt>Tags</dt>
         <span class="syntax-hint">{matchedParentTask ? "locked to parent" : "#tag"}</span>
         {#if matchedParentTask}
-          <dd class="filled">{formatTags(matchedParentTask.tags) || "—"} (from parent)</dd>
+          <dd class="filled">{formatTags(matchedParentTask.tags) || "—"}</dd>
         {:else}
           <dd class="tags-editable">
             <input
@@ -1003,7 +946,7 @@
         <dt>Scheduled</dt>
         <span class="syntax-hint">{matchedParentTask ? "locked to parent" : "sch <phrase>"}</span>
         <dd class="date-value" class:filled={!!preview.scheduled}>
-          <span>{preview.scheduled ?? "—"}{matchedParentTask ? " (from parent)" : ""}</span>
+          <span>{preview.scheduled ?? "—"}</span>
           {#if !matchedParentTask}
             <DatePickerPopover
               selected={scheduledSelectedForPicker}
@@ -1035,9 +978,6 @@
               </span>
             {:else}
               {preview.due ?? "—"}
-            {/if}
-            {#if matchedParentTask}
-              (from parent)
             {/if}
           </span>
           {#if !matchedParentTask}
@@ -1092,9 +1032,6 @@
                 : ""}
             {:else}
               —
-            {/if}
-            {#if matchedParentTask}
-              (from parent)
             {/if}
           </span>
           {#if !matchedParentTask}

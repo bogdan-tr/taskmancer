@@ -492,7 +492,7 @@
       <label>
         Tags
         {#if parentTask}
-          <span class="locked-field-value">{draftTags || "—"} (from parent)</span>
+          <span class="locked-field-value">{draftTags || "—"}</span>
         {:else}
           <div class="field-with-suggestions">
             <input
@@ -524,7 +524,7 @@
       <label>
         Scheduled
         {#if parentTask}
-          <span class="locked-field-value">{draftScheduled || "—"} (from parent)</span>
+          <span class="locked-field-value">{draftScheduled || "—"}</span>
         {:else}
           <span class="date-input-row">
             <input type="text" bind:value={draftScheduled} placeholder="YYYY-MM-DD" />
@@ -541,7 +541,7 @@
       <label>
         Due
         {#if parentTask}
-          <span class="locked-field-value">{draftDue || "—"} (from parent)</span>
+          <span class="locked-field-value">{draftDue || "—"}</span>
         {:else}
           <span class="date-input-row">
             <input type="text" bind:value={draftDue} placeholder="YYYY-MM-DD" />

@@ -167,6 +167,15 @@ describe("parseTaskInput", () => {
     expect(result.title).toBe('Reproduce it sub "Fix the bug"');
   });
 
+  test("a priority word and a duration after sub <name> still parse normally, not swallowed into the parent name", () => {
+    const result = parseTaskInput("child task sub Cleaning high est 30m", NOW);
+
+    expect(result.title).toBe("child task");
+    expect(result.subtaskParentName).toBe("Cleaning");
+    expect(result.priority).toBe("high");
+    expect(result.estimatedMinutes).toBe(30);
+  });
+
   test.each([
     ["!high", "high"],
     ["!medium", "medium"],
