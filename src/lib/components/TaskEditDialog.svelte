@@ -3,10 +3,12 @@
   import { applyTagsSuggestion, filterSuggestions, splitTagsInput } from "$lib/autocomplete";
   import { displayState } from "$lib/displaySettings.svelte";
   import { formatDueDateDisplay } from "$lib/dueDateDisplay";
+  import { getErrorMessage } from "$lib/errors";
   import { hoursAndMinutesFromMinutes, minutesFromHoursAndMinutes, normalizeHoursMinutes } from "$lib/estimatedTime";
   import { generalState } from "$lib/generalSettings.svelte";
   import { FALLBACK_PRIORITIES, sortedPriorities } from "$lib/priorities.svelte";
   import { projectsState } from "$lib/projects.svelte";
+  import { selfAndAncestors } from "$lib/projectTree";
   import {
     dueRuleFromDefaultCode,
     formatDueRule,
@@ -18,6 +20,7 @@
   } from "$lib/recurrence";
   import { settingsState } from "$lib/settings.svelte";
   import { FALLBACK_STATUSES, sortedStatuses } from "$lib/statuses.svelte";
+  import { containerOwner, subtasksOf } from "$lib/subtasks";
   import {
     emptyToUndefined,
     formatTags,
@@ -49,12 +52,31 @@
       endDate: string | undefined,
     ) => void;
     onCancel: () => void;
+    /** The global task list, for the one-level-deep rule gating the "Create Subtask" button, the cascade-delete confirmation count, and the recurrence read-only state — see `TaskCard.svelte`'s matching prop doc for why this must be global, not board-scoped. */
+    allTasks?: Task[];
+    /** Opens the Add Task modal pre-filled to create a subtask of the opened task. Omitted (no button rendered) when the caller has nothing to wire it to. */
+    onCreateSubtask?: (task: Task) => void;
   }
 
-  let { open, task, onSave, onDelete, onRemoveRecurrence, onUpdateRecurrence, onCancel }: Props = $props();
+  let {
+    open,
+    task,
+    onSave,
+    onDelete,
+    onRemoveRecurrence,
+    onUpdateRecurrence,
+    onCancel,
+    allTasks = [],
+    onCreateSubtask,
+  }: Props = $props();
 
   const priorities = $derived(settingsState.current?.priorities ?? FALLBACK_PRIORITIES);
   const statuses = $derived(sortedStatuses(settingsState.current?.statuses ?? FALLBACK_STATUSES));
+  /** The task that owns the opened task's container, if it's itself a subtask — `undefined` for a plain task. Used both for the "+ Create Subtask"/recurrence gating and to lock Project/Tags/Due/Scheduled to its values in the edit form (see the design spec's "only Priority and Estimated time stay independently editable" rule). */
+  const parentTask = $derived(task?.project_id ? containerOwner(task.project_id, allTasks) : undefined);
+  /** Hides the "Create Subtask" button when the opened task is itself a subtask (one-level-deep rule). */
+  const isThisTaskSubtask = $derived(parentTask !== undefined);
+  const taskSubtasks = $derived(task ? subtasksOf(task, allTasks) : []);
 
   let dialogEl: HTMLDialogElement | undefined = $state();
 
@@ -107,7 +129,7 @@
       }
     } catch (error) {
       if (task?.series_id === seriesId) {
-        seriesLoadError = error instanceof Error ? error.message : "Failed to load recurrence";
+        seriesLoadError = getErrorMessage(error, "Failed to load recurrence");
       }
     }
   }
@@ -117,7 +139,7 @@
     if (!dialogEl) return;
     if (open && task) {
       draftTitle = task.title;
-      draftProject = task.project ?? "";
+      draftProject = projectsState.items.find((p) => p.id === task.project_id)?.name ?? "";
       draftTags = formatTags(task.tags);
       draftPriority = task.priority;
       draftStatus = task.status;
@@ -257,7 +279,8 @@
     const updated: Task = {
       ...task,
       title: draftTitle,
-      project: emptyToUndefined(draftProject),
+      project_id: projectsState.items.find((p) => p.name.toLowerCase() === draftProject.trim().toLowerCase())
+        ?.id,
       tags: parseTags(draftTags),
       priority: draftPriority,
       status: draftStatus,
@@ -378,12 +401,10 @@
    */
   function handleRecurrenceBuilderApply(value: RecurrenceBuilderValue) {
     if (!task?.series_id || !task.scheduled) return;
-    const matchedProject = task.project
-      ? projectsState.items.find((p) => p.name.toLowerCase() === task.project?.toLowerCase())
-      : undefined;
+    const projectChain = task.project_id ? selfAndAncestors(projectsState.items, task.project_id) : [];
     const globalDefaults = settingsState.current?.defaults ?? { tags: [] };
-    const dueRule =
-      value.dueRule ?? dueRuleFromDefaultCode(effectiveDefaultCode(globalDefaults.due, matchedProject?.defaults.due));
+    const chainDue = projectChain.find((p) => p.defaults.due !== undefined)?.defaults.due;
+    const dueRule = value.dueRule ?? dueRuleFromDefaultCode(effectiveDefaultCode(globalDefaults.due, chainDue));
     onUpdateRecurrence(task.series_id, task.scheduled, value.frequency, dueRule, value.endDate);
     onCancel();
   }
@@ -408,30 +429,34 @@
       </label>
       <label>
         Project
-        <div class="field-with-suggestions">
-          <input
-            type="text"
-            bind:value={draftProject}
-            placeholder="e.g. Inbox/Personal"
-            role="combobox"
-            aria-expanded={projectSuggestions.length > 0}
-            aria-controls="task-edit-project-suggestions"
-            aria-autocomplete="list"
-            aria-activedescendant={projectSuggestions.length > 0
-              ? `task-edit-project-suggestions-option-${projectSuggestionIndex}`
-              : undefined}
-            oninput={updateProjectSuggestions}
-            onkeydown={handleProjectKeydown}
-            onblur={() => (projectSuggestions = [])}
-          />
-          <Autocomplete
-            id="task-edit-project-suggestions"
-            items={projectSuggestions}
-            activeIndex={projectSuggestionIndex}
-            onSelect={selectProjectSuggestion}
-            onHover={(index) => (projectSuggestionIndex = index)}
-          />
-        </div>
+        {#if parentTask}
+          <span class="locked-field-value">Subtask of {parentTask.title}</span>
+        {:else}
+          <div class="field-with-suggestions">
+            <input
+              type="text"
+              bind:value={draftProject}
+              placeholder="e.g. Inbox/Personal"
+              role="combobox"
+              aria-expanded={projectSuggestions.length > 0}
+              aria-controls="task-edit-project-suggestions"
+              aria-autocomplete="list"
+              aria-activedescendant={projectSuggestions.length > 0
+                ? `task-edit-project-suggestions-option-${projectSuggestionIndex}`
+                : undefined}
+              oninput={updateProjectSuggestions}
+              onkeydown={handleProjectKeydown}
+              onblur={() => (projectSuggestions = [])}
+            />
+            <Autocomplete
+              id="task-edit-project-suggestions"
+              items={projectSuggestions}
+              activeIndex={projectSuggestionIndex}
+              onSelect={selectProjectSuggestion}
+              onHover={(index) => (projectSuggestionIndex = index)}
+            />
+          </div>
+        {/if}
       </label>
       <div class="field-row">
         <label>
@@ -453,57 +478,69 @@
       </div>
       <label>
         Tags
-        <div class="field-with-suggestions">
-          <input
-            type="text"
-            bind:value={draftTags}
-            placeholder="comma, separated"
-            role="combobox"
-            aria-expanded={tagSuggestions.length > 0}
-            aria-controls="task-edit-tags-suggestions"
-            aria-autocomplete="list"
-            aria-activedescendant={tagSuggestions.length > 0
-              ? `task-edit-tags-suggestions-option-${tagSuggestionIndex}`
-              : undefined}
-            oninput={updateTagSuggestions}
-            onkeydown={handleTagsKeydown}
-            onblur={() => (tagSuggestions = [])}
-          />
-          <Autocomplete
-            id="task-edit-tags-suggestions"
-            items={tagSuggestions}
-            activeIndex={tagSuggestionIndex}
-            onSelect={selectTagSuggestion}
-            onHover={(index) => (tagSuggestionIndex = index)}
-            prefix="#"
-          />
-        </div>
+        {#if parentTask}
+          <span class="locked-field-value">{draftTags || "—"}</span>
+        {:else}
+          <div class="field-with-suggestions">
+            <input
+              type="text"
+              bind:value={draftTags}
+              placeholder="comma, separated"
+              role="combobox"
+              aria-expanded={tagSuggestions.length > 0}
+              aria-controls="task-edit-tags-suggestions"
+              aria-autocomplete="list"
+              aria-activedescendant={tagSuggestions.length > 0
+                ? `task-edit-tags-suggestions-option-${tagSuggestionIndex}`
+                : undefined}
+              oninput={updateTagSuggestions}
+              onkeydown={handleTagsKeydown}
+              onblur={() => (tagSuggestions = [])}
+            />
+            <Autocomplete
+              id="task-edit-tags-suggestions"
+              items={tagSuggestions}
+              activeIndex={tagSuggestionIndex}
+              onSelect={selectTagSuggestion}
+              onHover={(index) => (tagSuggestionIndex = index)}
+              prefix="#"
+            />
+          </div>
+        {/if}
       </label>
       <label>
         Scheduled
-        <span class="date-input-row">
-          <input type="text" bind:value={draftScheduled} placeholder="YYYY-MM-DD" />
-          <DatePickerPopover
-            selected={draftScheduled || undefined}
-            triggerLabel="Pick scheduled date"
-            clearLabel="Clear"
-            onSelect={(iso) => (draftScheduled = iso)}
-            onClear={() => (draftScheduled = "")}
-          />
-        </span>
+        {#if parentTask}
+          <span class="locked-field-value">{draftScheduled || "—"}</span>
+        {:else}
+          <span class="date-input-row">
+            <input type="text" bind:value={draftScheduled} placeholder="YYYY-MM-DD" />
+            <DatePickerPopover
+              selected={draftScheduled || undefined}
+              triggerLabel="Pick scheduled date"
+              clearLabel="Clear"
+              onSelect={(iso) => (draftScheduled = iso)}
+              onClear={() => (draftScheduled = "")}
+            />
+          </span>
+        {/if}
       </label>
       <label>
         Due
-        <span class="date-input-row">
-          <input type="text" bind:value={draftDue} placeholder="YYYY-MM-DD" />
-          <DatePickerPopover
-            selected={draftDue || undefined}
-            triggerLabel="Pick due date"
-            clearLabel="Never"
-            onSelect={(iso) => (draftDue = iso)}
-            onClear={() => (draftDue = "")}
-          />
-        </span>
+        {#if parentTask}
+          <span class="locked-field-value">{draftDue || "—"}</span>
+        {:else}
+          <span class="date-input-row">
+            <input type="text" bind:value={draftDue} placeholder="YYYY-MM-DD" />
+            <DatePickerPopover
+              selected={draftDue || undefined}
+              triggerLabel="Pick due date"
+              clearLabel="Never"
+              onSelect={(iso) => (draftDue = iso)}
+              onClear={() => (draftDue = "")}
+            />
+          </span>
+        {/if}
         {#if draftDue}
           {@const dueHint = formatDueDateDisplay(draftDue, new Date(), displayState.nlDueDates)}
           {#if dueHint}
@@ -552,9 +589,11 @@
                 : ""} · Due: {formatDueRule(seriesInfo.due_rule)}
               {#if !seriesInfo.active}
                 (recurrence removed)
+              {:else if isThisTaskSubtask}
+                (from parent — can't be changed here)
               {/if}
             </span>
-            {#if seriesInfo.active}
+            {#if seriesInfo.active && !isThisTaskSubtask}
               <RecurrenceBuilderDialog
                 value={recurrenceBuilderValue}
                 triggerLabel="Edit recurrence"
@@ -568,7 +607,7 @@
             <span class="recurrence-info-summary">Loading…</span>
           {/if}
         </div>
-        {#if seriesInfo?.active !== false}
+        {#if seriesInfo?.active !== false && !isThisTaskSubtask}
           <button type="button" class="remove-recurrence-link" onclick={handleRemoveRecurrenceClick}>
             Remove recurrence
           </button>
@@ -576,6 +615,11 @@
       {/if}
       {#if editError}
         <p class="edit-error" role="alert">{editError}</p>
+      {/if}
+      {#if !isThisTaskSubtask && onCreateSubtask}
+        <button type="button" class="create-subtask-link" onclick={() => onCreateSubtask(task)}>
+          + Create subtask
+        </button>
       {/if}
       <div class="edit-actions">
         <button type="submit">Save</button>
@@ -589,7 +633,11 @@
 <ConfirmDialog
   open={showDeleteConfirm}
   title="Delete task"
-  message={task ? `Delete "${task.title}"? This can't be undone.` : ""}
+  message={task
+    ? taskSubtasks.length > 0
+      ? `Delete "${task.title}"? This will also delete ${taskSubtasks.length} subtask${taskSubtasks.length === 1 ? "" : "s"}. This can't be undone.`
+      : `Delete "${task.title}"? This can't be undone.`
+    : ""}
   confirmLabel="Delete"
   onConfirm={confirmDelete}
   onCancel={cancelDelete}
@@ -725,6 +773,14 @@
     outline: none;
   }
 
+  .locked-field-value {
+    font-size: var(--text-sm);
+    font-weight: 400;
+    text-transform: none;
+    letter-spacing: normal;
+    color: var(--color-ink-faint);
+  }
+
   .due-hint {
     font-size: var(--text-xs);
     font-weight: 600;
@@ -820,6 +876,22 @@
 
   .remove-recurrence-link:hover {
     color: var(--color-danger);
+  }
+
+  .create-subtask-link {
+    align-self: flex-start;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--color-ink-muted);
+    font-size: var(--text-xs);
+    font-weight: 600;
+    text-decoration: underline;
+    cursor: pointer;
+  }
+
+  .create-subtask-link:hover {
+    color: var(--color-accent);
   }
 
   .recurrence-info {

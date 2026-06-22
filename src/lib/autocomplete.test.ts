@@ -1,12 +1,29 @@
 import { describe, expect, it } from "vitest";
 import {
+  applySubtaskTokenSuggestion,
   applyTagsSuggestion,
   applyTokenSuggestion,
   filterSuggestions,
+  findActiveSubtaskToken,
   findActiveToken,
   preferredSuggestionText,
+  projectPathSuggestions,
   splitTagsInput,
 } from "./autocomplete";
+import type { Project } from "./types";
+
+function project(id: string, name: string, parentId?: string): Project {
+  return {
+    id,
+    name,
+    color: "#111111",
+    parent_id: parentId,
+    order: 1,
+    created: "2026-06-11T10:00:00+00:00",
+    board: { statuses: [] },
+    defaults: { tags: [] },
+  };
+}
 
 describe("findActiveToken", () => {
   it("finds a #tag token at the end of the string", () => {
@@ -116,6 +133,63 @@ describe("findActiveToken", () => {
   });
 });
 
+describe("findActiveSubtaskToken", () => {
+  it("finds a sub keyword's partial text at the end of the string", () => {
+    expect(findActiveSubtaskToken("Reproduce it sub Fi", 19)).toEqual({
+      text: "Fi",
+      start: 17,
+      end: 19,
+    });
+  });
+
+  it("finds it at the very start of the string", () => {
+    expect(findActiveSubtaskToken("sub Fi", 6)).toEqual({ text: "Fi", start: 4, end: 6 });
+  });
+
+  it("returns undefined for a bare sub with no partial text yet", () => {
+    expect(findActiveSubtaskToken("Reproduce it sub ", 17)).toBeUndefined();
+  });
+
+  it("returns undefined when sub is part of a larger word", () => {
+    expect(findActiveSubtaskToken("subscribe Fi", 12)).toBeUndefined();
+  });
+
+  it("returns undefined when there's no sub keyword at all", () => {
+    expect(findActiveSubtaskToken("Just a title", 12)).toBeUndefined();
+  });
+
+  it("is case-insensitive", () => {
+    expect(findActiveSubtaskToken("Reproduce it SUB Fi", 19)).toEqual({
+      text: "Fi",
+      start: 17,
+      end: 19,
+    });
+  });
+});
+
+describe("applySubtaskTokenSuggestion", () => {
+  it("replaces only the partial text, leaving the sub keyword untouched", () => {
+    const token = findActiveSubtaskToken("Reproduce it sub Fi", 19);
+    if (!token) throw new Error("expected a token");
+
+    expect(applySubtaskTokenSuggestion("Reproduce it sub Fi", token, '"Fix the bug"')).toEqual({
+      value: 'Reproduce it sub "Fix the bug" ',
+      cursor: 31,
+    });
+  });
+
+  it("doesn't add a trailing space when one is already present", () => {
+    const value = "Reproduce it sub Fi other text";
+    const token = findActiveSubtaskToken(value.slice(0, 19), 19);
+    if (!token) throw new Error("expected a token");
+
+    expect(applySubtaskTokenSuggestion(value, token, "Refactor")).toEqual({
+      value: "Reproduce it sub Refactor other text",
+      cursor: 25,
+    });
+  });
+});
+
 describe("preferredSuggestionText", () => {
   it("returns the label when it has no whitespace", () => {
     expect(preferredSuggestionText("in-progress", "Cancelled")).toBe("Cancelled");
@@ -176,6 +250,82 @@ describe("applyTokenSuggestion", () => {
       value: "+Project ",
       cursor: 9,
     });
+  });
+});
+
+describe("projectPathSuggestions", () => {
+  it("suggests a unique name bare, unquoted", () => {
+    const projects = [project("p1", "Vacation")];
+
+    expect(projectPathSuggestions(projects, "Vac")).toEqual(["Vacation"]);
+  });
+
+  it("quotes a unique multi-word name", () => {
+    const projects = [project("p1", "My Project")];
+
+    expect(projectPathSuggestions(projects, "My")).toEqual(['"My Project"']);
+  });
+
+  it("suggests the full disambiguating path for a colliding name", () => {
+    const projects = [
+      project("work", "Work"),
+      project("personal", "Personal"),
+      project("hw1", "Homework", "work"),
+      project("hw2", "Homework", "personal"),
+    ];
+
+    expect(projectPathSuggestions(projects, "Home")).toEqual(["Personal/Homework", "Work/Homework"]);
+  });
+
+  it("quotes a multi-word segment within a disambiguating path", () => {
+    const projects = [
+      project("work", "Work"),
+      project("personal", "Personal"),
+      project("hw1", "Client A", "work"),
+      project("hw2", "Client A", "personal"),
+    ];
+
+    expect(projectPathSuggestions(projects, "Client")).toContain('Personal/"Client A"');
+  });
+
+  it("browses every project for an empty typed prefix", () => {
+    const projects = [project("p1", "Alpha"), project("p2", "Beta")];
+
+    expect(projectPathSuggestions(projects, "")).toEqual(["Alpha", "Beta"]);
+  });
+
+  it("matches case-insensitively", () => {
+    const projects = [project("p1", "Vacation")];
+
+    expect(projectPathSuggestions(projects, "vac")).toEqual(["Vacation"]);
+  });
+
+  it("drills down into a resolved parent's children", () => {
+    const projects = [project("work", "Work"), project("a1", "Client A", "work"), project("a2", "Client B", "work")];
+
+    expect(projectPathSuggestions(projects, "Work/Cli")).toEqual(['Work/"Client A"', 'Work/"Client B"']);
+  });
+
+  it("drills down through a quoted parent segment", () => {
+    const projects = [
+      project("client", "Client A"),
+      project("p1", "Phase 1", "client"),
+      project("p2", "Phase 2", "client"),
+    ];
+
+    expect(projectPathSuggestions(projects, '"Client A"/Phase 1')).toEqual(['"Client A"/"Phase 1"']);
+  });
+
+  it("suggests nothing when the parent path before the last slash doesn't resolve", () => {
+    const projects = [project("work", "Work"), project("a1", "Client A", "work")];
+
+    expect(projectPathSuggestions(projects, "Bogus/Cli")).toEqual([]);
+  });
+
+  it("suggests nothing for an unparseable parent path", () => {
+    const projects = [project("work", "Work")];
+
+    expect(projectPathSuggestions(projects, 'Work/"Unclosed/Cli')).toEqual([]);
   });
 });
 

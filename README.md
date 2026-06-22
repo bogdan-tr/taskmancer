@@ -52,8 +52,10 @@ task entry, and (eventually) time tracking and analytics — built with
   status's color; cancelled tasks get the same muted background plus an "×"
   — on both Kanban cards and week-view bars. In the week view, finished
   tasks sink to the bottom of their day so active tasks stay up top.
-- **Projects** as first-class entities: a collapsible sidebar lists every
-  project (with its own color), and each project has its own filtered board.
+- **Projects & subprojects** as first-class entities: a collapsible sidebar
+  lists every project (with its own color) as a nested, drag-and-drop
+  re-orderable tree, and each project has its own filtered board that rolls
+  up its descendants' tasks too. See [Subprojects](#subprojects) for details.
 - **Natural-language quick add** (`Ctrl+T` or the `+` button) — recognizes
   `#tag`, `+Project`, bare `high`/`medium`/`low` priority words, `@status`,
   and `due <phrase>` / `sch <phrase>` (e.g. `due next friday`, `sch tomorrow`).
@@ -120,7 +122,7 @@ all task data:
 id: f778cfd8-04eb-415b-945e-8aef0a890b63
 title: Buy milk
 status: do
-project: personal
+project_id: 3a1e9c2a-9b9a-4e3a-8e3a-8d2a6a6a8a2a
 tags:
   - errands
 priority: high
@@ -134,7 +136,10 @@ depends_on: []
 Optional free-form markdown notes go here.
 ```
 
-Projects are stored in a small `projects.json` (id, name, color, order).
+Projects are stored in a small `projects.json` (id, name, color, an optional
+`parent_id` for subprojects, order, plus per-project board/defaults
+overrides). Tasks link to their project by id (`project_id`), not by name —
+two subprojects under different parents can share a name without ambiguity.
 
 This data lives **outside the repo**, in your OS's standard application-data
 directory (derived from the Tauri app identifier `com.taskmancer.app`):
@@ -257,6 +262,47 @@ touches the title text in the Add Task modal, and the existing typed
 × in the top corner, by clicking outside it, or Escape — being a real
 dialog, it always renders on top of whatever task-edit or Add Task dialog
 it was opened from, regardless of where on screen the calendar icon sits.
+
+### Subprojects
+
+Any project can have subprojects, nested to any depth (a subproject can
+itself have subprojects). A subproject is a fully independent project — its
+own board, its own tasks — that additionally inherits configuration from its
+ancestors and rolls up into its parents' views.
+
+- **Creating a subproject** — hover a project row in the sidebar and click
+  its **+** button, or use the "New subproject" button on a project's own
+  settings page. Either pre-scopes the new-project dialog to that parent.
+- **Color suggestions** — the new-project color picker shows five shades
+  derived from the immediate parent's color ahead of the regular preset
+  palette, so a subproject visually reads as part of its parent's family
+  while remaining free to pick any preset or custom hex color instead. The
+  shade is a one-time suggestion at creation time; re-parenting a project
+  never recolors it.
+- **Settings inheritance** — board column subsets, default status, Week
+  view's "Previous" column setting, and Kanban/week-bar lightness and ink
+  overrides all resolve through the full ancestor chain: a subproject's own
+  setting wins if set, otherwise its parent's, otherwise its grandparent's,
+  and so on up to the global default. The project settings page labels any
+  value it's showing because an ancestor set it (e.g. "Inherited from
+  Coursework"), not because this project set it itself.
+- **Sidebar tree** — the project list nests subprojects under their parent
+  with an expand/collapse chevron; collapsed/expanded state persists across
+  restarts, and a project auto-expands the first time it gains a subproject
+  so the new entry isn't hidden by default.
+- **Re-parenting** — drag a project onto another in the sidebar to make it a
+  child (drop at the root of the list to promote it back to top-level), or
+  use the "Parent project" picker on a project's own settings page. Both
+  reject a move that would make a project its own descendant's child.
+- **Rollup views** — viewing a parent project's Board, Week, or Calendar
+  shows its own tasks plus every descendant subproject's tasks combined.
+  Tasks shown only because of rollup (not belonging to the project actually
+  being viewed) get a small colored origin badge naming their real project.
+- **Cascade delete** — deleting a project deletes its entire subtree:
+  every descendant subproject and every task belonging to any of them. The
+  confirmation dialog states the exact subproject and task counts up front,
+  and (when reassigning tasks elsewhere instead of archiving/deleting them)
+  excludes the whole doomed subtree from the reassignment target list.
 
 ### Recurring tasks
 

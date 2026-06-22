@@ -15,10 +15,10 @@ export async function listTasks(): Promise<Task[]> {
   return invoke<Task[]>("list_tasks");
 }
 
-export async function createTask(input: ParsedTaskInput): Promise<Task> {
+export async function createTask(input: ParsedTaskInput, projectId?: string): Promise<Task> {
   return invoke<Task>("create_task", {
     title: input.title,
-    project: input.project,
+    projectId,
     tags: input.tags.length > 0 ? input.tags : undefined,
     priority: input.priority,
     status: input.status,
@@ -43,10 +43,11 @@ export async function createRecurringTask(
   frequency: RecurrenceFrequency,
   endDate: string | undefined,
   dueRule: DueRule | undefined,
+  projectId?: string,
 ): Promise<Task[]> {
   return invoke<Task[]>("create_recurring_task", {
     title: input.title,
-    project: input.project,
+    projectId,
     tags: input.tags.length > 0 ? input.tags : undefined,
     priority: input.priority,
     status: input.status,
@@ -130,8 +131,8 @@ export async function listProjects(): Promise<Project[]> {
   return invoke<Project[]>("list_projects");
 }
 
-export async function createProject(name: string, color?: string): Promise<Project> {
-  return invoke<Project>("create_project", { name, color });
+export async function createProject(name: string, color?: string, parentId?: string): Promise<Project> {
+  return invoke<Project>("create_project", { name, color, parentId });
 }
 
 export async function updateProject(project: Project): Promise<Project> {
@@ -143,6 +144,16 @@ export async function deleteProject(
   taskStrategy?: ProjectTaskStrategy,
 ): Promise<DeleteProjectResult> {
   return invoke<DeleteProjectResult>("delete_project", { projectId, taskStrategy });
+}
+
+/** Returns `parentTaskId`'s subtask container, creating it on first call. */
+export async function ensureSubtaskContainer(parentTaskId: string): Promise<Project> {
+  return invoke<Project>("ensure_subtask_container", { parentTaskId });
+}
+
+/** Disbands `taskId`'s subtask container, moving its subtasks into `taskId`'s own project and removing the now-unused container. The subtasks themselves are kept, not deleted. Returns the updated task (its `subtask_project_id` cleared). */
+export async function deleteSubtaskContainer(taskId: string): Promise<Task> {
+  return invoke<Task>("delete_subtask_container", { taskId });
 }
 
 export async function getSettings(): Promise<Settings> {

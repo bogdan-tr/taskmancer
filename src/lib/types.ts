@@ -6,7 +6,8 @@ export interface Task {
   title: string;
   /** The id of a user-defined `StatusDefinition` (see `Settings.statuses`). */
   status: string;
-  project?: string;
+  /** The id of the `Project` this task belongs to. */
+  project_id?: string;
   tags: string[];
   /** The id of a user-defined `PriorityLevel` (see `Settings.priorities`). */
   priority: string;
@@ -21,6 +22,15 @@ export interface Task {
   tracked_minutes: number;
   /** The id of the `Series` this task was generated from, if any. `undefined` for a normal, non-recurring task. */
   series_id?: string;
+  /**
+   * The id of this task's auto-generated "subtask container" `Project`, if
+   * it has ever had a subtask. `undefined` until the first subtask is
+   * created, and reset back to `undefined` when the container becomes
+   * empty and is cleaned up. The container itself stores no back-pointer
+   * to this task — see `subtasks.ts`'s `containerOwner` for the reverse
+   * lookup.
+   */
+  subtask_project_id?: string;
   notes: string;
 }
 
@@ -45,6 +55,8 @@ export interface ProjectBoard {
   bar_lightness?: number;
   /** Overrides `Settings.ink_mode` for this project's color-coded card/bar text. `undefined` inherits the global default. */
   ink_mode?: InkMode;
+  /** Overrides `Settings.show_subproject_tasks_default` for whether viewing this project's board/week/calendar rolls up its descendant subprojects' tasks too. `undefined` inherits the global default. */
+  show_subproject_tasks?: boolean;
 }
 
 /**
@@ -83,6 +95,8 @@ export interface Project {
   id: string;
   name: string;
   color: string;
+  /** The id of this project's parent, or `undefined` for a top-level project. Nesting is arbitrary depth. */
+  parent_id?: string;
   order: number;
   created: string;
   board: ProjectBoard;
@@ -109,7 +123,7 @@ export interface Series {
   generated_until: string;
   active: boolean;
   title: string;
-  project?: string;
+  project_id?: string;
   priority: string;
   tags: string[];
   estimated_minutes?: number;
@@ -152,9 +166,9 @@ export interface StatusDefinition {
  * the done status; the cancelled status is optional and, if set, differs from
  * the done status.
  *
- * `default_project` names the project a new task is filed under when no
- * project was specified (and no project-scoped board supplied one); the
- * backend never creates or saves a task with an empty/missing project.
+ * `default_project_id` is the id of the project a new task is filed under
+ * when no project was specified (and no project-scoped board supplied one);
+ * the backend never creates or saves a task with an empty/missing project.
  */
 export interface Settings {
   priorities: PriorityLevel[];
@@ -162,7 +176,7 @@ export interface Settings {
   defaults: TaskDefaults;
   done_status: string;
   cancelled_status?: string;
-  default_project: string;
+  default_project_id: string;
   /** Global default for whether Week view shows a "previous weeks" column. See `ProjectBoard.show_previous_weeks`. */
   show_previous_weeks_column: boolean;
   /** Global OKLCH lightness for "color code" mode's Kanban card background. See `ProjectBoard.card_lightness`. */
@@ -171,6 +185,10 @@ export interface Settings {
   bar_lightness: number;
   /** Global default text-color mode for "color code" mode's card/bar text. See `ProjectBoard.ink_mode`. */
   ink_mode: InkMode;
+  /** Global default for whether viewing a project's board/week/calendar rolls up its descendant subprojects' tasks too. See `ProjectBoard.show_subproject_tasks`. */
+  show_subproject_tasks_default: boolean;
+  /** Whether a task with subtasks' displayed estimated time adds its own `estimated_minutes` on top of its subtasks' total (`true`) or is replaced by that total entirely (`false`, the default). Display-only — never written back to any stored field. See `effectiveEstimatedMinutes`. */
+  parent_estimate_includes_own_value: boolean;
 }
 
 /**

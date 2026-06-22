@@ -17,11 +17,13 @@ const sampleSettings: Settings = {
   defaults: { tags: [], priority: "medium", status: "backlog" },
   done_status: "done",
   cancelled_status: undefined,
-  default_project: "General",
+  default_project_id: "general-id",
   show_previous_weeks_column: false,
   card_lightness: 0.5,
   bar_lightness: 0.38,
   ink_mode: "auto",
+  show_subproject_tasks_default: false,
+  parent_estimate_includes_own_value: false,
 };
 
 vi.mock("./api", () => ({

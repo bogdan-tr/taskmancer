@@ -7,10 +7,12 @@
     buildTaskStrategy,
     isDefaultProject,
     reassignTargets,
-    tasksForProject,
+    tasksForProjects,
     type DeleteStrategyKind,
   } from "$lib/deleteProject";
+  import { getErrorMessage } from "$lib/errors";
   import { projectsState, refreshProjects } from "$lib/projects.svelte";
+  import { descendantsOf } from "$lib/projectTree";
   import { settingsState } from "$lib/settings.svelte";
   import type { Project } from "$lib/types";
 
@@ -21,7 +23,7 @@
   let { project }: Props = $props();
 
   let isDefault = $derived(
-    isDefaultProject(project.name, settingsState.current?.default_project ?? ""),
+    isDefaultProject(project.id, settingsState.current?.default_project_id ?? ""),
   );
   let otherProjects = $derived(reassignTargets(projectsState.items, project.id));
 
@@ -30,19 +32,22 @@
   let simpleConfirmOpen = $state(false);
   let strategyDialogOpen = $state(false);
   let pendingTaskCount = $state(0);
+  let pendingDescendantCount = $state(0);
 
   async function startDelete() {
     errorMessage = "";
     try {
       const tasks = await listTasks();
-      pendingTaskCount = tasksForProject(tasks, project.name).length;
+      const descendantIds = descendantsOf(projectsState.items, project.id).map((p) => p.id);
+      pendingDescendantCount = descendantIds.length;
+      pendingTaskCount = tasksForProjects(tasks, [project.id, ...descendantIds]).length;
       if (pendingTaskCount === 0) {
         simpleConfirmOpen = true;
       } else {
         strategyDialogOpen = true;
       }
     } catch (error) {
-      errorMessage = error instanceof Error ? error.message : "Failed to check project tasks";
+      errorMessage = getErrorMessage(error, "Failed to check project tasks");
     }
   }
 
@@ -63,7 +68,7 @@
       await refreshProjects();
       await goto("/");
     } catch (error) {
-      errorMessage = error instanceof Error ? error.message : "Failed to delete project";
+      errorMessage = getErrorMessage(error, "Failed to delete project");
     } finally {
       isDeleting = false;
     }
@@ -98,7 +103,9 @@
 <ConfirmDialog
   open={simpleConfirmOpen}
   title="Delete project?"
-  message={`Are you sure you want to delete "${project.name}"? This can't be undone.`}
+  message={pendingDescendantCount > 0
+    ? `Are you sure you want to delete "${project.name}" and its ${pendingDescendantCount} ${pendingDescendantCount === 1 ? "subproject" : "subprojects"}? This can't be undone.`
+    : `Are you sure you want to delete "${project.name}"? This can't be undone.`}
   confirmLabel="Delete"
   onConfirm={confirmSimpleDelete}
   onCancel={() => (simpleConfirmOpen = false)}
@@ -108,6 +115,7 @@
   open={strategyDialogOpen}
   projectName={project.name}
   taskCount={pendingTaskCount}
+  descendantCount={pendingDescendantCount}
   {otherProjects}
   onConfirm={confirmStrategyDelete}
   onCancel={() => (strategyDialogOpen = false)}

@@ -3,7 +3,33 @@ import type { DueRule, RecurrenceFrequency } from "./recurrence";
 export interface ParsedTaskInput {
   title: string;
   tags: string[];
+  /**
+   * The display name of the project this task is filed under, resolved
+   * from typed/autocompleted text — see `projectId`. A `/`-separated
+   * ancestor path (e.g. "Work/Client A") when the `+Project` token named
+   * a specific nested subproject rather than a bare leaf name — see
+   * `tryResolveProjectPath`.
+   */
   project?: string;
+  /**
+   * The id of the project this task should actually be saved under, once
+   * resolved (the parser itself never sets this — only `AddTaskModal`
+   * does, after resolving `project` against the loaded project list — see
+   * its `handleSubmit`). Mirrors how `dueRule` is also populated after
+   * parsing, not by the parser itself.
+   */
+  projectId?: string;
+  /**
+   * The name of an existing task this new task should become a subtask
+   * of, from a `sub <phrase>` quick-add token (quoted if multi-word — see
+   * `trySubtaskParentName`). The parser only ever extracts the typed
+   * name; resolving it against the loaded task list (and ensuring that
+   * task's subtask container exists) happens in `AddTaskModal`, the same
+   * division of responsibility as `project`/`projectId` above. Takes
+   * precedence over `project`/`projectId` when both are present, per the
+   * Subtasks design spec.
+   */
+  subtaskParentName?: string;
   /** The id of a `PriorityLevel` (see `Settings.priorities`). */
   priority?: string;
   /** The id of a `StatusDefinition` (see `Settings.statuses`), from an `@status` quick-add token. */
@@ -593,9 +619,170 @@ function tryResolveRecurrencePhrase(
 }
 
 /**
+ * Splits `raw` into path segments on `/`, respecting `"`-quoted segments (a
+ * quoted segment may contain `/` and spaces; an unquoted segment may
+ * contain neither). Returns `undefined` for anything malformed — an
+ * unterminated quote, a stray `"` outside a segment's very start, or an
+ * empty segment (e.g. a leading/trailing/doubled `/`) — so the caller can
+ * fall back to treating the whole thing as an ordinary bare name instead.
+ */
+export function parsePathSegments(raw: string): string[] | undefined {
+  const segments: string[] = [];
+  let current = "";
+  let inQuotes = false;
+  let closedQuoteThisSegment = false;
+
+  for (const ch of raw) {
+    if (ch === '"') {
+      if (!inQuotes && current === "" && !closedQuoteThisSegment) {
+        inQuotes = true;
+      } else if (inQuotes) {
+        inQuotes = false;
+        closedQuoteThisSegment = true;
+      } else {
+        return undefined;
+      }
+      continue;
+    }
+
+    if (ch === "/" && !inQuotes) {
+      segments.push(current);
+      current = "";
+      closedQuoteThisSegment = false;
+      continue;
+    }
+
+    if (!inQuotes && closedQuoteThisSegment) {
+      return undefined;
+    }
+    current += ch;
+  }
+
+  if (inQuotes) return undefined;
+  segments.push(current);
+
+  return segments.some((segment) => segment === "") ? undefined : segments;
+}
+
+/**
+ * Starting from `initialText` (already extracted from `tokens[index]` —
+ * e.g. with a leading `+` stripped, or the bare token itself), pulls in as
+ * many of the caller's subsequent whitespace-split tokens as needed
+ * (rejoining them with a single space) until every opened `"` is closed.
+ * Shared by `tryResolveProjectPath` (a `/`-path may have a quoted segment
+ * spanning multiple tokens) and `trySubtaskParentName` (a quoted task name
+ * may itself span multiple tokens) — both need the identical "keep
+ * consuming tokens while a quote is open" loop, just starting from
+ * differently-shaped initial text.
+ *
+ * Returns the reassembled text plus how many *extra* tokens (beyond
+ * `tokens[index]` itself) were consumed — `0` if `initialText` already had
+ * balanced quotes (including none at all). Returns `undefined` if a quote
+ * is opened but the input ends before it's closed.
+ */
+function consumeQuotedPhrase(
+  tokens: string[],
+  index: number,
+  initialText: string,
+): { text: string; consumed: number } | undefined {
+  let text = initialText;
+  let consumed = 0;
+  while ((text.match(/"/g)?.length ?? 0) % 2 !== 0) {
+    const next = tokens[index + consumed + 1];
+    if (next === undefined) return undefined;
+    text += ` ${next}`;
+    consumed += 1;
+  }
+  return { text, consumed };
+}
+
+/**
+ * Attempts to resolve a `+Project` token starting at `tokens[index]` as a
+ * `/`-separated ancestor path (e.g. `+Work/ClientA` or, for a segment
+ * containing whitespace, `+Work/"Client A"`), for disambiguating same-named
+ * subprojects under different parents. A quoted segment may span multiple
+ * of the caller's original whitespace-split tokens — handled by
+ * `consumeQuotedPhrase` — then the reassembled text is split on unquoted
+ * `/` characters via `parsePathSegments`.
+ *
+ * Returns `undefined` — leaving `parseTaskInput`'s existing single-word
+ * `project = token.slice(1)` assignment completely unchanged — whenever
+ * there's no real path here at all: a bare `+Project` with no `/`, a
+ * malformed quote, or a quote left unterminated through the end of the
+ * input.
+ */
+function tryResolveProjectPath(
+  tokens: string[],
+  index: number,
+): { segments: string[]; consumed: number } | undefined {
+  const first = tokens[index];
+  if (first === undefined || !first.startsWith("+") || first.length <= 1) return undefined;
+
+  const phrase = consumeQuotedPhrase(tokens, index, first.slice(1));
+  if (!phrase) return undefined;
+
+  const segments = parsePathSegments(phrase.text);
+  if (!segments || segments.length < 2) return undefined;
+
+  return { segments, consumed: phrase.consumed };
+}
+
+/**
+ * Strips a single pair of surrounding `"` quotes from `text` if present
+ * (`"Fix the bug"` -> `Fix the bug`); returns `text` unchanged if it isn't
+ * quoted at all (a single-word name needs no quotes). Returns `undefined`
+ * for anything malformed — a quote appearing anywhere other than wrapping
+ * the whole string (e.g. a stray `"` in the middle), or an empty result
+ * after stripping (`sub ""`).
+ */
+function stripSurroundingQuotes(text: string): string | undefined {
+  const quoteCount = text.match(/"/g)?.length ?? 0;
+  if (quoteCount === 0) return text === "" ? undefined : text;
+  if (quoteCount === 2 && text.startsWith('"') && text.endsWith('"') && text.length >= 2) {
+    const inner = text.slice(1, -1);
+    return inner === "" ? undefined : inner;
+  }
+  return undefined;
+}
+
+/**
+ * Attempts to resolve a `sub <phrase>` parent-task name starting at
+ * `tokens[startIndex]` (the token immediately after the `sub` keyword,
+ * mirroring `due`/`sch`/`est`'s own `tokens, i + 1` lookahead convention).
+ * A multi-word name must be quoted (`sub "Fix the bug"`) — same convention
+ * and reason as `+Project`'s path syntax (see `tryResolveProjectPath`):
+ * there's no other way to bound where a free-text task title ends and the
+ * rest of the new subtask's own title begins. A single-word name needs no
+ * quotes (`sub Refactor`).
+ *
+ * Returns `undefined` — leaving `sub` as an ordinary word in the title,
+ * unchanged — if there's no token here at all, a quote is opened but
+ * never closed, or the quoted/unquoted text is otherwise malformed (see
+ * `stripSurroundingQuotes`).
+ */
+function trySubtaskParentName(
+  tokens: string[],
+  startIndex: number,
+): { name: string; consumed: number } | undefined {
+  const first = tokens[startIndex];
+  if (first === undefined) return undefined;
+
+  const phrase = consumeQuotedPhrase(tokens, startIndex, first);
+  if (!phrase) return undefined;
+
+  const name = stripSurroundingQuotes(phrase.text);
+  if (name === undefined) return undefined;
+
+  return { name, consumed: phrase.consumed + 1 };
+}
+
+/**
  * Parses quick-add syntax out of a free-text task title:
  * - `#tag` adds a tag
- * - `+Project` sets the project (last one wins)
+ * - `+Project` sets the project (last one wins) — `+Work/"Client A"` (a
+ *   `/`-separated path, quoting any segment containing whitespace)
+ *   targets a specific nested subproject unambiguously instead of matching
+ *   the first same-named project anywhere — see `tryResolveProjectPath`.
  * - `!high` / `!medium` / `!low` (or `!h`/`!m`/`!l`), or a bare `high` /
  *   `medium` / `low` word, sets the priority. If `knownPriorities` is given,
  *   `!<id-or-label>` and a bare `<id-or-label>` word also match (case-
@@ -629,6 +816,14 @@ function tryResolveRecurrencePhrase(
  *   `every other <weekday>`, and `every <weekday>, <weekday>, ...` for
  *   multiple weekdays), optionally followed by `until <date-phrase>` for an
  *   end date.
+ * - `sub <phrase>` marks this task as a subtask of an existing task named
+ *   `<phrase>` — `sub "Fix the bug"` (quoted) for a multi-word name, or a
+ *   bare `sub Refactor` for a single word — see `trySubtaskParentName`.
+ *   Resolving the name against the loaded task list happens in
+ *   `AddTaskModal`, not here; this only extracts the typed text. Disabled
+ *   entirely when `options.disableSubtaskKeyword` is set — see its own
+ *   doc comment — in which case `sub` is left as an ordinary word, the
+ *   same as any other unrecognized token.
  *
  * Tokens that don't match a recognized pattern are left in the title
  * unchanged. The remaining words become the task title, with extra
@@ -639,9 +834,22 @@ export function parseTaskInput(
   now: Date = new Date(),
   knownPriorities?: KnownPriority[],
   knownStatuses?: KnownStatus[],
+  options?: {
+    /**
+     * Disables `sub <phrase>` recognition, leaving `sub` as a literal word
+     * in the title instead of extracting a `subtaskParentName` — set by
+     * `AddTaskModal` while the dialog is already scoped to a subtask
+     * container's own board (creating a task there already makes it a
+     * subtask of that container's owner; a second, different `sub` target
+     * would just be confusing, and nesting a subtask under a subtask is
+     * the one-level-deep rule's job to prevent, not the parser's).
+     */
+    disableSubtaskKeyword?: boolean;
+  },
 ): ParsedTaskInput {
   const tags: string[] = [];
   let project: string | undefined;
+  let subtaskParentName: string | undefined;
   let priority: string | undefined;
   let status: string | undefined;
   let due: string | undefined;
@@ -664,6 +872,12 @@ export function parseTaskInput(
     }
 
     if (token.startsWith("+") && token.length > 1) {
+      const pathMatch = tryResolveProjectPath(tokens, i);
+      if (pathMatch) {
+        project = pathMatch.segments.join("/");
+        i += pathMatch.consumed;
+        continue;
+      }
       project = token.slice(1);
       continue;
     }
@@ -762,6 +976,15 @@ export function parseTaskInput(
       }
     }
 
+    if (lowerToken === "sub" && !options?.disableSubtaskKeyword) {
+      const match = trySubtaskParentName(tokens, i + 1);
+      if (match) {
+        subtaskParentName = match.name;
+        i += match.consumed;
+        continue;
+      }
+    }
+
     const bareDuration = tryResolveDurationPhrase(tokens, i);
     if (bareDuration) {
       estimatedMinutes = bareDuration.minutes;
@@ -776,6 +999,7 @@ export function parseTaskInput(
     title: titleTokens.join(" "),
     tags: [...new Set(tags)],
     project,
+    subtaskParentName,
     priority,
     status,
     due,

@@ -26,8 +26,10 @@
   }
 
   interface Props {
-    /** Tasks to place on the month grid (project-filtered, but not Kanban-visibility-filtered). */
+    /** Tasks to place on the month grid (project-filtered, but not Kanban-visibility-filtered). Excludes subtasks that shouldn't render as standalone bars — see `isHiddenAsSubtask`. */
     tasks: Task[];
+    /** The global task list — for `TaskEditDialog`'s own subtask lookups (gating the "Create Subtask" button, the cascade-delete count, the recurrence read-only state). Must be global, not board-scoped — see `TaskCard.svelte`'s matching prop doc for why. */
+    allTasks?: Task[];
     onUpdate: (task: Task, scope?: SeriesEditScope) => void | Promise<void>;
     onDelete: (id: string, scope?: SeriesEditScope) => void | Promise<void>;
     onRemoveRecurrence: (id: string) => void | Promise<void>;
@@ -45,10 +47,20 @@
      * matching prop for the full rationale.
      */
     onEnsureOccurrences?: (through: string) => void;
+    /** Opens the Add Task modal pre-filled to create a subtask of the given task. */
+    onCreateSubtask?: (task: Task) => void;
   }
 
-  let { tasks, onUpdate, onDelete, onRemoveRecurrence, onUpdateRecurrence, onEnsureOccurrences }: Props =
-    $props();
+  let {
+    tasks,
+    allTasks = [],
+    onUpdate,
+    onDelete,
+    onRemoveRecurrence,
+    onUpdateRecurrence,
+    onEnsureOccurrences,
+    onCreateSubtask,
+  }: Props = $props();
 
   const priorities = $derived(settingsState.current?.priorities ?? FALLBACK_PRIORITIES);
   const statuses = $derived(sortedStatuses(settingsState.current?.statuses ?? FALLBACK_STATUSES));
@@ -315,6 +327,13 @@
   {onRemoveRecurrence}
   {onUpdateRecurrence}
   onCancel={closeEdit}
+  {allTasks}
+  onCreateSubtask={onCreateSubtask
+    ? (task) => {
+        closeEdit();
+        onCreateSubtask(task);
+      }
+    : undefined}
 />
 
 <style>

@@ -57,6 +57,125 @@ describe("parseTaskInput", () => {
     expect(result.project).toBe("Vacation");
   });
 
+  test("a bare +token with no slash is unaffected by path resolution", () => {
+    const result = parseTaskInput("Plan trip +Vacation and relax", NOW);
+
+    expect(result.title).toBe("Plan trip and relax");
+    expect(result.project).toBe("Vacation");
+  });
+
+  test("extracts a single-level project path with no quoting needed", () => {
+    const result = parseTaskInput("Fix the bug +Work/ClientA", NOW);
+
+    expect(result.title).toBe("Fix the bug");
+    expect(result.project).toBe("Work/ClientA");
+  });
+
+  test("extracts a multi-level project path", () => {
+    const result = parseTaskInput("Fix the bug +Work/ClientA/Phase1", NOW);
+
+    expect(result.project).toBe("Work/ClientA/Phase1");
+  });
+
+  test("extracts a project path with a quoted segment that doesn't span tokens", () => {
+    const result = parseTaskInput('Fix the bug +Work/"ClientA"', NOW);
+
+    expect(result.project).toBe("Work/ClientA");
+  });
+
+  test("extracts a project path with a quoted segment spanning multiple whitespace tokens", () => {
+    const result = parseTaskInput('Fix the bug +Work/"Client A"', NOW);
+
+    expect(result.title).toBe("Fix the bug");
+    expect(result.project).toBe("Work/Client A");
+  });
+
+  test("a quoted segment can appear first in the path", () => {
+    const result = parseTaskInput('Fix the bug +"Client A"/Phase1', NOW);
+
+    expect(result.project).toBe("Client A/Phase1");
+  });
+
+  test("text after a project path continues as part of the title", () => {
+    const result = parseTaskInput('Fix the bug +Work/"Client A" before friday', NOW);
+
+    expect(result.title).toBe("Fix the bug before friday");
+    expect(result.project).toBe("Work/Client A");
+  });
+
+  test("falls back to the bare token when a quote is never closed", () => {
+    const result = parseTaskInput('Fix the bug +Work/"Client A', NOW);
+
+    expect(result.project).toBe('Work/"Client');
+    expect(result.title).toBe("Fix the bug A");
+  });
+
+  test("falls back to the bare token for an empty path segment", () => {
+    const result = parseTaskInput("Fix the bug +Work//ClientA", NOW);
+
+    expect(result.project).toBe("Work//ClientA");
+  });
+
+  test("extracts a single-word subtask parent name with no quoting needed", () => {
+    const result = parseTaskInput("Reproduce it sub Refactor", NOW);
+
+    expect(result.title).toBe("Reproduce it");
+    expect(result.subtaskParentName).toBe("Refactor");
+  });
+
+  test("extracts a quoted multi-word subtask parent name spanning multiple tokens", () => {
+    const result = parseTaskInput('Reproduce it sub "Fix the bug"', NOW);
+
+    expect(result.title).toBe("Reproduce it");
+    expect(result.subtaskParentName).toBe("Fix the bug");
+  });
+
+  test("text after a quoted subtask parent name continues as part of the title", () => {
+    const result = parseTaskInput('sub "Fix the bug" Reproduce it', NOW);
+
+    expect(result.title).toBe("Reproduce it");
+    expect(result.subtaskParentName).toBe("Fix the bug");
+  });
+
+  test("leaves an unquoted multi-word subtask parent name only as the first word", () => {
+    const result = parseTaskInput("sub Fix the bug", NOW);
+
+    expect(result.subtaskParentName).toBe("Fix");
+    expect(result.title).toBe("the bug");
+  });
+
+  test("leaves sub untouched in the title when its quote is never closed", () => {
+    const result = parseTaskInput('Reproduce it sub "Fix the bug', NOW);
+
+    expect(result.subtaskParentName).toBeUndefined();
+    expect(result.title).toBe('Reproduce it sub "Fix the bug');
+  });
+
+  test("leaves sub untouched in the title for an empty quoted parent name", () => {
+    const result = parseTaskInput('Reproduce it sub ""', NOW);
+
+    expect(result.subtaskParentName).toBeUndefined();
+    expect(result.title).toBe('Reproduce it sub ""');
+  });
+
+  test("treats sub as a literal word when disableSubtaskKeyword is set", () => {
+    const result = parseTaskInput('Reproduce it sub "Fix the bug"', NOW, undefined, undefined, {
+      disableSubtaskKeyword: true,
+    });
+
+    expect(result.subtaskParentName).toBeUndefined();
+    expect(result.title).toBe('Reproduce it sub "Fix the bug"');
+  });
+
+  test("a priority word and a duration after sub <name> still parse normally, not swallowed into the parent name", () => {
+    const result = parseTaskInput("child task sub Cleaning high est 30m", NOW);
+
+    expect(result.title).toBe("child task");
+    expect(result.subtaskParentName).toBe("Cleaning");
+    expect(result.priority).toBe("high");
+    expect(result.estimatedMinutes).toBe(30);
+  });
+
   test.each([
     ["!high", "high"],
     ["!medium", "medium"],

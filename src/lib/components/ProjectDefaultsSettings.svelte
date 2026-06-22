@@ -1,7 +1,9 @@
 <script lang="ts">
   import { updateProject } from "$lib/api";
+  import { getErrorMessage } from "$lib/errors";
   import { hoursAndMinutesFromMinutes, minutesFromHoursAndMinutes, normalizeHoursMinutes } from "$lib/estimatedTime";
-  import { refreshProjects } from "$lib/projects.svelte";
+  import { projectsState, refreshProjects } from "$lib/projects.svelte";
+  import { ancestorsOf } from "$lib/projectTree";
   import { DUE_RELATIVE_DATE_OPTIONS, SCHEDULED_RELATIVE_DATE_OPTIONS } from "$lib/relativeDates";
   import { formatTags, parseTags } from "$lib/taskFields";
   import type { Project, TaskDefaults } from "$lib/types";
@@ -11,6 +13,28 @@
   }
 
   let { project }: Props = $props();
+
+  /** The nearest *ancestor* (not including this project itself) with a non-empty `defaults.tags`, if this project hasn't set its own — used to label an inherited (not self-set) value. */
+  let tagsInheritedFrom = $derived(
+    project.defaults.tags.length === 0
+      ? ancestorsOf(projectsState.items, project.id).find((p) => p.defaults.tags.length > 0)?.name
+      : undefined,
+  );
+  let dueInheritedFrom = $derived(
+    project.defaults.due === undefined
+      ? ancestorsOf(projectsState.items, project.id).find((p) => p.defaults.due !== undefined)?.name
+      : undefined,
+  );
+  let scheduledInheritedFrom = $derived(
+    project.defaults.scheduled === undefined
+      ? ancestorsOf(projectsState.items, project.id).find((p) => p.defaults.scheduled !== undefined)?.name
+      : undefined,
+  );
+  let estimatedMinutesInheritedFrom = $derived(
+    project.defaults.estimated_minutes === undefined
+      ? ancestorsOf(projectsState.items, project.id).find((p) => p.defaults.estimated_minutes !== undefined)?.name
+      : undefined,
+  );
 
   let baselineTags = $derived(formatTags(project.defaults.tags));
   let baselineDue = $derived(project.defaults.due ?? "");
@@ -90,7 +114,7 @@
       draftScheduled = defaults.scheduled ?? "";
       errorMessage = "";
     } catch (error) {
-      errorMessage = error instanceof Error ? error.message : "Failed to save defaults";
+      errorMessage = getErrorMessage(error, "Failed to save defaults");
     } finally {
       isSaving = false;
     }
@@ -100,8 +124,8 @@
 <section aria-labelledby="project-defaults-heading">
   <h2 id="project-defaults-heading">New task defaults</h2>
   <p class="description">
-    Override the global defaults for tasks created in this project. Leave a field on its inherited
-    value to keep using the global default.
+    Override the defaults for tasks created in this project. Leave a field unset to inherit it from
+    the nearest ancestor that has set it, or the global default if none has.
   </p>
 
   <div class="field">
@@ -109,34 +133,43 @@
     <input
       id="project-default-tags"
       type="text"
-      placeholder="Leave blank to use the global default tags"
+      placeholder="Leave blank to inherit the default tags"
       bind:value={draftTags}
     />
     <p class="hint">
-      If set, these tags replace the global default tags for new tasks in this project.
+      If set, these tags replace the inherited default tags for new tasks in this project.
       Quick-add tags are still merged in on top.
     </p>
+    {#if tagsInheritedFrom}
+      <p class="inherited-note">Inherited from {tagsInheritedFrom}.</p>
+    {/if}
   </div>
 
   <div class="field">
     <label for="project-default-scheduled">Default scheduled date</label>
     <select id="project-default-scheduled" bind:value={draftScheduled}>
-      <option value="">Inherit global default</option>
+      <option value="">Inherit default</option>
       {#each SCHEDULED_RELATIVE_DATE_OPTIONS as option (option.id)}
         <option value={option.id}>{option.label}</option>
       {/each}
     </select>
+    {#if scheduledInheritedFrom}
+      <p class="inherited-note">Inherited from {scheduledInheritedFrom}.</p>
+    {/if}
   </div>
 
   <div class="field">
     <label for="project-default-due">Default due date</label>
     <select id="project-default-due" bind:value={draftDue}>
-      <option value="">Inherit global default</option>
+      <option value="">Inherit default</option>
       {#each DUE_RELATIVE_DATE_OPTIONS as option (option.id)}
         <option value={option.id}>{option.label}</option>
       {/each}
     </select>
     <p class="hint">Relative to the task's scheduled date, not today.</p>
+    {#if dueInheritedFrom}
+      <p class="inherited-note">Inherited from {dueInheritedFrom}.</p>
+    {/if}
   </div>
 
   <div class="field">
@@ -163,6 +196,9 @@
       />
       mins
     </span>
+    {#if estimatedMinutesInheritedFrom}
+      <p class="inherited-note">Inherited from {estimatedMinutesInheritedFrom}.</p>
+    {/if}
     <p class="hint">Leave both blank to inherit the global default estimate.</p>
   </div>
 
@@ -251,6 +287,13 @@
     margin: 0;
     font-size: var(--text-xs);
     color: var(--color-ink-faint);
+  }
+
+  .inherited-note {
+    margin: var(--space-2xs) 0 0;
+    font-size: var(--text-xs);
+    color: var(--color-ink-muted);
+    font-style: italic;
   }
 
   .error {

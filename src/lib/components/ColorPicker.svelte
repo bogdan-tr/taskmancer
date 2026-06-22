@@ -1,14 +1,19 @@
 <script lang="ts">
-  import { cssColorToHex, isHexColor, PRESET_COLOR_NAMES, PRESET_COLORS } from "$lib/colorPresets";
+  import { cssColorToHex, isHexColor, PRESET_COLOR_NAMES, PRESET_COLORS, shadesOf } from "$lib/colorPresets";
 
   interface Props {
     value: string;
     label: string;
+    /** When set (creating/editing a subproject), shows shade suggestions derived from this color ahead of the fixed presets. */
+    parentColor?: string;
+    /** The parent project's name, used to label the shade suggestions (e.g. "Shades of Homework"). Ignored if `parentColor` isn't set. */
+    parentName?: string;
   }
 
-  let { value = $bindable(), label }: Props = $props();
+  let { value = $bindable(), label, parentColor, parentName }: Props = $props();
 
   let isValid = $derived(value.trim() !== "" && CSS.supports("color", value));
+  let shadeSuggestions = $derived(parentColor ? shadesOf(parentColor, 5) : []);
 
   // Migrates legacy non-hex (e.g. oklch) color values to hex on display, so
   // saving the form persists the hex form without further action.
@@ -19,19 +24,38 @@
   });
 </script>
 
+{#snippet swatchButton(color: string, swatchLabel: string)}
+  <button
+    type="button"
+    class="color-swatch"
+    class:selected={value === color}
+    style="background: {color}"
+    aria-pressed={value === color}
+    aria-label={swatchLabel}
+    onclick={() => (value = color)}
+  ></button>
+{/snippet}
+
 <div class="color-picker">
-  <div class="color-grid" role="group" aria-label={label}>
-    {#each PRESET_COLORS as preset, index (preset)}
-      <button
-        type="button"
-        class="color-swatch"
-        class:selected={value === preset}
-        style="background: {preset}"
-        aria-pressed={value === preset}
-        aria-label={`${PRESET_COLOR_NAMES[index]} (${preset})`}
-        onclick={() => (value = preset)}
-      ></button>
-    {/each}
+  {#if shadeSuggestions.length > 0}
+    <div class="color-group">
+      <span class="group-label">Shades of {parentName ?? "parent"}</span>
+      <div class="color-grid" role="group" aria-label={`Shades of ${parentName ?? "parent"}`}>
+        {#each shadeSuggestions as shade, index (shade)}
+          {@render swatchButton(shade, `Shade ${index + 1} (${shade})`)}
+        {/each}
+      </div>
+    </div>
+  {/if}
+  <div class="color-group">
+    {#if shadeSuggestions.length > 0}
+      <span class="group-label">Presets</span>
+    {/if}
+    <div class="color-grid" role="group" aria-label={label}>
+      {#each PRESET_COLORS as preset, index (preset)}
+        {@render swatchButton(preset, `${PRESET_COLOR_NAMES[index]} (${preset})`)}
+      {/each}
+    </div>
   </div>
   <div class="custom-color">
     <span class="preview-swatch" style="background: {value}" aria-hidden="true"></span>
@@ -52,6 +76,18 @@
     flex-wrap: wrap;
     align-items: center;
     gap: var(--space-sm);
+  }
+
+  .color-group {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+  }
+
+  .group-label {
+    font-size: var(--text-xs);
+    font-weight: 600;
+    color: var(--color-ink-muted);
   }
 
   .color-grid {

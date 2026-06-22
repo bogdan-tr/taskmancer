@@ -11,6 +11,7 @@ import {
   PRESET_COLOR_NAMES,
   PRESET_COLORS,
   relativeLuminance,
+  shadesOf,
   WEEK_BAR_CHROMA_BOOST,
   WEEK_BAR_LIGHTNESS,
 } from "./colorPresets";
@@ -222,5 +223,46 @@ describe("legibleInkColor", () => {
     const background = "oklch(5% 0.02 250)";
     const { l } = hexToOklch(cssColorToHex(legibleInkColor(background, "black")));
     expect(l).toBeLessThan(0.5);
+  });
+});
+
+describe("shadesOf", () => {
+  test("returns the requested count", () => {
+    const shades = shadesOf("#3b82f6", 5);
+
+    expect(shades).toHaveLength(5);
+  });
+
+  test("returns valid hex colors", () => {
+    const shades = shadesOf("#3b82f6", 5);
+
+    for (const shade of shades) {
+      expect(isHexColor(shade)).toBe(true);
+    }
+  });
+
+  test("preserves the parent's hue across every shade", () => {
+    const parentHue = hexToOklch("#3b82f6").h;
+    const shades = shadesOf("#3b82f6", 5);
+
+    for (const shade of shades) {
+      expect(hexToOklch(shade).h).toBeCloseTo(parentHue, 0);
+    }
+  });
+
+  test("varies lightness monotonically across the shades", () => {
+    const shades = shadesOf("#3b82f6", 5);
+    const lightnesses = shades.map((shade) => hexToOklch(shade).l);
+
+    for (let i = 1; i < lightnesses.length; i++) {
+      expect(lightnesses[i]).toBeGreaterThan(lightnesses[i - 1]);
+    }
+  });
+
+  test("returns a single shade without dividing by zero when count is 1", () => {
+    const shades = shadesOf("#3b82f6", 1);
+
+    expect(shades).toHaveLength(1);
+    expect(isHexColor(shades[0])).toBe(true);
   });
 });

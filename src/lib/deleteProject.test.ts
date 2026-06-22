@@ -4,6 +4,7 @@ import {
   isDefaultProject,
   reassignTargets,
   tasksForProject,
+  tasksForProjects,
 } from "./deleteProject";
 import { DEFAULT_PROJECT_COLOR } from "./types";
 import type { Project, Task } from "./types";
@@ -38,47 +39,58 @@ function makeProject(overrides: Partial<Project> = {}): Project {
 }
 
 describe("isDefaultProject", () => {
-  test("returns true for an exact name match", () => {
-    expect(isDefaultProject("General", "General")).toBe(true);
-  });
-
-  test("matches case-insensitively", () => {
-    expect(isDefaultProject("general", "General")).toBe(true);
-  });
-
-  test("ignores surrounding whitespace", () => {
-    expect(isDefaultProject("  General  ", "General")).toBe(true);
+  test("returns true for a matching id", () => {
+    expect(isDefaultProject("general-id", "general-id")).toBe(true);
   });
 
   test("returns false for a different project", () => {
-    expect(isDefaultProject("Work", "General")).toBe(false);
+    expect(isDefaultProject("work-id", "general-id")).toBe(false);
   });
 });
 
 describe("tasksForProject", () => {
-  test("matches tasks case-insensitively", () => {
+  test("matches tasks filed under the given project id", () => {
     const tasks = [
-      makeTask({ id: "a", project: "Homework" }),
-      makeTask({ id: "b", project: "HOMEWORK" }),
-      makeTask({ id: "c", project: "Errands" }),
-      makeTask({ id: "d" }),
+      makeTask({ id: "a", project_id: "homework-id" }),
+      makeTask({ id: "b", project_id: "errands-id" }),
+      makeTask({ id: "c" }),
     ];
 
-    const matching = tasksForProject(tasks, "homework");
+    const matching = tasksForProject(tasks, "homework-id");
 
-    expect(matching.map((t) => t.id)).toEqual(["a", "b"]);
+    expect(matching.map((t) => t.id)).toEqual(["a"]);
   });
 
   test("returns an empty array when no tasks match", () => {
-    const tasks = [makeTask({ project: "Errands" })];
+    const tasks = [makeTask({ project_id: "errands-id" })];
 
-    expect(tasksForProject(tasks, "Homework")).toEqual([]);
+    expect(tasksForProject(tasks, "homework-id")).toEqual([]);
   });
 
   test("does not match tasks with no project", () => {
-    const tasks = [makeTask({ project: undefined })];
+    const tasks = [makeTask({ project_id: undefined })];
 
-    expect(tasksForProject(tasks, "Homework")).toEqual([]);
+    expect(tasksForProject(tasks, "homework-id")).toEqual([]);
+  });
+});
+
+describe("tasksForProjects", () => {
+  test("matches tasks belonging to any of several project ids", () => {
+    const tasks = [
+      makeTask({ id: "1", project_id: "a" }),
+      makeTask({ id: "2", project_id: "b" }),
+      makeTask({ id: "3", project_id: "c" }),
+    ];
+
+    const matching = tasksForProjects(tasks, ["a", "b"]);
+
+    expect(matching.map((t) => t.id)).toEqual(["1", "2"]);
+  });
+
+  test("returns an empty array when no task matches", () => {
+    const tasks = [makeTask({ id: "1", project_id: "a" })];
+
+    expect(tasksForProjects(tasks, ["z"])).toEqual([]);
   });
 });
 
@@ -98,6 +110,17 @@ describe("reassignTargets", () => {
     const projects = [makeProject({ id: "a", name: "Homework" })];
 
     expect(reassignTargets(projects, "a")).toEqual([]);
+  });
+
+  test("excludes the project being deleted and its descendants", () => {
+    const parent = makeProject({ id: "parent", name: "Parent" });
+    const child = makeProject({ id: "child", name: "Child", parent_id: "parent" });
+    const unrelated = makeProject({ id: "unrelated", name: "Unrelated" });
+    const projects = [parent, child, unrelated];
+
+    const targets = reassignTargets(projects, "parent");
+
+    expect(targets.map((p) => p.id)).toEqual(["unrelated"]);
   });
 });
 

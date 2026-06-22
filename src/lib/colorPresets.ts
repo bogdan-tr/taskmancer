@@ -49,23 +49,15 @@ function toHexByte(channel: number): string {
 }
 
 /**
- * Converts a CSS `oklch(...)` color to its 6-digit hex equivalent, using the
- * OKLab -> linear sRGB matrices from the CSS Color 4 specification. Already-hex
- * colors are lowercased and returned as-is; any other format is returned
- * unchanged (the caller's existing `CSS.supports` check flags those as invalid).
+ * Converts OKLCH coordinates to linear-light sRGB channels (not yet
+ * gamma-encoded or clamped to `[0, 1]`), using the OKLab -> linear sRGB
+ * matrices from the CSS Color 4 specification. Shared by `cssColorToHex`
+ * (which gamma-encodes and clamps the result) and `shadesOf`'s gamut check
+ * (which needs the unclamped channels to detect when clamping would distort
+ * hue, before that clamping happens).
  */
-export function cssColorToHex(value: string): string {
-  const trimmed = value.trim();
-  if (isHexColor(trimmed)) return trimmed.toLowerCase();
-
-  const match = OKLCH_PATTERN.exec(trimmed);
-  if (!match) return value;
-
-  const [, lightnessRaw, percentSign, chromaRaw, hueRaw] = match;
-  const lightness = percentSign ? Number(lightnessRaw) / 100 : Number(lightnessRaw);
-  const chroma = Number(chromaRaw);
-  const hueRadians = (Number(hueRaw) * Math.PI) / 180;
-
+function oklchToLinearSrgb(lightness: number, chroma: number, hueDegrees: number): [number, number, number] {
+  const hueRadians = (hueDegrees * Math.PI) / 180;
   const a = chroma * Math.cos(hueRadians);
   const b = chroma * Math.sin(hueRadians);
 
@@ -80,6 +72,28 @@ export function cssColorToHex(value: string): string {
   const red = 4.0767416621 * long - 3.3077115913 * mid + 0.2309699292 * short;
   const green = -1.2684380046 * long + 2.6097574011 * mid - 0.3413193965 * short;
   const blue = -0.0041960863 * long - 0.7034186147 * mid + 1.7076147010 * short;
+
+  return [red, green, blue];
+}
+
+/**
+ * Converts a CSS `oklch(...)` color to its 6-digit hex equivalent.
+ * Already-hex colors are lowercased and returned as-is; any other format is
+ * returned unchanged (the caller's existing `CSS.supports` check flags those
+ * as invalid).
+ */
+export function cssColorToHex(value: string): string {
+  const trimmed = value.trim();
+  if (isHexColor(trimmed)) return trimmed.toLowerCase();
+
+  const match = OKLCH_PATTERN.exec(trimmed);
+  if (!match) return value;
+
+  const [, lightnessRaw, percentSign, chromaRaw, hueRaw] = match;
+  const lightness = percentSign ? Number(lightnessRaw) / 100 : Number(lightnessRaw);
+  const chroma = Number(chromaRaw);
+
+  const [red, green, blue] = oklchToLinearSrgb(lightness, chroma, Number(hueRaw));
 
   return `#${toHexByte(srgbGammaEncode(red))}${toHexByte(srgbGammaEncode(green))}${toHexByte(srgbGammaEncode(blue))}`;
 }
@@ -166,6 +180,101 @@ export function neonCardColor(hex: string, lightness: number, chromaBoost = 1): 
  */
 export const NEON_CARD_LIGHTNESS = 0.5;
 export const NEON_CARD_CHROMA_BOOST = 1.55;
+
+/**
+ * Lightness range `shadesOf` spreads its suggestions across — narrower than
+ * the full 0-1 range to stay clear of the muddy near-black and washed-out
+ * near-white extremes, where a "shade of the parent" stops looking like one
+ * (a hue mostly reads as itself in roughly this middle band; outside it,
+ * lightness dominates the impression more than hue/chroma does).
+ */
+const SHADE_MIN_LIGHTNESS = 0.4;
+const SHADE_MAX_LIGHTNESS = 0.76;
+
+/**
+ * `shadesOf` targets this multiple of the parent's own chroma (before
+ * gamut-correcting back down if needed) so shades read as vivid/saturated
+ * rather than a washed-out, muted version of the parent — the parent's
+ * literal chroma is just one specific color's worth of saturation, not
+ * necessarily the most flattering one across a whole lightness range.
+ */
+const SHADE_CHROMA_BOOST = 1.35;
+/** Absolute chroma ceiling for `shadesOf`, regardless of boost — keeps the boosted target itself from overshooting into "neon sign" territory even before gamut correction kicks in. Matches the spirit of `neonCardColor`'s own 0.4 cap, just slightly more conservative since these become a project's *persistent* color, not a one-off background. */
+const SHADE_MAX_CHROMA = 0.37;
+/** A floor under the boosted target chroma so an already near-gray parent color (very low chroma) still yields visibly tinted, recognizable shades rather than another shade of gray. */
+const SHADE_MIN_TARGET_CHROMA = 0.12;
+
+/** Returns `true` if all three linear-sRGB channels are within `[0, 1]` (within a small tolerance for floating-point error) — i.e. representable without per-channel clamping, which would otherwise distort hue. */
+function isInGamut(rgb: readonly [number, number, number]): boolean {
+  const tolerance = 1e-4;
+  return rgb.every((channel) => channel >= -tolerance && channel <= 1 + tolerance);
+}
+
+/**
+ * Returns the largest chroma in `[0, chroma]` (at the given lightness/hue)
+ * that stays within the sRGB gamut, via binary search. Used by `shadesOf` so
+ * its hex output never needs the per-channel clamping `cssColorToHex` would
+ * otherwise apply for an out-of-gamut color — clamping each channel
+ * independently shifts the resulting hue away from the parent's, which is
+ * exactly what `shadesOf` exists to avoid.
+ */
+function maxInGamutChroma(lightness: number, chroma: number, hueDegrees: number): number {
+  if (chroma <= 0 || isInGamut(oklchToLinearSrgb(lightness, chroma, hueDegrees))) return chroma;
+
+  let low = 0;
+  let high = chroma;
+  for (let i = 0; i < 20; i++) {
+    const mid = (low + high) / 2;
+    if (isInGamut(oklchToLinearSrgb(lightness, mid, hueDegrees))) {
+      low = mid;
+    } else {
+      high = mid;
+    }
+  }
+  return low;
+}
+
+/**
+ * Builds one vivid shade at `lightness`/`hue`, targeting
+ * `SHADE_CHROMA_BOOST` times `parentChroma` (floored at
+ * `SHADE_MIN_TARGET_CHROMA`, capped at `SHADE_MAX_CHROMA`) and reduced only
+ * as far as `maxInGamutChroma` requires to stay in-gamut — so the result is
+ * never a per-channel-clamped, hue-shifted color (see `maxInGamutChroma`'s
+ * own doc comment), but is also never just the parent's own, potentially
+ * under-saturated chroma carried through unboosted.
+ */
+function vividShadeHex(parentChroma: number, hue: number, lightness: number): string {
+  const targetChroma = Math.min(Math.max(parentChroma * SHADE_CHROMA_BOOST, SHADE_MIN_TARGET_CHROMA), SHADE_MAX_CHROMA);
+  const chroma = maxInGamutChroma(lightness, targetChroma, hue);
+  return cssColorToHex(`oklch(${(lightness * 100).toFixed(1)}% ${chroma.toFixed(4)} ${hue.toFixed(1)})`);
+}
+
+/**
+ * Returns `count` color suggestions derived from `parentHex`'s hue, varying
+ * lightness evenly across `[SHADE_MIN_LIGHTNESS, SHADE_MAX_LIGHTNESS]` and
+ * boosting chroma for vividness (see `vividShadeHex`) — the model for a
+ * subproject's color picker defaults, so its suggested colors read as
+ * distinct, attractive "shades of the parent" rather than a washed-out
+ * dilution of one specific color. If a shade would otherwise come out
+ * identical to the parent's own hex (the parent's color already happens to
+ * sit on the generated curve), its lightness is nudged by one step's worth
+ * before rebuilding it, so every suggestion is visibly its own color.
+ */
+export function shadesOf(parentHex: string, count: number): string[] {
+  const { c: parentChroma, h: hue } = hexToOklch(parentHex);
+  const parentHexLower = parentHex.toLowerCase();
+  const step = count > 1 ? (SHADE_MAX_LIGHTNESS - SHADE_MIN_LIGHTNESS) / (count - 1) : 0;
+  const nudge = step > 0 ? step / 2 : 0.08;
+
+  return Array.from({ length: count }, (_, index) => {
+    const lightness = SHADE_MIN_LIGHTNESS + step * index;
+    const hex = vividShadeHex(parentChroma, hue, lightness);
+    if (hex.toLowerCase() !== parentHexLower) return hex;
+
+    const nudgedLightness = Math.min(Math.max(lightness + nudge, 0.05), 0.95);
+    return vividShadeHex(parentChroma, hue, nudgedLightness);
+  });
+}
 
 /**
  * Same idea as `NEON_CARD_LIGHTNESS`/`NEON_CARD_CHROMA_BOOST`, but for Week

@@ -18,13 +18,6 @@ fn default_status_color() -> String {
     "#807973".to_string()
 }
 
-/// Fallback project name for newly-created tasks that don't specify a
-/// project, used as the seeded value of `Settings.default_project` and to
-/// fill in `settings.json` files written before that field existed.
-fn default_project_name() -> String {
-    "General".to_string()
-}
-
 /// Default OKLCH lightness for "color code" mode's Kanban card background.
 /// Matches the value this was hardcoded to before it became configurable
 /// (`NEON_CARD_LIGHTNESS` in the frontend's `colorPresets.ts`), so existing
@@ -122,10 +115,12 @@ pub struct TaskDefaults {
 /// cancelled status is optional and, if set, must differ from the done
 /// status — a single status can't mean both "done" and "cancelled".
 ///
-/// `default_project` names the project a new task is filed under when no
-/// project was specified (and no project-scoped board supplied one); it must
-/// be non-empty (enforced by [`validate_settings`]) so a task can never be
-/// created or saved without a project.
+/// `default_project_id` is the id of the project a new task is filed under
+/// when no project was specified (and no project-scoped board supplied
+/// one); it must be non-empty (enforced by [`validate_settings`]) so a task
+/// can never be created or saved without a project. Empty only transiently,
+/// before the startup migration ensures a real default project exists and
+/// sets this to its id.
 ///
 /// `show_previous_weeks_column` is the global default for whether the Week
 /// view shows an extra leading column listing unfinished tasks scheduled or
@@ -142,6 +137,20 @@ pub struct TaskDefaults {
 /// `ink_mode` is the global default text-color mode (one of [`INK_MODES`])
 /// for "color code" mode's Kanban card/bar text. A project's
 /// `ProjectBoard.ink_mode` overrides this when set.
+///
+/// `show_subproject_tasks_default` is the global default for whether
+/// viewing a project's board/week/calendar rolls up its descendant
+/// subprojects' tasks too. A project's `ProjectBoard.show_subproject_tasks`
+/// overrides this when set (see [`crate::project::ProjectBoard`]). Defaults
+/// to `false` — rollup is opt-in per project, not automatic.
+///
+/// `parent_estimate_includes_own_value` controls how a task with subtasks'
+/// *displayed* estimated time is computed on the frontend: when `true`, its
+/// own `estimated_minutes` is added on top of its subtasks' total; when
+/// `false` (the default), the subtasks' total replaces it entirely. Purely
+/// a display preference — nothing in this struct or the backend ever
+/// recomputes or overwrites a task's stored `estimated_minutes` based on
+/// this; see the frontend's `effectiveEstimatedMinutes`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Settings {
     #[serde(default)]
@@ -154,8 +163,8 @@ pub struct Settings {
     pub done_status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cancelled_status: Option<String>,
-    #[serde(default = "default_project_name")]
-    pub default_project: String,
+    #[serde(default)]
+    pub default_project_id: String,
     #[serde(default)]
     pub show_previous_weeks_column: bool,
     #[serde(default = "default_card_lightness")]
@@ -164,6 +173,10 @@ pub struct Settings {
     pub bar_lightness: f64,
     #[serde(default = "default_ink_mode")]
     pub ink_mode: String,
+    #[serde(default)]
+    pub show_subproject_tasks_default: bool,
+    #[serde(default)]
+    pub parent_estimate_includes_own_value: bool,
 }
 
 impl Default for Settings {
@@ -237,11 +250,13 @@ impl Default for Settings {
             },
             done_status: "done".to_string(),
             cancelled_status: None,
-            default_project: default_project_name(),
+            default_project_id: String::new(),
             show_previous_weeks_column: false,
             card_lightness: default_card_lightness(),
             bar_lightness: default_bar_lightness(),
             ink_mode: default_ink_mode(),
+            show_subproject_tasks_default: false,
+            parent_estimate_includes_own_value: false,
         }
     }
 }
@@ -453,8 +468,8 @@ pub fn validate_ink_mode(value: &str) -> Result<(), String> {
 /// reference a defined status, `cancelled_status`, if set, must
 /// reference a defined status distinct from `done_status`,
 /// `card_lightness`/`bar_lightness` must each be a valid OKLCH lightness
-/// (see [`validate_lightness`]), and `default_project` must be non-empty
-/// after trimming whitespace.
+/// (see [`validate_lightness`]), and `default_project_id` must be
+/// non-empty.
 pub fn validate_settings(settings: &Settings) -> Result<(), String> {
     if settings.priorities.is_empty() {
         return Err("at least one priority level must be defined".to_string());
@@ -510,8 +525,8 @@ pub fn validate_settings(settings: &Settings) -> Result<(), String> {
         validate_scheduled_relative_date_code(scheduled)?;
     }
 
-    if settings.default_project.trim().is_empty() {
-        return Err("a default project name must be defined".to_string());
+    if settings.default_project_id.is_empty() {
+        return Err("a default project must be defined".to_string());
     }
 
     validate_lightness(settings.card_lightness)?;
@@ -554,17 +569,17 @@ mod tests {
     }
 
     #[test]
-    fn default_settings_seed_has_a_default_project_name_of_general() {
+    fn default_settings_seed_has_an_empty_default_project_id() {
         let settings = Settings::default();
 
-        assert_eq!(settings.default_project, "General");
+        assert_eq!(settings.default_project_id, "");
     }
 
     #[test]
-    fn deserializing_settings_without_default_project_fills_in_general() {
+    fn deserializing_settings_without_default_project_id_leaves_it_empty() {
         let settings: Settings = serde_json::from_str("{}").unwrap();
 
-        assert_eq!(settings.default_project, "General");
+        assert_eq!(settings.default_project_id, "");
     }
 
     #[test]
@@ -654,7 +669,8 @@ mod tests {
 
     #[test]
     fn validate_settings_accepts_default_settings() {
-        let settings = Settings::default();
+        let mut settings = Settings::default();
+        settings.default_project_id = "some-project-id".to_string();
 
         assert!(validate_settings(&settings).is_ok());
     }
@@ -693,6 +709,7 @@ mod tests {
     #[test]
     fn validate_settings_accepts_a_missing_default_priority() {
         let mut settings = Settings::default();
+        settings.default_project_id = "some-project-id".to_string();
         settings.defaults.priority = None;
 
         assert!(validate_settings(&settings).is_ok());
@@ -732,6 +749,7 @@ mod tests {
     #[test]
     fn validate_settings_accepts_a_missing_default_status() {
         let mut settings = Settings::default();
+        settings.default_project_id = "some-project-id".to_string();
         settings.defaults.status = None;
 
         assert!(validate_settings(&settings).is_ok());
@@ -758,6 +776,7 @@ mod tests {
     #[test]
     fn validate_settings_accepts_a_valid_done_status() {
         let mut settings = Settings::default();
+        settings.default_project_id = "some-project-id".to_string();
         settings.done_status = "backlog".to_string();
 
         assert!(validate_settings(&settings).is_ok());
@@ -766,6 +785,7 @@ mod tests {
     #[test]
     fn validate_settings_accepts_a_missing_cancelled_status() {
         let mut settings = Settings::default();
+        settings.default_project_id = "some-project-id".to_string();
         settings.cancelled_status = None;
 
         assert!(validate_settings(&settings).is_ok());
@@ -792,6 +812,7 @@ mod tests {
     #[test]
     fn validate_settings_accepts_a_valid_distinct_cancelled_status() {
         let mut settings = Settings::default();
+        settings.default_project_id = "some-project-id".to_string();
         settings.cancelled_status = Some("blocked".to_string());
 
         assert!(validate_settings(&settings).is_ok());
@@ -809,6 +830,7 @@ mod tests {
     #[test]
     fn validate_settings_accepts_a_valid_default_due() {
         let mut settings = Settings::default();
+        settings.default_project_id = "some-project-id".to_string();
         settings.defaults.due = Some("next_day".to_string());
 
         assert!(validate_settings(&settings).is_ok());
@@ -817,6 +839,7 @@ mod tests {
     #[test]
     fn validate_settings_accepts_a_missing_default_due() {
         let mut settings = Settings::default();
+        settings.default_project_id = "some-project-id".to_string();
         settings.defaults.due = None;
 
         assert!(validate_settings(&settings).is_ok());
@@ -834,6 +857,7 @@ mod tests {
     #[test]
     fn validate_settings_accepts_a_valid_default_scheduled() {
         let mut settings = Settings::default();
+        settings.default_project_id = "some-project-id".to_string();
         settings.defaults.scheduled = Some("in_1_week".to_string());
 
         assert!(validate_settings(&settings).is_ok());
@@ -842,6 +866,7 @@ mod tests {
     #[test]
     fn validate_settings_accepts_a_missing_default_scheduled() {
         let mut settings = Settings::default();
+        settings.default_project_id = "some-project-id".to_string();
         settings.defaults.scheduled = None;
 
         assert!(validate_settings(&settings).is_ok());
@@ -850,7 +875,7 @@ mod tests {
     #[test]
     fn validate_settings_rejects_an_empty_default_project() {
         let settings = Settings {
-            default_project: String::new(),
+            default_project_id: String::new(),
             ..Default::default()
         };
 
@@ -859,19 +884,9 @@ mod tests {
     }
 
     #[test]
-    fn validate_settings_rejects_a_whitespace_only_default_project() {
-        let settings = Settings {
-            default_project: "   ".to_string(),
-            ..Default::default()
-        };
-
-        assert!(validate_settings(&settings).is_err());
-    }
-
-    #[test]
     fn validate_settings_accepts_a_valid_default_project() {
         let settings = Settings {
-            default_project: "Inbox".to_string(),
+            default_project_id: "some-project-id".to_string(),
             ..Default::default()
         };
 
@@ -899,6 +914,7 @@ mod tests {
     fn validate_settings_rejects_an_out_of_range_card_lightness() {
         let settings = Settings {
             card_lightness: 1.5,
+            default_project_id: "some-project-id".to_string(),
             ..Default::default()
         };
 
@@ -918,11 +934,26 @@ mod tests {
 
     #[test]
     fn validate_settings_accepts_the_default_card_and_bar_lightness() {
-        let settings = Settings::default();
+        let mut settings = Settings::default();
+        settings.default_project_id = "some-project-id".to_string();
 
         assert!(validate_settings(&settings).is_ok());
         assert_eq!(settings.card_lightness, 0.5);
         assert_eq!(settings.bar_lightness, 0.38);
+    }
+
+    #[test]
+    fn default_settings_seed_does_not_include_a_tasks_own_estimate_in_its_parent_rollup() {
+        let settings = Settings::default();
+
+        assert!(!settings.parent_estimate_includes_own_value);
+    }
+
+    #[test]
+    fn deserializing_settings_without_parent_estimate_includes_own_value_defaults_to_false() {
+        let settings: Settings = serde_json::from_str("{}").unwrap();
+
+        assert!(!settings.parent_estimate_includes_own_value);
     }
 
     #[test]
@@ -956,6 +987,7 @@ mod tests {
     fn validate_settings_rejects_an_unknown_ink_mode() {
         let settings = Settings {
             ink_mode: "sepia".to_string(),
+            default_project_id: "some-project-id".to_string(),
             ..Settings::default()
         };
 
@@ -968,6 +1000,7 @@ mod tests {
         for mode in INK_MODES {
             let settings = Settings {
                 ink_mode: mode.to_string(),
+                default_project_id: "some-project-id".to_string(),
                 ..Settings::default()
             };
 
@@ -1376,7 +1409,7 @@ mod tests {
             defaults: TaskDefaults::default(),
             done_status: String::new(),
             cancelled_status: None,
-            default_project: default_project_name(),
+            default_project_id: String::new(),
             ..Default::default()
         };
 

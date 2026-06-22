@@ -50,13 +50,13 @@ describe("effectiveBoardStatuses", () => {
   test("returns board.statuses when the board has been customized", () => {
     const board: ProjectBoard = { statuses: ["backlog", "done"] };
 
-    expect(effectiveBoardStatuses(board, ["backlog", "do", "done"])).toEqual(["backlog", "done"]);
+    expect(effectiveBoardStatuses([board], ["backlog", "do", "done"])).toEqual(["backlog", "done"]);
   });
 
   test("returns allStatusIds when board.statuses is empty", () => {
     const board: ProjectBoard = { statuses: [] };
 
-    expect(effectiveBoardStatuses(board, ["backlog", "do", "done"])).toEqual([
+    expect(effectiveBoardStatuses([board], ["backlog", "do", "done"])).toEqual([
       "backlog",
       "do",
       "done",
@@ -66,6 +66,32 @@ describe("effectiveBoardStatuses", () => {
   test("returns board.statuses even when it's a reordering of allStatusIds", () => {
     const board: ProjectBoard = { statuses: ["done", "backlog"] };
 
-    expect(effectiveBoardStatuses(board, ["backlog", "done"])).toEqual(["done", "backlog"]);
+    expect(effectiveBoardStatuses([board], ["backlog", "done"])).toEqual(["done", "backlog"]);
+  });
+
+  test("returns the global list when nothing in the chain is customized", () => {
+    expect(effectiveBoardStatuses([{ statuses: [], default_status: undefined }], ["a", "b"])).toEqual(["a", "b"]);
+  });
+
+  test("returns the project's own customization when set", () => {
+    expect(
+      effectiveBoardStatuses([{ statuses: ["b", "a"], default_status: undefined }], ["a", "b"]),
+    ).toEqual(["b", "a"]);
+  });
+
+  test("falls through to a grandparent's customization", () => {
+    const own = { statuses: [], default_status: undefined };
+    const parent = { statuses: [], default_status: undefined };
+    const grandparent = { statuses: ["b", "a"], default_status: undefined };
+
+    expect(effectiveBoardStatuses([own, parent, grandparent], ["a", "b"])).toEqual(["b", "a"]);
+  });
+
+  test("prefers the nearest customization over a further one", () => {
+    const own = { statuses: [], default_status: undefined };
+    const parent = { statuses: ["a", "b"], default_status: undefined };
+    const grandparent = { statuses: ["b", "a"], default_status: undefined };
+
+    expect(effectiveBoardStatuses([own, parent, grandparent], ["a", "b"])).toEqual(["a", "b"]);
   });
 });

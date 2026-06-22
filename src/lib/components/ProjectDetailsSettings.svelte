@@ -2,6 +2,7 @@
   import { updateProject } from "$lib/api";
   import { refreshProjects } from "$lib/projects.svelte";
   import { cssColorToHex, isHexColor } from "$lib/colorPresets";
+  import { getErrorMessage } from "$lib/errors";
   import ColorPicker from "$lib/components/ColorPicker.svelte";
   import type { Project } from "$lib/types";
 
@@ -60,7 +61,7 @@
       draftColor = trimmedColor;
       errorMessage = "";
     } catch (error) {
-      errorMessage = error instanceof Error ? error.message : "Failed to save project details";
+      errorMessage = getErrorMessage(error, "Failed to save project details");
     } finally {
       isSaving = false;
     }

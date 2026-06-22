@@ -11,9 +11,14 @@ export function boardsEqual(a: ProjectBoard, b: ProjectBoard): boolean {
 
 /**
  * Returns the status ids shown as columns on a board, in display order:
- * `board.statuses` if the board has been customized, otherwise every id in
- * `allStatusIds` (the global status list, in its configured order).
+ * the nearest customized board in `boardChain` (a project's own board,
+ * then its ancestors' boards, nearest-first — see
+ * `crate::project_tree::self_and_ancestors`'s frontend mirror,
+ * `selfAndAncestors`) if any has a non-empty `statuses` list, otherwise
+ * every id in `allStatusIds` (the global status list, in its configured
+ * order).
  */
-export function effectiveBoardStatuses(board: ProjectBoard, allStatusIds: string[]): string[] {
-  return board.statuses.length > 0 ? board.statuses : allStatusIds;
+export function effectiveBoardStatuses(boardChain: ProjectBoard[], allStatusIds: string[]): string[] {
+  const customized = boardChain.find((board) => board.statuses.length > 0);
+  return customized ? customized.statuses : allStatusIds;
 }

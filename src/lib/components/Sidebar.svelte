@@ -1,14 +1,75 @@
 <script lang="ts">
+  import { dndzone, type DndEvent } from "svelte-dnd-action";
   import { page } from "$app/state";
+  import { updateProject } from "$lib/api";
   import NewProjectModal from "./NewProjectModal.svelte";
-  import { projectsState } from "$lib/projects.svelte";
+  import ProjectTreeNode from "./ProjectTreeNode.svelte";
+  import { getErrorMessage } from "$lib/errors";
+  import { projectsState, refreshProjects } from "$lib/projects.svelte";
+  import { childrenOf, computeZoneOrderUpdates } from "$lib/projectTree";
+  import { expandIfUnset } from "$lib/projectTree.svelte";
   import { sidebarState, toggleSidebar } from "$lib/sidebar.svelte";
+  import { containerOwner } from "$lib/subtasks";
+  import { tasksState } from "$lib/tasks.svelte";
   import type { Project } from "$lib/types";
 
+  const FLIP_DURATION_MS = 150;
+
   let newProjectOpen = $state(false);
+  let subprojectParent: Project | undefined = $state(undefined);
+  let dropError = $state("");
+
+  /** Top-level projects, minus any auto-generated subtask container — those are reachable only via their owning task's own card/views, never the sidebar. */
+  let topLevelProjects = $derived(
+    childrenOf(projectsState.items, undefined).filter(
+      (project) => containerOwner(project.id, tasksState.items) === undefined,
+    ),
+  );
+  let zoneItems = $state<Project[]>([]);
+  $effect(() => {
+    zoneItems = topLevelProjects;
+  });
+
+  function handleConsider(event: CustomEvent<DndEvent<Project>>) {
+    zoneItems = event.detail.items;
+  }
+
+  async function handleFinalize(event: CustomEvent<DndEvent<Project>>) {
+    zoneItems = event.detail.items;
+    const { updates, rejected } = computeZoneOrderUpdates(projectsState.items, undefined, zoneItems);
+    if (rejected) {
+      dropError = "Can't move a project into one of its own subprojects.";
+      await refreshProjects();
+      return;
+    }
+
+    dropError = "";
+    try {
+      for (const update of updates) {
+        const target = projectsState.items.find((p) => p.id === update.id);
+        if (!target) continue;
+        await updateProject({ ...target, parent_id: update.parent_id, order: update.order });
+      }
+      await refreshProjects();
+    } catch (error) {
+      dropError = getErrorMessage(error, "Failed to move project");
+      await refreshProjects();
+    }
+  }
+
+  function openNewProjectModal() {
+    subprojectParent = undefined;
+    newProjectOpen = true;
+  }
+
+  function openNewSubprojectModal(parent: Project) {
+    subprojectParent = parent;
+    newProjectOpen = true;
+  }
 
   function handleProjectCreated(project: Project) {
     projectsState.items = [...projectsState.items, project].sort((a, b) => a.order - b.order);
+    if (project.parent_id) expandIfUnset(project.parent_id);
   }
 </script>
 
@@ -73,25 +134,21 @@
     {#if !sidebarState.collapsed}
       <h3 class="section-label">Projects</h3>
     {/if}
-    <ul class="project-list">
-      {#each projectsState.items as project (project.id)}
-        <li>
-          <a
-            href="/projects/{project.id}"
-            class="nav-link"
-            class:active={page.url.pathname === `/projects/${project.id}`}
-            title={sidebarState.collapsed ? project.name : undefined}
-          >
-            <span class="color-dot" style="background: {project.color}" aria-hidden="true"></span>
-            {#if !sidebarState.collapsed}<span class="project-name">{project.name}</span>{/if}
-          </a>
-        </li>
+    <ul
+      class="project-list"
+      use:dndzone={{ items: zoneItems, flipDurationMs: FLIP_DURATION_MS, dropTargetStyle: {} }}
+      onconsider={handleConsider}
+      onfinalize={handleFinalize}
+    >
+      {#each zoneItems as project (project.id)}
+        <ProjectTreeNode {project} depth={0} onCreateSubproject={openNewSubprojectModal} />
       {/each}
     </ul>
+    {#if dropError}<p class="drop-error" role="alert">{dropError}</p>{/if}
     <button
       type="button"
       class="new-project-button"
-      onclick={() => (newProjectOpen = true)}
+      onclick={openNewProjectModal}
       title={sidebarState.collapsed ? "New project" : undefined}
     >
       <svg
@@ -146,6 +203,7 @@
   open={newProjectOpen}
   onClose={() => (newProjectOpen = false)}
   onCreated={handleProjectCreated}
+  parentProject={subprojectParent}
 />
 
 <style>
@@ -237,7 +295,14 @@
     transform: rotate(180deg);
   }
 
-  .nav-link {
+  /*
+   * :global() here because ProjectTreeNode.svelte (a child component) also
+   * renders `.nav-link` anchors for project rows — Svelte's CSS scoping
+   * only covers elements a component renders directly, not a child
+   * component's own output, even though they end up as real DOM
+   * descendants of `.sidebar` below.
+   */
+  :global(.nav-link) {
     display: flex;
     align-items: center;
     gap: var(--space-sm);
@@ -255,24 +320,24 @@
       border-color var(--duration-fast) var(--ease-out-expo);
   }
 
-  .sidebar.collapsed .nav-link {
+  .sidebar.collapsed :global(.nav-link) {
     justify-content: center;
     padding: var(--space-xs);
     border-left: none;
   }
 
-  .nav-link:hover {
+  :global(.nav-link:hover) {
     color: var(--color-ink);
     background: var(--color-canvas);
   }
 
-  .nav-link.active {
+  :global(.nav-link.active) {
     color: var(--color-accent);
     background: var(--color-accent-soft);
     border-left-color: var(--color-accent);
   }
 
-  .sidebar.collapsed .nav-link.active {
+  .sidebar.collapsed :global(.nav-link.active) {
     background: var(--color-accent-soft);
   }
 
@@ -306,16 +371,11 @@
     padding: 0;
   }
 
-  .color-dot {
-    width: 0.625rem;
-    height: 0.625rem;
-    border-radius: var(--radius-pill);
-    flex-shrink: 0;
-  }
-
-  .project-name {
-    overflow: hidden;
-    text-overflow: ellipsis;
+  .drop-error {
+    margin: 0;
+    padding: var(--space-2xs) var(--space-sm);
+    font-size: var(--text-xs);
+    color: var(--color-danger);
   }
 
   .new-project-button {

@@ -7,8 +7,10 @@
     neonCardColor,
     type InkMode,
   } from "$lib/colorPresets";
+  import { getErrorMessage } from "$lib/errors";
   import { boardsEqual, effectiveBoardStatuses } from "$lib/projectBoardSettings";
-  import { refreshProjects } from "$lib/projects.svelte";
+  import { projectsState, refreshProjects } from "$lib/projects.svelte";
+  import { ancestorsOf, descendantsOf, selfAndAncestors } from "$lib/projectTree";
   import { settingsState } from "$lib/settings.svelte";
   import { FALLBACK_STATUSES, sortedStatuses, statusColor, statusLabel } from "$lib/statuses.svelte";
   import type { Project } from "$lib/types";
@@ -19,14 +21,51 @@
 
   let { project }: Props = $props();
 
+  /** Every project this one could be moved under, without creating a cycle: everything except itself and its own descendants. */
+  let parentCandidates = $derived(
+    projectsState.items.filter(
+      (p) => p.id !== project.id && !descendantsOf(projectsState.items, project.id).some((d) => d.id === p.id),
+    ),
+  );
+
+  /** This project's own board, then its ancestors' boards, nearest-first — the chain `effectiveBoardStatuses`/etc. resolve through. */
+  let boardChain = $derived(selfAndAncestors(projectsState.items, project.id).map((p) => p.board));
+  /** The nearest *ancestor* (not including this project itself) whose board customizes its status subset, if any — used to label an inherited (not self-set) value. */
+  let statusesInheritedFrom = $derived(
+    project.board.statuses.length === 0
+      ? ancestorsOf(projectsState.items, project.id).find((p) => p.board.statuses.length > 0)?.name
+      : undefined,
+  );
+  let cardLightnessInheritedFrom = $derived(
+    project.board.card_lightness === undefined
+      ? ancestorsOf(projectsState.items, project.id).find((p) => p.board.card_lightness !== undefined)?.name
+      : undefined,
+  );
+  let barLightnessInheritedFrom = $derived(
+    project.board.bar_lightness === undefined
+      ? ancestorsOf(projectsState.items, project.id).find((p) => p.board.bar_lightness !== undefined)?.name
+      : undefined,
+  );
+  let inkModeInheritedFrom = $derived(
+    project.board.ink_mode === undefined
+      ? ancestorsOf(projectsState.items, project.id).find((p) => p.board.ink_mode !== undefined)?.name
+      : undefined,
+  );
+
   let statuses = $derived(sortedStatuses(settingsState.current?.statuses ?? FALLBACK_STATUSES));
   let allStatusIds = $derived(statuses.map((status) => status.id));
 
-  let baselineStatuses = $derived(effectiveBoardStatuses(project.board, allStatusIds));
+  let baselineStatuses = $derived(effectiveBoardStatuses(boardChain, allStatusIds));
   let baselineDefault = $derived(project.board.default_status ?? "");
+  let draftParentId = $state("");
+  let baselineParentId = $derived(project.parent_id ?? "");
   /** "" = inherit the global default, "true"/"false" = explicit override. */
   let baselineShowPreviousWeeks = $derived(
     project.board.show_previous_weeks === undefined ? "" : String(project.board.show_previous_weeks),
+  );
+  /** "" = inherit the global default, "true"/"false" = explicit override. */
+  let baselineShowSubprojectTasks = $derived(
+    project.board.show_subproject_tasks === undefined ? "" : String(project.board.show_subproject_tasks),
   );
   let baselineCardLightnessOverride = $derived(project.board.card_lightness !== undefined);
   let baselineCardLightness = $derived(
@@ -42,6 +81,7 @@
   let draftStatuses = $state<string[]>([]);
   let draftDefault = $state("");
   let draftShowPreviousWeeks = $state("");
+  let draftShowSubprojectTasks = $state("");
   let draftCardLightnessOverride = $state(false);
   let draftCardLightness = $state(50);
   let draftBarLightnessOverride = $state(false);
@@ -55,9 +95,11 @@
   /** Seeds the draft from the project's board once; later edits live only in the draft. */
   $effect(() => {
     if (settingsState.current && !initialized) {
+      draftParentId = baselineParentId;
       draftStatuses = [...baselineStatuses];
       draftDefault = baselineDefault;
       draftShowPreviousWeeks = baselineShowPreviousWeeks;
+      draftShowSubprojectTasks = baselineShowSubprojectTasks;
       draftCardLightnessOverride = baselineCardLightnessOverride;
       draftCardLightness = baselineCardLightness;
       draftBarLightnessOverride = baselineBarLightnessOverride;
@@ -69,11 +111,13 @@
   });
 
   let isDirty = $derived(
+    draftParentId !== baselineParentId ||
     !boardsEqual(
       { statuses: draftStatuses, default_status: draftDefault || undefined },
       { statuses: baselineStatuses, default_status: project.board.default_status },
     ) ||
       draftShowPreviousWeeks !== baselineShowPreviousWeeks ||
+      draftShowSubprojectTasks !== baselineShowSubprojectTasks ||
       draftCardLightnessOverride !== baselineCardLightnessOverride ||
       (draftCardLightnessOverride && draftCardLightness !== baselineCardLightness) ||
       draftBarLightnessOverride !== baselineBarLightnessOverride ||
@@ -116,9 +160,11 @@
   }
 
   function discardChanges() {
+    draftParentId = baselineParentId;
     draftStatuses = [...baselineStatuses];
     draftDefault = baselineDefault;
     draftShowPreviousWeeks = baselineShowPreviousWeeks;
+    draftShowSubprojectTasks = baselineShowSubprojectTasks;
     draftCardLightnessOverride = baselineCardLightnessOverride;
     draftCardLightness = baselineCardLightness;
     draftBarLightnessOverride = baselineBarLightnessOverride;
@@ -133,10 +179,13 @@
     try {
       await updateProject({
         ...project,
+        parent_id: draftParentId || undefined,
         board: {
           statuses: draftStatuses,
           default_status: draftDefault || undefined,
           show_previous_weeks: draftShowPreviousWeeks === "" ? undefined : draftShowPreviousWeeks === "true",
+          show_subproject_tasks:
+            draftShowSubprojectTasks === "" ? undefined : draftShowSubprojectTasks === "true",
           card_lightness: draftCardLightnessOverride ? draftCardLightness / 100 : undefined,
           bar_lightness: draftBarLightnessOverride ? draftBarLightness / 100 : undefined,
           ink_mode: draftInkModeOverride ? draftInkMode : undefined,
@@ -145,12 +194,28 @@
       await refreshProjects();
       errorMessage = "";
     } catch (error) {
-      errorMessage = error instanceof Error ? error.message : "Failed to save board settings";
+      errorMessage = getErrorMessage(error, "Failed to save board settings");
     } finally {
       isSaving = false;
     }
   }
 </script>
+
+<section aria-labelledby="parent-heading">
+  <div class="section-header">
+    <h2 id="parent-heading">Parent project</h2>
+  </div>
+  <p class="description">Move this project under a different parent, or leave it at the top level.</p>
+  <div class="field">
+    <label for="parent-project">Parent</label>
+    <select id="parent-project" bind:value={draftParentId}>
+      <option value="">No parent (top level)</option>
+      {#each parentCandidates as candidate (candidate.id)}
+        <option value={candidate.id}>{candidate.name}</option>
+      {/each}
+    </select>
+  </div>
+</section>
 
 <section aria-labelledby="board-heading">
   <div class="section-header">
@@ -223,6 +288,9 @@
       {/each}
     </ul>
   {/if}
+  {#if statusesInheritedFrom}
+    <p class="inherited-note">Inherited from {statusesInheritedFrom}.</p>
+  {/if}
 
   <div class="field">
     <label for="default-status">Default status for new tasks in this project</label>
@@ -243,6 +311,20 @@
     </select>
     <p class="hint">
       Overrides the global Display setting for this project's Week view only.
+    </p>
+  </div>
+
+  <div class="field">
+    <label for="show-subproject-tasks">Show subprojects' tasks</label>
+    <select id="show-subproject-tasks" bind:value={draftShowSubprojectTasks}>
+      <option value="">Use global default</option>
+      <option value="true">Roll up subprojects' tasks here</option>
+      <option value="false">Only this project's own tasks</option>
+    </select>
+    <p class="hint">
+      When on, viewing this project's board/week/calendar also shows every descendant subproject's
+      tasks (origin-labeled). Off by default — a subtask's own glued nested row on its parent
+      task's card is unaffected either way.
     </p>
   </div>
 
@@ -272,6 +354,9 @@
       </div>
     {/if}
   </div>
+  {#if cardLightnessInheritedFrom}
+    <p class="inherited-note">Inherited from {cardLightnessInheritedFrom}.</p>
+  {/if}
 
   <div class="field lightness-field">
     <label class="checkbox-row" for="bar-lightness-override">
@@ -299,6 +384,9 @@
       </div>
     {/if}
   </div>
+  {#if barLightnessInheritedFrom}
+    <p class="inherited-note">Inherited from {barLightnessInheritedFrom}.</p>
+  {/if}
 
   <div class="field lightness-field">
     <label class="checkbox-row" for="ink-mode-override">
@@ -313,6 +401,9 @@
       </select>
     {/if}
   </div>
+  {#if inkModeInheritedFrom}
+    <p class="inherited-note">Inherited from {inkModeInheritedFrom}.</p>
+  {/if}
 
   {#if errorMessage}
     <p class="error" role="alert">{errorMessage}</p>
@@ -534,6 +625,13 @@
     margin: 0;
     font-size: var(--text-xs);
     color: var(--color-ink-faint);
+  }
+
+  .inherited-note {
+    margin: calc(-1 * var(--space-2xs)) 0 0;
+    font-size: var(--text-xs);
+    color: var(--color-ink-muted);
+    font-style: italic;
   }
 
   .error {

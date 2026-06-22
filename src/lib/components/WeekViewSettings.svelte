@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { getErrorMessage } from "$lib/errors";
   import { persistSettings, settingsState } from "$lib/settings.svelte";
 
   let isSaving = $state(false);
@@ -13,7 +14,7 @@
       await persistSettings({ ...settingsState.current, show_previous_weeks_column: checked });
       errorMessage = "";
     } catch (error) {
-      errorMessage = error instanceof Error ? error.message : "Failed to save";
+      errorMessage = getErrorMessage(error, "Failed to save");
     } finally {
       isSaving = false;
     }

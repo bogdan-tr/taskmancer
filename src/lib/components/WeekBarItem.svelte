@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { page } from "$app/state";
   import { legibleInkColor, WEEK_BAR_CHROMA_BOOST, WEEK_BAR_LIGHTNESS, neonCardColor } from "$lib/colorPresets";
   import { computeClampedPopoverPosition } from "$lib/popoverPosition";
   import { priorityColor, priorityLabel } from "$lib/priorities.svelte";
@@ -49,13 +50,20 @@
   }: Props = $props();
 
   let task = $derived(weekBar.task);
-  let barColor = $derived(resolveProjectColor(task.project, projectsState.items));
+  let barColor = $derived(resolveProjectColor(task.project_id, projectsState.items));
+  let projectName = $derived(projectsState.items.find((p) => p.id === task.project_id)?.name);
+  /** The project currently being viewed (from the URL), or `undefined` on the non-project-scoped "All Tasks" route. */
+  let viewedProjectId = $derived(page.params.id);
+  /** `true` when this bar is shown via a parent project's rolled-up view — its own project differs from the one currently being viewed. */
+  let isRolledUp = $derived(
+    viewedProjectId !== undefined && task.project_id !== undefined && task.project_id !== viewedProjectId,
+  );
   let barPriorityColor = $derived(priorityColor(priorities, task.priority));
   let barStatusColor = $derived(statusColor(statuses, task.status));
   /** The project's own override (Project.board.bar_lightness) takes precedence over the global default. */
   let barLightness = $derived(
     resolveBarLightness(
-      task.project,
+      task.project_id,
       projectsState.items,
       settingsState.current?.bar_lightness ?? WEEK_BAR_LIGHTNESS,
     ),
@@ -65,7 +73,7 @@
   );
   /** The project's own override (Project.board.ink_mode) takes precedence over the global default. */
   let barInkMode = $derived(
-    resolveInkMode(task.project, projectsState.items, settingsState.current?.ink_mode ?? "auto"),
+    resolveInkMode(task.project_id, projectsState.items, settingsState.current?.ink_mode ?? "auto"),
   );
   /** Adapts to the resolved background color so text/icons stay legible across the lightness slider's full range. */
   let barColorCodeText = $derived(barColorCodeBg ? legibleInkColor(barColorCodeBg, barInkMode) : undefined);
@@ -192,8 +200,13 @@
         </button>
       </div>
       <div class="popover-meta">
-        {#if task.project}
-          <span class="chip project" style="--chip-color: {barColor}">{task.project}</span>
+        {#if projectName}
+          <span class="chip project" style="--chip-color: {barColor}">{projectName}</span>
+        {/if}
+        {#if isRolledUp && projectName}
+          <span class="origin-badge" title={`From ${projectName}`}>
+            <span class="origin-dot" style="background: {barColor}" aria-hidden="true"></span>
+          </span>
         {/if}
         <span class="chip priority" style="--chip-color: {barPriorityColor}">
           <span class="priority-dot" aria-hidden="true"></span>
@@ -433,6 +446,18 @@
     border-color: color-mix(in oklch, var(--chip-color, var(--color-accent)) 45%, transparent);
     color: var(--chip-color, var(--color-accent));
     font-weight: 600;
+  }
+
+  .origin-badge {
+    display: inline-flex;
+    align-items: center;
+  }
+
+  .origin-dot {
+    width: 0.5rem;
+    height: 0.5rem;
+    flex-shrink: 0;
+    border-radius: var(--radius-sm);
   }
 
   .chip.priority {
