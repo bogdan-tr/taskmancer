@@ -695,6 +695,52 @@ fn synced_subtask_container(
     })
 }
 
+/// Every current subtask of `container_id`, updated to adopt `parent`'s
+/// `tags` (always) and `due`/`scheduled` (only when the subtask itself
+/// isn't recurring), filtered to just the ones that actually change —
+/// what [`update_task`] needs to cascade a parent's edited attributes onto
+/// its subtasks immediately, mirroring how editing the parent's recurrence
+/// pattern already cascades to linked subtask series (see
+/// [`linked_subtask_series_ids`]/[`apply_recurrence_change`]). Subtasks'
+/// locked-to-parent attributes (see the Subtasks design spec's attribute-
+/// lock rule) are otherwise just a one-time snapshot from creation time —
+/// this is what keeps them tracking the parent's *current* values instead.
+///
+/// A recurring subtask's own `Series` generates a fresh `scheduled`/`due`
+/// for every occurrence — the entire point of recurrence, and also why
+/// `due`/`scheduled` are deliberately excluded from the "shared" fields a
+/// `SeriesEditScope` choice applies across every future occurrence (see
+/// `Series`'s own doc comment). Force-overwriting a recurring subtask's
+/// current occurrence to the parent's literal date here would corrupt it
+/// relative to its own past/future occurrences, so only `tags` (never
+/// date-sensitive) cascades to one.
+fn subtasks_with_inherited_attributes(
+    tasks: &[Task],
+    container_id: &str,
+    parent: &Task,
+) -> Vec<Task> {
+    tasks
+        .iter()
+        .filter(|t| t.project_id.as_deref() == Some(container_id))
+        .filter_map(|t| {
+            let updated = if t.series_id.is_some() {
+                Task {
+                    tags: parent.tags.clone(),
+                    ..t.clone()
+                }
+            } else {
+                Task {
+                    tags: parent.tags.clone(),
+                    due: parent.due.clone(),
+                    scheduled: parent.scheduled.clone(),
+                    ..t.clone()
+                }
+            };
+            (updated != *t).then_some(updated)
+        })
+        .collect()
+}
+
 /// Updates the editable fields of an existing task (title, project, tags,
 /// priority, status, due/scheduled dates, estimated time, notes — see
 /// [`apply_task_update`]). The task's `id`, `created`, `depends_on`, and
@@ -708,7 +754,9 @@ fn synced_subtask_container(
 ///
 /// If the task owns a subtask container (`subtask_project_id` is `Some`),
 /// also syncs that container's name/parent to the task's (possibly just
-/// updated) title/project — see [`synced_subtask_container`].
+/// updated) title/project (see [`synced_subtask_container`]), and cascades
+/// its tags/due/scheduled onto every current subtask (see
+/// [`subtasks_with_inherited_attributes`]).
 #[tauri::command]
 pub fn update_task(state: State<AppState>, task: Task) -> Result<Task, String> {
     let title = task.title.trim().to_string();
@@ -743,6 +791,11 @@ pub fn update_task(state: State<AppState>, task: Task) -> Result<Task, String> {
                 project_storage::save_projects(&state.projects_file, &projects)
                     .map_err(|e| e.to_string())?;
             }
+        }
+
+        let tasks = storage::list_tasks(&state.tasks_dir).map_err(|e| e.to_string())?;
+        for subtask in subtasks_with_inherited_attributes(&tasks, container_id, &existing) {
+            storage::update_task(&state.tasks_dir, &subtask).map_err(|e| e.to_string())?;
         }
     }
 
@@ -2386,6 +2439,76 @@ mod tests {
             synced_subtask_container(&projects, "deleted-container", "Fix the bug", "work");
 
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn subtasks_with_inherited_attributes_cascades_tags_due_and_scheduled_to_a_one_off_subtask() {
+        let mut parent = Task::new("Fix the bug".to_string());
+        parent.tags = vec!["urgent".to_string()];
+        parent.due = Some("2026-07-01".to_string());
+        parent.scheduled = Some("2026-06-22".to_string());
+        let mut subtask = Task::new("Reproduce it".to_string());
+        subtask.project_id = Some("container".to_string());
+        subtask.tags = vec!["old-tag".to_string()];
+        subtask.due = Some("2026-06-01".to_string());
+        subtask.scheduled = Some("2026-06-01".to_string());
+
+        let updated = subtasks_with_inherited_attributes(&[subtask], "container", &parent);
+
+        assert_eq!(updated.len(), 1);
+        assert_eq!(updated[0].tags, vec!["urgent".to_string()]);
+        assert_eq!(updated[0].due, Some("2026-07-01".to_string()));
+        assert_eq!(updated[0].scheduled, Some("2026-06-22".to_string()));
+    }
+
+    #[test]
+    fn subtasks_with_inherited_attributes_cascades_only_tags_to_a_recurring_subtask() {
+        let mut parent = Task::new("Hello".to_string());
+        parent.tags = vec!["urgent".to_string()];
+        parent.due = Some("2026-07-01".to_string());
+        parent.scheduled = Some("2026-06-22".to_string());
+        let mut subtask = Task::new("Hi".to_string());
+        subtask.project_id = Some("container".to_string());
+        subtask.series_id = Some("hi-series".to_string());
+        subtask.tags = vec!["old-tag".to_string()];
+        subtask.due = Some("2026-06-23".to_string());
+        subtask.scheduled = Some("2026-06-23".to_string());
+
+        let updated = subtasks_with_inherited_attributes(&[subtask], "container", &parent);
+
+        assert_eq!(updated.len(), 1);
+        assert_eq!(updated[0].tags, vec!["urgent".to_string()]);
+        // Its own occurrence date is left exactly as its Series generated it.
+        assert_eq!(updated[0].due, Some("2026-06-23".to_string()));
+        assert_eq!(updated[0].scheduled, Some("2026-06-23".to_string()));
+    }
+
+    #[test]
+    fn subtasks_with_inherited_attributes_omits_a_subtask_that_already_matches() {
+        let mut parent = Task::new("Fix the bug".to_string());
+        parent.tags = vec!["urgent".to_string()];
+        parent.due = Some("2026-07-01".to_string());
+        parent.scheduled = Some("2026-06-22".to_string());
+        let mut subtask = Task::new("Reproduce it".to_string());
+        subtask.project_id = Some("container".to_string());
+        subtask.tags = vec!["urgent".to_string()];
+        subtask.due = Some("2026-07-01".to_string());
+        subtask.scheduled = Some("2026-06-22".to_string());
+
+        let updated = subtasks_with_inherited_attributes(&[subtask], "container", &parent);
+
+        assert!(updated.is_empty());
+    }
+
+    #[test]
+    fn subtasks_with_inherited_attributes_ignores_tasks_outside_the_container() {
+        let parent = Task::new("Fix the bug".to_string());
+        let mut unrelated = Task::new("Unrelated".to_string());
+        unrelated.project_id = Some("somewhere-else".to_string());
+
+        let updated = subtasks_with_inherited_attributes(&[unrelated], "container", &parent);
+
+        assert!(updated.is_empty());
     }
 
     #[test]

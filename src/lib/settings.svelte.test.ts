@@ -24,6 +24,7 @@ const sampleSettings: Settings = {
   ink_mode: "auto",
   show_subproject_tasks_default: false,
   parent_estimate_includes_own_value: false,
+  max_visible_subtasks: 5,
 };
 
 vi.mock("./api", () => ({

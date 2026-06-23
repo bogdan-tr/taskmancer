@@ -88,6 +88,10 @@
       (a, b) => priorityRank(priorities, a.priority) - priorityRank(priorities, b.priority),
     ),
   );
+  /** Caps how many of `taskSubtasks` actually render as rows — the rest collapse into a "+N more" line below them (see `hiddenSubtaskCount`). Configurable globally since a card with many subtasks would otherwise grow without bound. */
+  const maxVisibleSubtasks = $derived(settingsState.current?.max_visible_subtasks ?? 5);
+  const visibleSubtasks = $derived(taskSubtasks.slice(0, maxVisibleSubtasks));
+  const hiddenSubtaskCount = $derived(Math.max(0, taskSubtasks.length - maxVisibleSubtasks));
   /** Every generated occurrence of every subtask, unlike `taskSubtasks` above — for the delete-confirmation count, since deleting `task` cascades to every one of them, not just the currently relevant occurrence of each. */
   const taskSubtasksFullCount = $derived(subtasksOf(task, allTasks).length);
   const taskSubtaskProgress = $derived(
@@ -709,7 +713,7 @@
 
     {#if displayState.showSubtasks && taskSubtasks.length > 0}
       <ul class="subtask-list">
-        {#each taskSubtasks as subtask (subtask.id)}
+        {#each visibleSubtasks as subtask (subtask.id)}
           <li class="subtask-row">
             <span
               class="subtask-priority-dot"
@@ -728,6 +732,9 @@
             ></button>
           </li>
         {/each}
+        {#if hiddenSubtaskCount > 0}
+          <li class="subtask-more">+{hiddenSubtaskCount} more</li>
+        {/if}
       </ul>
     {/if}
   {/if}
@@ -1109,6 +1116,13 @@
   .subtask-status-dot:focus-visible {
     outline: 2px solid var(--color-accent);
     outline-offset: 2px;
+  }
+
+  .subtask-more {
+    padding: var(--space-3xs) var(--space-2xs);
+    color: var(--color-ink-muted);
+    font-size: var(--text-xs);
+    font-weight: 600;
   }
 
   .create-subtask-button {

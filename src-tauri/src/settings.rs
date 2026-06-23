@@ -47,6 +47,13 @@ fn default_ink_mode() -> String {
     "auto".to_string()
 }
 
+/// Default `Settings.max_visible_subtasks`: a parent card's nested subtask
+/// preview truncates beyond this many rows, picked as a reasonable card
+/// height before the rest collapse into a "+N more" line.
+fn default_max_visible_subtasks() -> u32 {
+    5
+}
+
 /// A user-defined priority level: an id stored in `Task.priority`, a display
 /// label, a `color` used to render that priority throughout the UI, and a
 /// `rank` used to sort tasks by priority (lower `rank` sorts first / is
@@ -151,6 +158,11 @@ pub struct TaskDefaults {
 /// a display preference — nothing in this struct or the backend ever
 /// recomputes or overwrites a task's stored `estimated_minutes` based on
 /// this; see the frontend's `effectiveEstimatedMinutes`.
+///
+/// `max_visible_subtasks` caps how many subtask rows a parent card's nested
+/// preview shows at once before collapsing the rest into a "+N more" line —
+/// also purely a frontend display concern (see the frontend's
+/// `taskSubtasks`/`hiddenSubtaskCount` in `TaskCard.svelte`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Settings {
     #[serde(default)]
@@ -177,6 +189,8 @@ pub struct Settings {
     pub show_subproject_tasks_default: bool,
     #[serde(default)]
     pub parent_estimate_includes_own_value: bool,
+    #[serde(default = "default_max_visible_subtasks")]
+    pub max_visible_subtasks: u32,
 }
 
 impl Default for Settings {
@@ -257,6 +271,7 @@ impl Default for Settings {
             ink_mode: default_ink_mode(),
             show_subproject_tasks_default: false,
             parent_estimate_includes_own_value: false,
+            max_visible_subtasks: default_max_visible_subtasks(),
         }
     }
 }
@@ -954,6 +969,20 @@ mod tests {
         let settings: Settings = serde_json::from_str("{}").unwrap();
 
         assert!(!settings.parent_estimate_includes_own_value);
+    }
+
+    #[test]
+    fn default_settings_seed_has_a_max_visible_subtasks_of_five() {
+        let settings = Settings::default();
+
+        assert_eq!(settings.max_visible_subtasks, 5);
+    }
+
+    #[test]
+    fn deserializing_settings_without_max_visible_subtasks_defaults_to_five() {
+        let settings: Settings = serde_json::from_str("{}").unwrap();
+
+        assert_eq!(settings.max_visible_subtasks, 5);
     }
 
     #[test]

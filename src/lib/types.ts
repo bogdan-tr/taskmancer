@@ -189,6 +189,8 @@ export interface Settings {
   show_subproject_tasks_default: boolean;
   /** Whether a task with subtasks' displayed estimated time adds its own `estimated_minutes` on top of its subtasks' total (`true`) or is replaced by that total entirely (`false`, the default). Display-only — never written back to any stored field. See `effectiveEstimatedMinutes`. */
   parent_estimate_includes_own_value: boolean;
+  /** How many subtask rows a parent card's nested preview shows before collapsing the rest into a "+N more" line. */
+  max_visible_subtasks: number;
 }
 
 /**

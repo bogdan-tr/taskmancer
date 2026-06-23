@@ -50,4 +50,42 @@ describe("tasks.svelte", () => {
     await expect(refreshTasks()).resolves.toBeUndefined();
     expect(tasksState.items).toEqual([makeTask("a")]);
   });
+
+  it("upsertCachedTask adds a task not already in the cache", async () => {
+    const { tasksState, upsertCachedTask } = await import("./tasks.svelte");
+
+    upsertCachedTask(makeTask("a"));
+
+    expect(tasksState.items.map((t) => t.id)).toEqual(["a"]);
+  });
+
+  it("upsertCachedTask replaces an existing task in place, preserving order", async () => {
+    const { tasksState, upsertCachedTask } = await import("./tasks.svelte");
+    upsertCachedTask(makeTask("a"));
+    upsertCachedTask(makeTask("b"));
+
+    upsertCachedTask({ ...makeTask("a"), status: "done" });
+
+    expect(tasksState.items.map((t) => t.id)).toEqual(["a", "b"]);
+    expect(tasksState.items[0].status).toBe("done");
+  });
+
+  it("removeCachedTask removes a task from the cache by id", async () => {
+    const { tasksState, upsertCachedTask, removeCachedTask } = await import("./tasks.svelte");
+    upsertCachedTask(makeTask("a"));
+    upsertCachedTask(makeTask("b"));
+
+    removeCachedTask("a");
+
+    expect(tasksState.items.map((t) => t.id)).toEqual(["b"]);
+  });
+
+  it("removeCachedTask is a no-op for an id not present", async () => {
+    const { tasksState, upsertCachedTask, removeCachedTask } = await import("./tasks.svelte");
+    upsertCachedTask(makeTask("a"));
+
+    removeCachedTask("does-not-exist");
+
+    expect(tasksState.items.map((t) => t.id)).toEqual(["a"]);
+  });
 });

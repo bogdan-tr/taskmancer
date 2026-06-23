@@ -60,7 +60,7 @@
     dismissAllDonePermanently,
   } from "$lib/subtaskCompletionQueue.svelte";
   import { containerOwner, subtasksOf } from "$lib/subtasks";
-  import { refreshTasks, tasksState } from "$lib/tasks.svelte";
+  import { refreshTasks, removeCachedTask, tasksState, upsertCachedTask } from "$lib/tasks.svelte";
   import { isHiddenAsSubtask } from "$lib/subtaskVisibility";
   import { refreshTags } from "$lib/tags.svelte";
   import type { Task } from "$lib/types";
@@ -318,6 +318,7 @@
       for (const subtask of subtasksOf(task, visibleTasks)) {
         await deleteTask(subtask.id);
         removeTask(subtask.id);
+        removeCachedTask(subtask.id);
       }
       await refresh();
       errorMessage = "";
@@ -333,6 +334,11 @@
   async function refresh() {
     try {
       const allTasks = await listTasks();
+      // Doubles as a `refreshTasks()` for the global cache — this fetch
+      // already has the exact same data, so there's no reason for every
+      // board load/reload to leave `tasksState` stale until some unrelated
+      // `refreshTags` call happens to also fire.
+      tasksState.items = allTasks;
       const visible = projectFilter
         ? allTasks.filter((task) => task.project_id !== undefined && rollupProjectIds.includes(task.project_id))
         : allTasks;
@@ -435,14 +441,23 @@
   }
 
   /**
-   * Upserts a created/edited task into `visibleTasks` and `buckets`. If this
-   * board is scoped to a project and the task's `project` doesn't match, it's
-   * removed from view entirely instead. A task that's in `visibleTasks` but
-   * not currently `isVisibleOnBoard` (Item 3's future-`scheduled` rule) is
-   * left out of `buckets` - it stays hidden from the Kanban grid but remains
-   * available to the week view.
+   * Upserts a created/edited task into `visibleTasks` and `buckets`, and
+   * always into the global `tasksState` cache too (`upsertCachedTask`) —
+   * every other view's subtask-relationship lookups read that cache, not
+   * this board's own `visibleTasks`, so without this a status/attribute
+   * change here would only become visible elsewhere once some unrelated
+   * `refreshTags`/`refreshTasks` call happened to fire and resolve. If this
+   * board is scoped to a project and the task's `project` doesn't match,
+   * it's removed from *this board's own view* — `removeTask` below — but
+   * the task still exists, so the global cache keeps the just-upserted
+   * copy regardless. A task that's in `visibleTasks` but not currently
+   * `isVisibleOnBoard` (Item 3's future-`scheduled` rule) is left out of
+   * `buckets` - it stays hidden from the Kanban grid but remains available
+   * to the week view.
    */
   function replaceTask(updated: Task) {
+    upsertCachedTask(updated);
+
     if (projectFilter && (updated.project_id === undefined || !rollupProjectIds.includes(updated.project_id))) {
       removeTask(updated.id);
       return;
@@ -495,10 +510,12 @@
           await refresh();
         } else {
           removeTask(id);
+          removeCachedTask(id);
         }
       } else {
         await deleteTask(id);
         removeTask(id);
+        removeCachedTask(id);
       }
       errorMessage = "";
       finishDayMessage = "";
