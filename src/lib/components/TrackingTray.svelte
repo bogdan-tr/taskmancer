@@ -8,7 +8,7 @@
   import { settingsState } from "$lib/settings.svelte";
   import { sidebarState } from "$lib/sidebar.svelte";
   import { refreshTasks, tasksState } from "$lib/tasks.svelte";
-  import { liveTrackedSecondsFor, stopTaskTracking, trackingState } from "$lib/tracking.svelte";
+  import { liveTrackedSecondsFor, projectTrackedByTask, stopTaskTracking, trackingState } from "$lib/tracking.svelte";
   import type { Task } from "$lib/types";
 
   let expanded = $state(false);
@@ -20,7 +20,16 @@
     return tasksState.items.find((t) => t.id === taskId);
   }
 
+  /**
+   * `"{Project name} project"` for a project's hidden tracking anchor task
+   * (its own stored title, `"{Project name} — General time"`, is an
+   * internal implementation detail of how the anchor is represented, not
+   * something to surface verbatim — see `Task.hidden`'s own doc comment),
+   * or the task's real title for an ordinary task.
+   */
   function taskTitleFor(taskId: string): string {
+    const project = projectTrackedByTask(taskId, projectsState.items);
+    if (project) return `${project.name} project`;
     return taskFor(taskId)?.title ?? "Unknown task";
   }
 

@@ -441,6 +441,20 @@
    * `task.id` before the `await` and re-checks `task?.id` against it
    * afterward, so a late-arriving result is never applied to whatever task
    * happens to be open by the time it resolves.
+   *
+   * On start, if "auto-transition status when tracking starts" is enabled,
+   * `startTaskTracking` returns the task with its new status already saved
+   * (and already pushed into the global cache by the store itself, via
+   * `upsertCachedTask`) — but this dialog's own `draftStatus` is a local
+   * snapshot taken when it opened, *before* that change happened, and
+   * doesn't otherwise know to update. Left alone, pressing the dialog's own
+   * Save button afterward would silently overwrite the auto-transition
+   * right back to whatever `draftStatus` was at open time. Updating it here
+   * keeps both the visible status dropdown and any later Save correct.
+   * Deliberately does *not* route through `onSave` the way a real edit
+   * does — `onSave` is wired (see `WeekView.svelte`/`CalendarView.svelte`)
+   * to close this dialog afterward, which must not happen just because a
+   * timer was started.
    */
   async function handleTrackingToggle() {
     if (!task) return;
@@ -455,7 +469,10 @@
           upsertCachedTask({ ...task, tracked_minutes: trackedMinutes });
         }
       } else {
-        await startTaskTracking(taskId);
+        const autoTransitioned = await startTaskTracking(taskId);
+        if (autoTransitioned && task?.id === taskId) {
+          draftStatus = autoTransitioned.status;
+        }
       }
     } catch (error) {
       editError = getErrorMessage(error, "Failed to update tracking");

@@ -7,9 +7,10 @@ import {
   stopTracking,
   updateTask,
 } from "./api";
+import { refreshProjects } from "./projects.svelte";
 import { settingsState } from "./settings.svelte";
 import { refreshTasks, tasksState, upsertCachedTask } from "./tasks.svelte";
-import type { Settings, Task, TimeEntry } from "./types";
+import type { Project, Settings, Task, TimeEntry } from "./types";
 
 /** How often the live `nowMs` ticker advances while any session is active. */
 const TICK_INTERVAL_MS = 1_000;
@@ -100,6 +101,18 @@ export function liveTrackedSecondsFor(task: Pick<Task, "id" | "tracked_minutes">
 }
 
 /**
+ * The project `taskId` is the hidden "track this project as a whole"
+ * anchor for, if any — a reverse scan over `projects` for whichever one's
+ * `tracking_task_id` equals `taskId`, mirroring how `containerOwner`
+ * reverse-scans tasks to find a subtask container's owning task (there's no
+ * back-pointer stored on the task itself either way). `undefined` for an
+ * ordinary task that isn't anyone's tracking anchor.
+ */
+export function projectTrackedByTask(taskId: string, projects: Project[]): Project | undefined {
+  return projects.find((p) => p.tracking_task_id === taskId);
+}
+
+/**
  * `Settings.card_tracked_time_display`'s two values — see that field's own
  * Rust doc comment for the exact meaning of each.
  */
@@ -181,23 +194,32 @@ export function isOrphaned(entry: TimeEntry, nowMs: number, graceMs: number): bo
  * `refreshSettings`) rather than introducing a first-ever `console.error`
  * call — there is no logging library wired into this app, and every other
  * background failure in this codebase is silently dropped the same way.
+ *
+ * Returns the updated task when a transition actually happened, so callers
+ * with their own board-local task list (which this function has no way to
+ * reach — it only knows about the *global* `tasksState` cache, via
+ * `upsertCachedTask`) can sync it into their own view too. `undefined`
+ * whenever nothing changed (disabled, no resolvable target, already at the
+ * target status, or the save failed).
  */
-async function applyAutoTransition(taskId: string): Promise<void> {
+async function applyAutoTransition(taskId: string): Promise<Task | undefined> {
   const settings = settingsState.current;
-  if (!settings || !settings.tracking_auto_transition_enabled) return;
+  if (!settings || !settings.tracking_auto_transition_enabled) return undefined;
 
   const targetStatusId = resolveAutoTransitionStatusId(settings);
-  if (!targetStatusId) return;
+  if (!targetStatusId) return undefined;
 
   const task = tasksState.items.find((t) => t.id === taskId);
-  if (!task || task.status === targetStatusId) return;
+  if (!task || task.status === targetStatusId) return undefined;
 
   try {
     const updated = await updateTask({ ...task, status: targetStatusId });
     upsertCachedTask(updated);
+    return updated;
   } catch {
     // A failed auto-transition must never block the timer itself from
     // having started successfully — see this function's own doc comment.
+    return undefined;
   }
 }
 
@@ -210,12 +232,18 @@ async function applyAutoTransition(taskId: string): Promise<void> {
  * Afterward, best-effort applies the "auto-transition status on tracking
  * start" setting (see `applyAutoTransition`) — deliberately not applied to
  * `startProjectTracking`'s hidden tracker task, which has no meaningful
- * board-facing status to transition.
+ * board-facing status to transition. Returns the auto-transitioned task (or
+ * `undefined` if none happened) so a caller rendering a board-local task
+ * list — which doesn't automatically pick up `applyAutoTransition`'s own
+ * global-cache update — can sync its own view too, e.g. by passing the
+ * result to its existing `onUpdate`-style callback. Without this, starting a
+ * task's timer would only move it to the new status the *next* time that
+ * board happens to reload, not immediately.
  */
-export async function startTaskTracking(taskId: string): Promise<void> {
+export async function startTaskTracking(taskId: string): Promise<Task | undefined> {
   await startTracking(taskId);
   await refreshActiveSessions();
-  await applyAutoTransition(taskId);
+  return applyAutoTransition(taskId);
 }
 
 /**
@@ -232,10 +260,22 @@ export async function stopTaskTracking(taskId: string): Promise<number> {
   return trackedMinutes;
 }
 
-/** Starts tracking `projectId` as a whole (lazily creating its hidden tracker task on first call server-side), then re-fetches the active-sessions list. */
+/**
+ * Starts tracking `projectId` as a whole. On the very first call for a given
+ * project, this lazily creates its hidden tracker task server-side AND sets
+ * `Project.tracking_task_id` to point at it — both of which are brand new
+ * data the frontend's `tasksState`/`projectsState` caches don't know about
+ * yet. Without also re-fetching both here, the new task wouldn't resolve to
+ * anything in `tasksState.items` (the "timers running" tray would show
+ * "Unknown task" until some unrelated refresh happened to populate it
+ * later) and `project.tracking_task_id` would stay `undefined` in the
+ * already-loaded `projectsState` copy (so `isProjectTracking`/the project's
+ * own play button and ticker would never realize a session is active,
+ * since they read `project.tracking_task_id` from that same stale cache).
+ */
 export async function startProjectTracking(projectId: string): Promise<void> {
   await apiStartProjectTracking(projectId);
-  await refreshActiveSessions();
+  await Promise.all([refreshActiveSessions(), refreshTasks(), refreshProjects()]);
 }
 
 /**

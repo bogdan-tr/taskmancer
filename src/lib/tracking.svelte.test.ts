@@ -1,5 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Settings, StatusDefinition, Task, TimeEntry } from "./types";
+import type { Project, Settings, StatusDefinition, Task, TimeEntry } from "./types";
+
+function makeProject(overrides: Partial<Project> = {}): Project {
+  return {
+    id: "project-1",
+    name: "Sample project",
+    color: "#3b82f6",
+    order: 0,
+    created: "2026-06-15T09:00:00+00:00",
+    board: { statuses: [] },
+    defaults: { tags: [] },
+    ...overrides,
+  };
+}
 
 function makeEntry(overrides: Partial<TimeEntry> = {}): TimeEntry {
   return {
@@ -74,6 +87,10 @@ vi.mock("./tasks.svelte", () => ({
   refreshTasks: vi.fn(),
   tasksState: { items: [] },
   upsertCachedTask: vi.fn(),
+}));
+
+vi.mock("./projects.svelte", () => ({
+  refreshProjects: vi.fn(),
 }));
 
 vi.mock("./settings.svelte", () => ({
@@ -242,6 +259,30 @@ describe("tracking.svelte", () => {
     });
   });
 
+  describe("projectTrackedByTask", () => {
+    it("returns the project whose tracking_task_id matches the given task id", async () => {
+      const { projectTrackedByTask } = await import("./tracking.svelte");
+      const project = makeProject({ id: "project-1", tracking_task_id: "hidden-task" });
+
+      expect(projectTrackedByTask("hidden-task", [project, makeProject({ id: "project-2" })])).toEqual(
+        project,
+      );
+    });
+
+    it("returns undefined for an ordinary task that isn't any project's tracking anchor", async () => {
+      const { projectTrackedByTask } = await import("./tracking.svelte");
+      const project = makeProject({ id: "project-1", tracking_task_id: "hidden-task" });
+
+      expect(projectTrackedByTask("some-other-task", [project])).toBeUndefined();
+    });
+
+    it("returns undefined when no project has set tracking_task_id at all", async () => {
+      const { projectTrackedByTask } = await import("./tracking.svelte");
+
+      expect(projectTrackedByTask("hidden-task", [makeProject({ tracking_task_id: undefined })])).toBeUndefined();
+    });
+  });
+
   describe("liveDisplaySecondsFor", () => {
     it("returns undefined when the task has no active session, regardless of mode", async () => {
       const { trackingState, liveDisplaySecondsFor } = await import("./tracking.svelte");
@@ -292,17 +333,18 @@ describe("tracking.svelte", () => {
   });
 
   describe("startTaskTracking", () => {
-    it("calls startTracking then refreshes active sessions", async () => {
+    it("calls startTracking then refreshes active sessions, returning undefined when nothing auto-transitioned", async () => {
       const { startTracking, getActiveSessions } = await import("./api");
       vi.mocked(startTracking).mockResolvedValue(undefined);
       vi.mocked(getActiveSessions).mockResolvedValue([makeEntry({ task_id: "task-1" })]);
       const { trackingState, startTaskTracking } = await import("./tracking.svelte");
 
-      await startTaskTracking("task-1");
+      const result = await startTaskTracking("task-1");
 
       expect(startTracking).toHaveBeenCalledWith("task-1");
       expect(getActiveSessions).toHaveBeenCalled();
       expect(trackingState.activeSessions.map((e) => e.task_id)).toEqual(["task-1"]);
+      expect(result).toBeUndefined();
     });
 
     it("does not attempt an auto-transition when the setting is disabled", async () => {
@@ -315,12 +357,13 @@ describe("tracking.svelte", () => {
       tasksState.items = [makeTask({ id: "task-1", status: "backlog" })];
       const { startTaskTracking } = await import("./tracking.svelte");
 
-      await startTaskTracking("task-1");
+      const result = await startTaskTracking("task-1");
 
       expect(updateTask).not.toHaveBeenCalled();
+      expect(result).toBeUndefined();
     });
 
-    it("auto-transitions the task to the resolved status when enabled and the task can be found", async () => {
+    it("auto-transitions the task to the resolved status when enabled and the task can be found, returning the updated task", async () => {
       const { startTracking, getActiveSessions, updateTask } = await import("./api");
       vi.mocked(startTracking).mockResolvedValue(undefined);
       vi.mocked(getActiveSessions).mockResolvedValue([]);
@@ -332,10 +375,14 @@ describe("tracking.svelte", () => {
       vi.mocked(updateTask).mockResolvedValue({ ...task, status: "do" });
       const { startTaskTracking } = await import("./tracking.svelte");
 
-      await startTaskTracking("task-1");
+      const result = await startTaskTracking("task-1");
 
       expect(updateTask).toHaveBeenCalledWith({ ...task, status: "do" });
       expect(upsertCachedTask).toHaveBeenCalledWith({ ...task, status: "do" });
+      // The caller (e.g. TaskCard's onUpdate) needs this back to sync its
+      // own board-local task list immediately — see startTaskTracking's
+      // own doc comment for why upsertCachedTask alone isn't enough.
+      expect(result).toEqual({ ...task, status: "do" });
     });
 
     it("skips the auto-transition when the task's status already matches the target", async () => {
@@ -348,9 +395,10 @@ describe("tracking.svelte", () => {
       tasksState.items = [makeTask({ id: "task-1", status: "do" })];
       const { startTaskTracking } = await import("./tracking.svelte");
 
-      await startTaskTracking("task-1");
+      const result = await startTaskTracking("task-1");
 
       expect(updateTask).not.toHaveBeenCalled();
+      expect(result).toBeUndefined();
     });
 
     it("skips the auto-transition when the task can't be found in the cache", async () => {
@@ -363,12 +411,13 @@ describe("tracking.svelte", () => {
       tasksState.items = [];
       const { startTaskTracking } = await import("./tracking.svelte");
 
-      await startTaskTracking("task-1");
+      const result = await startTaskTracking("task-1");
 
       expect(updateTask).not.toHaveBeenCalled();
+      expect(result).toBeUndefined();
     });
 
-    it("does not let a failed auto-transition reject startTaskTracking itself", async () => {
+    it("does not let a failed auto-transition reject startTaskTracking itself, and returns undefined", async () => {
       const { startTracking, getActiveSessions, updateTask } = await import("./api");
       vi.mocked(startTracking).mockResolvedValue(undefined);
       vi.mocked(getActiveSessions).mockResolvedValue([]);
@@ -392,9 +441,10 @@ describe("tracking.svelte", () => {
       tasksState.items = [makeTask({ id: "task-1", status: "backlog" })];
       const { startTaskTracking } = await import("./tracking.svelte");
 
-      await startTaskTracking("task-1");
+      const result = await startTaskTracking("task-1");
 
       expect(updateTask).not.toHaveBeenCalled();
+      expect(result).toBeUndefined();
     });
   });
 
@@ -424,6 +474,28 @@ describe("tracking.svelte", () => {
 
       expect(apiStartProjectTracking).toHaveBeenCalledWith("project-1");
       expect(trackingState.activeSessions.map((e) => e.task_id)).toEqual(["hidden-task"]);
+    });
+
+    it("also refreshes the global tasks and projects caches, so a brand-new hidden tracker task resolves immediately", async () => {
+      // Regression test: on the very first call for a project, the backend
+      // lazily creates the hidden tracker task and sets
+      // `Project.tracking_task_id` — both new data the frontend caches don't
+      // know about yet. Without this, the tray showed "Unknown task" and the
+      // project's own play button never flipped to "tracking" until some
+      // unrelated refresh happened to fire later.
+      const { startProjectTracking: apiStartProjectTracking, getActiveSessions } = await import("./api");
+      const { refreshTasks } = await import("./tasks.svelte");
+      const { refreshProjects } = await import("./projects.svelte");
+      vi.mocked(apiStartProjectTracking).mockResolvedValue(undefined);
+      vi.mocked(getActiveSessions).mockResolvedValue([]);
+      vi.mocked(refreshTasks).mockResolvedValue(undefined);
+      vi.mocked(refreshProjects).mockResolvedValue(undefined);
+      const { startProjectTracking } = await import("./tracking.svelte");
+
+      await startProjectTracking("project-1");
+
+      expect(refreshTasks).toHaveBeenCalled();
+      expect(refreshProjects).toHaveBeenCalled();
     });
   });
 

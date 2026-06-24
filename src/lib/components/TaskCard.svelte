@@ -463,6 +463,18 @@
    * routed through `onUpdate`, mirroring how other direct-mutation UI bits
    * in this codebase already reach into the global cache themselves.
    *
+   * On start, if the "auto-transition status when tracking starts" setting
+   * is enabled, `startTaskTracking` returns the task with its new status
+   * already saved and already in the *global* cache (`upsertCachedTask`,
+   * inside the store) — but this card's own board (`KanbanBoard.svelte`)
+   * keeps its own separate, board-local `buckets`/`visibleTasks`, which
+   * only that board's own `onUpdate`/`replaceTask` plumbing can update.
+   * Calling `onUpdate` here (exactly like `selectSubtaskStatus` already does
+   * for a status-dot pick) re-saves the identical, already-correct data —
+   * a harmless extra write — but is what actually moves the card to its new
+   * column immediately instead of only on the board's next unrelated
+   * reload.
+   *
    * Captures `task.id` before the `await` and re-checks it on the way back
    * (mirroring `TaskEditDialog.svelte`'s `loadSeriesInfo` guard) so that if
    * this exact card instance somehow gets reused for a different task
@@ -480,7 +492,10 @@
           upsertCachedTask({ ...task, tracked_minutes: trackedMinutes });
         }
       } else {
-        await startTaskTracking(taskId);
+        const autoTransitioned = await startTaskTracking(taskId);
+        if (autoTransitioned) {
+          onUpdate(autoTransitioned);
+        }
       }
     } catch (error) {
       trackingError = getErrorMessage(error, "Failed to update tracking");
@@ -775,7 +790,7 @@
         <span class="chip tracked tracked-live" title="Currently tracking">
           {formatHms(liveDisplaySecondsFor(task, settingsState.current?.card_tracked_time_display ?? "total") ?? 0)}
         </span>
-      {:else}
+      {:else if task.tracked_minutes > 0}
         <span class="chip tracked" title="Tracked time">{formatMinutes(task.tracked_minutes)} tracked</span>
       {/if}
       {#each task.tags as tag (tag)}
