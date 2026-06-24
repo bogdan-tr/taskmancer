@@ -12,6 +12,7 @@ function makeTask(id: string): Task {
     created: "2026-06-11T00:00:00+00:00",
     depends_on: [],
     tracked_minutes: 0,
+    hidden: false,
     notes: "",
   };
 }

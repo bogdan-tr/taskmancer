@@ -31,6 +31,15 @@ export interface Task {
    * lookup.
    */
   subtask_project_id?: string;
+  /**
+   * Marks this task as the hidden time-tracking anchor for a `Project` (see
+   * `Project.tracking_task_id`) — set once when that project's
+   * lazily-created tracker task is generated, and never toggled afterward.
+   * `false` for every ordinary task. Hidden tasks are excluded from every
+   * kanban/week/calendar view and task picker, but otherwise remain normal
+   * addressable tasks.
+   */
+  hidden: boolean;
   notes: string;
 }
 
@@ -101,6 +110,13 @@ export interface Project {
   created: string;
   board: ProjectBoard;
   defaults: TaskDefaults;
+  /**
+   * The id of this project's lazily-created hidden tracker `Task` (see
+   * `Task.hidden`), used to "track this project as a whole" rather than any
+   * single task within it. `undefined` until the project's own play button
+   * is pressed for the first time, and otherwise only ever set once.
+   */
+  tracking_task_id?: string;
 }
 
 /** Matches `DEFAULT_PROJECT_COLOR` in `src-tauri/src/project.rs`. */
@@ -191,6 +207,20 @@ export interface Settings {
   parent_estimate_includes_own_value: boolean;
   /** How many subtask rows a parent card's nested preview shows before collapsing the rest into a "+N more" line. */
   max_visible_subtasks: number;
+  /**
+   * Whether starting a task's timer should automatically move it to
+   * `tracking_auto_transition_status_id`. Defaults to `false` (no automatic
+   * status change).
+   */
+  tracking_auto_transition_enabled: boolean;
+  /**
+   * The status a task's timer auto-transitions it to when
+   * `tracking_auto_transition_enabled` is `true`. `undefined` when enabled
+   * but no status has been chosen yet, in which case the frontend falls
+   * back at runtime to the first status in the global status list that
+   * isn't backlog/done/cancelled.
+   */
+  tracking_auto_transition_status_id?: string;
 }
 
 /**
@@ -211,4 +241,21 @@ export interface DeleteProjectResult {
 /** Result of `finishDay`: how many tasks were archived. */
 export interface FinishDayResult {
   archived_count: number;
+}
+
+/**
+ * A single time-tracking session against a task, mirroring `TimeEntry` in
+ * `src-tauri/src/time_storage.rs` exactly. `ended_at: null` means the
+ * session is currently running — at most one such row may exist per
+ * `task_id` at a time. `last_heartbeat_at` is updated periodically while a
+ * session is running (see the time-tracking-engine spec's "Heartbeat"
+ * section) and is otherwise `null`.
+ */
+export interface TimeEntry {
+  id: string;
+  task_id: string;
+  started_at: string;
+  ended_at: string | null;
+  last_heartbeat_at: string | null;
+  created_at: string;
 }

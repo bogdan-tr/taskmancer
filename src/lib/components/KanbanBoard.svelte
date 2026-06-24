@@ -63,8 +63,15 @@
   import { refreshTasks, removeCachedTask, tasksState, upsertCachedTask } from "$lib/tasks.svelte";
   import { isHiddenAsSubtask } from "$lib/subtaskVisibility";
   import { refreshTags } from "$lib/tags.svelte";
+  import {
+    isTaskActive,
+    liveTrackedSecondsFor,
+    startProjectTracking,
+    stopProjectTracking,
+  } from "$lib/tracking.svelte";
   import type { Task } from "$lib/types";
   import { formatDateISO } from "$lib/weekRange";
+  import { formatHms } from "$lib/liveTimer";
 
   interface Props {
     title: string;
@@ -574,6 +581,60 @@
     }
   }
 
+  /**
+   * `true` while this project's hidden tracker task has a currently-active
+   * session. Before the first press, `project.tracking_task_id` doesn't
+   * exist yet — `isTaskActive(undefined)` would never match any real
+   * session's `task_id`, but the guard is explicit here for clarity since
+   * the prop is genuinely absent rather than just an unmatched id.
+   */
+  const isProjectTracking = $derived(
+    project?.tracking_task_id !== undefined && isTaskActive(project.tracking_task_id),
+  );
+
+  /** The hidden tracker task itself, for `liveTrackedSecondsFor`'s ticker — needs the task's own `tracked_minutes`, not just its id. */
+  const projectTrackingTask = $derived(
+    project?.tracking_task_id !== undefined
+      ? tasksState.items.find((t) => t.id === project.tracking_task_id)
+      : undefined,
+  );
+
+  /** Set while a project-tracking toggle call is in flight, so a second click can't fire an overlapping request. */
+  let isProjectTrackingPending = $state(false);
+
+  /**
+   * Toggles tracking for the whole project currently being viewed. Only
+   * meaningful when `project` is defined (no project-level tracking on the
+   * unfiltered "all tasks" view) — gated in the template by only rendering
+   * the button when `project` exists. The very first press has no
+   * `tracking_task_id` yet; `start_project_tracking` lazily creates the
+   * hidden tracker task server-side, so nothing special is needed here
+   * beyond calling it.
+   *
+   * `stopProjectTracking` (the store function) already does a full
+   * `refreshTasks()` internally before resolving, which re-fetches the
+   * hidden tracker task with its corrected `tracked_minutes` already
+   * written — so there's nothing further to apply to the cache here; doing
+   * so manually on top would just be a second, redundant write racing the
+   * same data.
+   */
+  async function handleProjectTrackingToggle() {
+    if (!project) return;
+    isProjectTrackingPending = true;
+    errorMessage = "";
+    try {
+      if (isProjectTracking && project.tracking_task_id) {
+        await stopProjectTracking(project.id);
+      } else {
+        await startProjectTracking(project.id);
+      }
+    } catch (error) {
+      errorMessage = getErrorMessage(error, "Failed to update project tracking");
+    } finally {
+      isProjectTrackingPending = false;
+    }
+  }
+
   /** Returns the priority buckets for the column with the given status id, or `buckets.other` for the trailing "Other" column. */
   function bucketsForColumn(statusId: string | undefined): PriorityBucket[] {
     return statusId !== undefined ? buckets.byStatus[statusId] : buckets.other;
@@ -744,6 +805,33 @@
         </button>
       {/if}
       {#if project}
+        <div class="project-tracking">
+          {#if isProjectTracking && projectTrackingTask}
+            <span class="project-tracking-ticker" title="Currently tracking this project">
+              {formatHms(liveTrackedSecondsFor(projectTrackingTask) ?? 0)}
+            </span>
+          {/if}
+          <button
+            type="button"
+            class="icon-button project-tracking-button"
+            class:tracking-active={isProjectTracking}
+            onclick={handleProjectTrackingToggle}
+            disabled={isProjectTrackingPending}
+            aria-label={isProjectTracking ? "Stop tracking project" : "Start tracking project"}
+            title={isProjectTracking ? "Stop tracking project" : "Start tracking project"}
+          >
+            {#if isProjectTracking}
+              <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true">
+                <rect x="3" y="2" width="3.5" height="12" rx="0.75" />
+                <rect x="9.5" y="2" width="3.5" height="12" rx="0.75" />
+              </svg>
+            {:else}
+              <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true">
+                <path d="M4 2.5v11l9.5-5.5z" />
+              </svg>
+            {/if}
+          </button>
+        </div>
         <a
           class="icon-button settings-link"
           href="/projects/{project.id}/settings"
@@ -997,6 +1085,41 @@
     background: var(--color-accent-hover);
     box-shadow: var(--shadow-md);
     transform: translateY(-1px);
+  }
+
+  .project-tracking {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+    flex-shrink: 0;
+  }
+
+  .project-tracking-ticker {
+    font-size: var(--text-sm);
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    color: var(--color-accent);
+  }
+
+  .project-tracking-button {
+    border: 1px solid var(--color-border);
+    background: var(--color-surface);
+    color: var(--color-ink-muted);
+  }
+
+  .project-tracking-button:hover {
+    background: var(--color-canvas);
+    color: var(--color-ink);
+    box-shadow: var(--shadow-md);
+    transform: translateY(-1px);
+  }
+
+  /* While running, stays visibly "lit" in the accent color rather than only
+     highlighting on hover — mirrors TaskCard's `.tracking-icon-button.tracking-active`. */
+  .project-tracking-button.tracking-active {
+    border-color: color-mix(in oklch, var(--color-accent) 50%, var(--color-border));
+    background: var(--color-accent-soft);
+    color: var(--color-accent);
   }
 
   .settings-link {

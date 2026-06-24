@@ -82,6 +82,16 @@ pub struct Task {
     /// subtask container's identity is recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subtask_project_id: Option<String>,
+    /// Marks this task as the hidden time-tracking anchor for a `Project`
+    /// (see `Project::tracking_task_id`) — set once when that project's
+    /// lazily-created tracker task is generated, and never toggled
+    /// afterward. `false` for every ordinary task. Hidden tasks are excluded
+    /// from every kanban/week/calendar view and task picker by the frontend,
+    /// but otherwise remain normal addressable markdown files: they save,
+    /// load, and back up exactly like any other task, and `time_entries`
+    /// rows can reference their id identically to a non-hidden task's.
+    #[serde(default)]
+    pub hidden: bool,
     #[serde(skip)]
     pub notes: String,
 }
@@ -119,6 +129,7 @@ impl Task {
             tracked_minutes: 0,
             series_id: None,
             subtask_project_id: None,
+            hidden: false,
             notes: String::new(),
         }
     }
@@ -175,6 +186,7 @@ mod tests {
         task.tracked_minutes = 45;
         task.series_id = Some("series-abc123".to_string());
         task.subtask_project_id = Some("container-project-id".to_string());
+        task.hidden = true;
         task.notes = "Some free-form notes about the assignment.".to_string();
 
         let markdown = task.to_markdown().expect("serialization should succeed");
@@ -209,6 +221,7 @@ mod tests {
         assert_eq!(task.tracked_minutes, 0);
         assert_eq!(task.series_id, None);
         assert_eq!(task.subtask_project_id, None);
+        assert!(!task.hidden);
     }
 
     #[test]
@@ -292,6 +305,33 @@ mod tests {
         let task = Task::from_markdown(markdown).expect("parsing should succeed");
 
         assert_eq!(task.subtask_project_id, None);
+    }
+
+    #[test]
+    fn new_task_is_not_hidden() {
+        let task = Task::new("Write report".to_string());
+
+        assert!(!task.hidden);
+    }
+
+    #[test]
+    fn to_markdown_then_from_markdown_round_trips_hidden_true() {
+        let mut task = Task::new("Project — General time".to_string());
+        task.hidden = true;
+
+        let markdown = task.to_markdown().expect("serialization should succeed");
+        let parsed = Task::from_markdown(&markdown).expect("parsing should succeed");
+
+        assert!(parsed.hidden);
+    }
+
+    #[test]
+    fn from_markdown_defaults_hidden_to_false_when_absent() {
+        let markdown = "---\nid: abc123\ntitle: Demo\ncreated: 2026-06-11T10:00:00+00:00\n---\n\n";
+
+        let task = Task::from_markdown(markdown).expect("parsing should succeed");
+
+        assert!(!task.hidden);
     }
 
     #[test]

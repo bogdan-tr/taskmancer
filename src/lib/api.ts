@@ -9,6 +9,7 @@ import type {
   Series,
   Settings,
   Task,
+  TimeEntry,
 } from "./types";
 
 export async function listTasks(): Promise<Task[]> {
@@ -177,4 +178,59 @@ export async function countTasksByStatus(): Promise<Record<string, number>> {
 /** Archives every task whose status is the configured done or cancelled status. */
 export async function finishDay(): Promise<FinishDayResult> {
   return invoke<FinishDayResult>("finish_day");
+}
+
+/** Starts a new tracking session for `taskId`. A no-op if `taskId` already has an active session. */
+export async function startTracking(taskId: string): Promise<void> {
+  return invoke<void>("start_tracking", { taskId });
+}
+
+/** Ends the active session for `taskId` and recomputes its `tracked_minutes`, returning the new value. A no-op (still returns the current value) if `taskId` has no active session. */
+export async function stopTracking(taskId: string): Promise<number> {
+  return invoke<number>("stop_tracking", { taskId });
+}
+
+/** Returns every currently-active session (`ended_at === null`) across all tasks, for restoring "what's running" UI state on load and for orphan detection. */
+export async function getActiveSessions(): Promise<TimeEntry[]> {
+  return invoke<TimeEntry[]>("get_active_sessions");
+}
+
+/** Updates `last_heartbeat_at` on `taskId`'s active session. A no-op if it has none. Called every ~30s by the frontend while any timer runs. */
+export async function heartbeat(taskId: string): Promise<void> {
+  return invoke<void>("heartbeat", { taskId });
+}
+
+/** Resolves an orphaned session detected on launch: `"resume"` leaves it untouched, `"discard"` ends it at its last known heartbeat. */
+export async function resolveOrphanedSession(entryId: string, action: "resume" | "discard"): Promise<void> {
+  return invoke<void>("resolve_orphaned_session", { entryId, action });
+}
+
+/** Adds a completed manual time entry for `taskId` spanning `[startedAt, endedAt]` (RFC3339 strings). */
+export async function addManualTimeEntry(taskId: string, startedAt: string, endedAt: string): Promise<void> {
+  return invoke<void>("add_manual_time_entry", { taskId, startedAt, endedAt });
+}
+
+/** Overwrites an existing time entry's `started_at`/`ended_at` by id, for manual correction. */
+export async function updateTimeEntry(entryId: string, startedAt: string, endedAt: string): Promise<void> {
+  return invoke<void>("update_time_entry", { entryId, startedAt, endedAt });
+}
+
+/** Deletes a time entry by id. */
+export async function deleteTimeEntry(entryId: string): Promise<void> {
+  return invoke<void>("delete_time_entry", { entryId });
+}
+
+/** Returns every time entry (active or completed) for `taskId`. */
+export async function listTimeEntries(taskId: string): Promise<TimeEntry[]> {
+  return invoke<TimeEntry[]>("list_time_entries", { taskId });
+}
+
+/** Starts tracking `projectId` as a whole, lazily creating its hidden tracker task on first call. */
+export async function startProjectTracking(projectId: string): Promise<void> {
+  return invoke<void>("start_project_tracking", { projectId });
+}
+
+/** Stops tracking `projectId` as a whole and recomputes its hidden tracker task's `tracked_minutes`, returning the new value. */
+export async function stopProjectTracking(projectId: string): Promise<number> {
+  return invoke<number>("stop_project_tracking", { projectId });
 }

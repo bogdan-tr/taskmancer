@@ -12,6 +12,7 @@
   import { containerOwner } from "$lib/subtasks";
   import { tasksState } from "$lib/tasks.svelte";
   import type { Project } from "$lib/types";
+  import TrackingTray from "./TrackingTray.svelte";
 
   const FLIP_DURATION_MS = 150;
 
@@ -104,6 +105,8 @@
       </svg>
     </button>
   </div>
+
+  <TrackingTray />
 
   <a
     href="/"

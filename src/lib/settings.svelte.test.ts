@@ -25,6 +25,7 @@ const sampleSettings: Settings = {
   show_subproject_tasks_default: false,
   parent_estimate_includes_own_value: false,
   max_visible_subtasks: 5,
+  tracking_auto_transition_enabled: false,
 };
 
 vi.mock("./api", () => ({

@@ -75,6 +75,16 @@ pub struct Project {
     /// field left unset falls back to `settings::Settings::defaults`.
     #[serde(default)]
     pub defaults: TaskDefaults,
+    /// The id of this project's lazily-created hidden tracker `Task` (see
+    /// `Task::hidden`), used to "track this project as a whole" rather than
+    /// any single task within it. `None` until the project's own play
+    /// button is pressed for the first time (see
+    /// `commands::get_or_create_project_tracking_task`, Milestone 2), and
+    /// otherwise only ever set once — this directly mirrors
+    /// `Task::subtask_project_id`, just inverted (a project growing a hidden
+    /// task instead of a task growing a hidden project).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tracking_task_id: Option<String>,
 }
 
 impl Project {
@@ -91,6 +101,7 @@ impl Project {
             created: Utc::now().to_rfc3339(),
             board: ProjectBoard::default(),
             defaults: TaskDefaults::default(),
+            tracking_task_id: None,
         }
     }
 }
@@ -189,5 +200,35 @@ mod tests {
         let parsed: Project = serde_json::from_str(&json).expect("parsing should succeed");
 
         assert_eq!(parsed.parent_id, Some("parent-123".to_string()));
+    }
+
+    #[test]
+    fn new_project_has_no_tracking_task() {
+        let project = Project::new("Homework".to_string(), "#ff0000".to_string(), 1);
+
+        assert_eq!(project.tracking_task_id, None);
+    }
+
+    #[test]
+    fn tracking_task_id_is_none_when_absent_from_json() {
+        let json = r##"{"id":"abc","name":"Inbox","color":"#000000","created":"2026-06-11T10:00:00+00:00"}"##;
+
+        let project: Project = serde_json::from_str(json).expect("parsing should succeed");
+
+        assert_eq!(project.tracking_task_id, None);
+    }
+
+    #[test]
+    fn tracking_task_id_round_trips_when_set() {
+        let mut project = Project::new("Homework".to_string(), "#ff0000".to_string(), 1);
+        project.tracking_task_id = Some("tracker-task-123".to_string());
+
+        let json = serde_json::to_string(&project).expect("serialization should succeed");
+        let parsed: Project = serde_json::from_str(&json).expect("parsing should succeed");
+
+        assert_eq!(
+            parsed.tracking_task_id,
+            Some("tracker-task-123".to_string())
+        );
     }
 }

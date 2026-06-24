@@ -11,6 +11,7 @@
   } from "$lib/colorPresets";
   import { displayState } from "$lib/displaySettings.svelte";
   import { formatDueDateDisplay } from "$lib/dueDateDisplay";
+  import { getErrorMessage } from "$lib/errors";
   import {
     formatMinutes,
     hoursAndMinutesFromMinutes,
@@ -45,8 +46,16 @@
     seriesSharedFieldsChanged,
   } from "$lib/taskFields";
   import { tagsState } from "$lib/tags.svelte";
+  import { upsertCachedTask } from "$lib/tasks.svelte";
+  import {
+    isTaskActive,
+    liveTrackedSecondsFor,
+    startTaskTracking,
+    stopTaskTracking,
+  } from "$lib/tracking.svelte";
   import type { Task } from "$lib/types";
   import { formatDateISO } from "$lib/weekRange";
+  import { formatHms } from "$lib/liveTimer";
   import Autocomplete from "./Autocomplete.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
   import DatePickerPopover from "./DatePickerPopover.svelte";
@@ -438,6 +447,47 @@
       handleTitleClick();
     }
   }
+
+  /** `true` while this task has a currently-active tracking session — toggles the play/pause icon and the live ticker chip. */
+  const isTracking = $derived(isTaskActive(task.id));
+
+  /** Set while a tracking toggle call is in flight, so a second click can't fire an overlapping request. */
+  let isTrackingPending = $state(false);
+  /** Set when a tracking toggle call fails, so the click isn't silently swallowed. Cleared on the next attempt. */
+  let trackingError = $state("");
+
+  /**
+   * Toggles this task's tracking session. On stop, the backend returns the
+   * freshly-recomputed `tracked_minutes`; applied directly via
+   * `upsertCachedTask` (imported from `$lib/tasks.svelte`) rather than
+   * routed through `onUpdate`, mirroring how other direct-mutation UI bits
+   * in this codebase already reach into the global cache themselves.
+   *
+   * Captures `task.id` before the `await` and re-checks it on the way back
+   * (mirroring `TaskEditDialog.svelte`'s `loadSeriesInfo` guard) so that if
+   * this exact card instance somehow gets reused for a different task
+   * mid-flight, a stale `tracked_minutes` is never applied to the wrong one.
+   */
+  async function handleTrackingToggle() {
+    const taskId = task.id;
+    const wasTracking = isTracking;
+    isTrackingPending = true;
+    trackingError = "";
+    try {
+      if (wasTracking) {
+        const trackedMinutes = await stopTaskTracking(taskId);
+        if (task.id === taskId) {
+          upsertCachedTask({ ...task, tracked_minutes: trackedMinutes });
+        }
+      } else {
+        await startTaskTracking(taskId);
+      }
+    } catch (error) {
+      trackingError = getErrorMessage(error, "Failed to update tracking");
+    } finally {
+      isTrackingPending = false;
+    }
+  }
 </script>
 
 <li
@@ -632,6 +682,29 @@
       >
         {task.title}
       </div>
+      <button
+        type="button"
+        class="tracking-icon-button"
+        class:tracking-active={isTracking}
+        onclick={handleTrackingToggle}
+        disabled={isTrackingPending}
+        aria-label={isTracking ? "Stop tracking" : "Start tracking"}
+        title={isTracking ? "Stop tracking" : "Start tracking"}
+      >
+        {#if isTracking}
+          <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor" aria-hidden="true">
+            <rect x="3" y="2" width="3.5" height="12" rx="0.75" />
+            <rect x="9.5" y="2" width="3.5" height="12" rx="0.75" />
+          </svg>
+        {:else}
+          <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor" aria-hidden="true">
+            <path d="M4 2.5v11l9.5-5.5z" />
+          </svg>
+        {/if}
+      </button>
+      {#if trackingError}
+        <span class="tracking-error" role="alert">{trackingError}</span>
+      {/if}
       {#if task.subtask_project_id}
         <button type="button" class="edit-icon-button" onclick={startEdit} aria-label="Edit task" title="Edit task">
           <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -698,7 +771,11 @@
       {#if displayedEstimatedMinutes !== undefined}
         <span class="chip estimated" title="Estimated time">{formatMinutes(displayedEstimatedMinutes)}</span>
       {/if}
-      {#if task.tracked_minutes > 0}
+      {#if isTracking}
+        <span class="chip tracked tracked-live" title="Currently tracking">
+          {formatHms(liveTrackedSecondsFor(task) ?? 0)}
+        </span>
+      {:else if task.tracked_minutes > 0}
         <span class="chip tracked" title="Tracked time">{formatMinutes(task.tracked_minutes)} tracked</span>
       {/if}
       {#each task.tags as tag (tag)}
@@ -922,7 +999,8 @@
     word-break: break-word;
   }
 
-  .edit-icon-button {
+  .edit-icon-button,
+  .tracking-icon-button {
     display: flex;
     align-items: center;
     justify-content: center;
@@ -938,13 +1016,33 @@
     transition: color var(--duration-fast) var(--ease-out-expo);
   }
 
-  .edit-icon-button:hover {
+  .edit-icon-button:hover,
+  .tracking-icon-button:hover {
     color: var(--color-accent);
   }
 
-  .edit-icon-button:focus-visible {
+  .edit-icon-button:focus-visible,
+  .tracking-icon-button:focus-visible {
     outline: 2px solid var(--color-accent);
     outline-offset: 2px;
+  }
+
+  /* While a session is running, the play/pause icon stays visibly "lit" in
+     the accent color rather than only highlighting on hover — otherwise a
+     running timer would look identical to an idle one the moment the
+     pointer moves away. */
+  .tracking-icon-button.tracking-active {
+    color: var(--color-accent);
+  }
+
+  .tracking-icon-button:disabled {
+    cursor: default;
+    opacity: 0.6;
+  }
+
+  .tracking-error {
+    font-size: 0.7rem;
+    color: var(--color-danger);
   }
 
   .task-title:hover {
@@ -1031,6 +1129,19 @@
     border-color: color-mix(in oklch, var(--color-soon) 40%, transparent);
     color: var(--color-soon);
     font-weight: 700;
+  }
+
+  /* Live ticker chip while a session is actively running — same soft-tint
+     treatment as the due-date variants above, but in the accent color so
+     it reads as "in progress" rather than a status/urgency signal.
+     `tabular-nums` keeps the seconds digits from jittering the chip's
+     width as they tick. */
+  .chip.tracked-live {
+    background: var(--color-accent-soft);
+    border-color: color-mix(in oklch, var(--color-accent) 40%, transparent);
+    color: var(--color-accent);
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
   }
 
   .due-dot {

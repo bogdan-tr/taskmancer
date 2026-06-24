@@ -163,6 +163,18 @@ pub struct TaskDefaults {
 /// preview shows at once before collapsing the rest into a "+N more" line —
 /// also purely a frontend display concern (see the frontend's
 /// `taskSubtasks`/`hiddenSubtaskCount` in `TaskCard.svelte`).
+///
+/// `tracking_auto_transition_enabled`/`tracking_auto_transition_status_id`
+/// are the time-tracking engine's "auto-transition status when tracking
+/// starts" setting (see `docs/features/time-tracking-engine.md`):
+/// `tracking_auto_transition_enabled` defaults to `false` (no automatic
+/// status change); when `true` and `tracking_auto_transition_status_id`
+/// names a defined status, starting a task's timer moves that task to that
+/// status. When enabled but `tracking_auto_transition_status_id` is unset,
+/// the frontend falls back at runtime to the first status in the global
+/// status list that isn't backlog/done/cancelled — that fallback resolution
+/// itself is later-milestone frontend logic, not implemented here; this
+/// struct only stores the two raw settings values.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Settings {
     #[serde(default)]
@@ -191,6 +203,10 @@ pub struct Settings {
     pub parent_estimate_includes_own_value: bool,
     #[serde(default = "default_max_visible_subtasks")]
     pub max_visible_subtasks: u32,
+    #[serde(default)]
+    pub tracking_auto_transition_enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tracking_auto_transition_status_id: Option<String>,
 }
 
 impl Default for Settings {
@@ -272,6 +288,8 @@ impl Default for Settings {
             show_subproject_tasks_default: false,
             parent_estimate_includes_own_value: false,
             max_visible_subtasks: default_max_visible_subtasks(),
+            tracking_auto_transition_enabled: false,
+            tracking_auto_transition_status_id: None,
         }
     }
 }
@@ -483,8 +501,9 @@ pub fn validate_ink_mode(value: &str) -> Result<(), String> {
 /// reference a defined status, `cancelled_status`, if set, must
 /// reference a defined status distinct from `done_status`,
 /// `card_lightness`/`bar_lightness` must each be a valid OKLCH lightness
-/// (see [`validate_lightness`]), and `default_project_id` must be
-/// non-empty.
+/// (see [`validate_lightness`]), `default_project_id` must be non-empty,
+/// and `tracking_auto_transition_status_id`, if set, must reference a
+/// defined status.
 pub fn validate_settings(settings: &Settings) -> Result<(), String> {
     if settings.priorities.is_empty() {
         return Err("at least one priority level must be defined".to_string());
@@ -547,6 +566,10 @@ pub fn validate_settings(settings: &Settings) -> Result<(), String> {
     validate_lightness(settings.card_lightness)?;
     validate_lightness(settings.bar_lightness)?;
     validate_ink_mode(&settings.ink_mode)?;
+
+    if let Some(status_id) = &settings.tracking_auto_transition_status_id {
+        validate_status_id(settings, status_id)?;
+    }
 
     Ok(())
 }
@@ -1038,6 +1061,77 @@ mod tests {
                 "{mode} should be valid"
             );
         }
+    }
+
+    #[test]
+    fn default_settings_seed_has_tracking_auto_transition_disabled() {
+        let settings = Settings::default();
+
+        assert!(!settings.tracking_auto_transition_enabled);
+        assert_eq!(settings.tracking_auto_transition_status_id, None);
+    }
+
+    #[test]
+    fn deserializing_settings_without_tracking_auto_transition_fields_defaults_to_disabled() {
+        let settings: Settings = serde_json::from_str("{}").unwrap();
+
+        assert!(!settings.tracking_auto_transition_enabled);
+        assert_eq!(settings.tracking_auto_transition_status_id, None);
+    }
+
+    #[test]
+    fn tracking_auto_transition_fields_round_trip_when_set() {
+        let settings = Settings {
+            tracking_auto_transition_enabled: true,
+            tracking_auto_transition_status_id: Some("in-progress".to_string()),
+            ..Settings::default()
+        };
+
+        let json = serde_json::to_string(&settings).expect("serialization should succeed");
+        let parsed: Settings = serde_json::from_str(&json).expect("parsing should succeed");
+
+        assert!(parsed.tracking_auto_transition_enabled);
+        assert_eq!(
+            parsed.tracking_auto_transition_status_id,
+            Some("in-progress".to_string())
+        );
+    }
+
+    #[test]
+    fn validate_settings_accepts_a_valid_tracking_auto_transition_status_id() {
+        let settings = Settings {
+            default_project_id: "some-project-id".to_string(),
+            tracking_auto_transition_enabled: true,
+            tracking_auto_transition_status_id: Some("in-progress".to_string()),
+            ..Settings::default()
+        };
+
+        assert!(validate_settings(&settings).is_ok());
+    }
+
+    #[test]
+    fn validate_settings_rejects_an_unknown_tracking_auto_transition_status_id() {
+        let settings = Settings {
+            default_project_id: "some-project-id".to_string(),
+            tracking_auto_transition_enabled: true,
+            tracking_auto_transition_status_id: Some("on-hold".to_string()),
+            ..Settings::default()
+        };
+
+        let err = validate_settings(&settings).unwrap_err();
+        assert!(err.contains("on-hold"));
+    }
+
+    #[test]
+    fn validate_settings_accepts_a_missing_tracking_auto_transition_status_id() {
+        let settings = Settings {
+            default_project_id: "some-project-id".to_string(),
+            tracking_auto_transition_enabled: false,
+            tracking_auto_transition_status_id: None,
+            ..Settings::default()
+        };
+
+        assert!(validate_settings(&settings).is_ok());
     }
 
     #[test]

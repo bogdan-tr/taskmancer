@@ -33,6 +33,7 @@ function makeTask(overrides: Partial<Task> = {}): Task {
     created: "2026-06-10T00:00:00.000Z",
     depends_on: [],
     tracked_minutes: 0,
+    hidden: false,
     notes: "",
     ...overrides,
   };

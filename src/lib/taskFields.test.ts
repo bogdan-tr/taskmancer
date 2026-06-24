@@ -17,6 +17,7 @@ function baseTask(overrides: Partial<Task> = {}): Task {
     depends_on: [],
     estimated_minutes: 15,
     tracked_minutes: 0,
+    hidden: false,
     notes: "Use the green watering can",
     ...overrides,
   };

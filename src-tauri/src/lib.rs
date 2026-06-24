@@ -9,6 +9,8 @@ mod settings;
 mod settings_storage;
 mod storage;
 mod task;
+mod time_storage;
+mod time_tracking;
 
 use tauri::Manager;
 
@@ -23,7 +25,12 @@ pub fn run() {
             let projects_file = app_data_dir.join("projects.json");
             let settings_file = app_data_dir.join("settings.json");
             let series_file = app_data_dir.join("series.json");
+            let time_db_file = app_data_dir.join("time_tracking.sqlite");
             storage::migrate_scheduled_dates(&tasks_dir)?;
+
+            std::fs::create_dir_all(&app_data_dir)?;
+            let time_db = rusqlite::Connection::open(&time_db_file)?;
+            time_storage::init_schema(&time_db)?;
 
             let projects = project_storage::list_projects(&projects_file)?;
             let settings = settings_storage::load_settings(&settings_file)?;
@@ -45,6 +52,7 @@ pub fn run() {
                 series_file,
                 projects_lock: std::sync::Mutex::new(()),
                 series_lock: std::sync::Mutex::new(()),
+                time_db: std::sync::Mutex::new(time_db),
             });
             Ok(())
         })
@@ -71,7 +79,18 @@ pub fn run() {
             commands::save_settings,
             commands::count_tasks_by_priority,
             commands::count_tasks_by_status,
-            commands::finish_day
+            commands::finish_day,
+            commands::start_tracking,
+            commands::stop_tracking,
+            commands::get_active_sessions,
+            commands::heartbeat,
+            commands::resolve_orphaned_session,
+            commands::add_manual_time_entry,
+            commands::update_time_entry,
+            commands::delete_time_entry,
+            commands::list_time_entries,
+            commands::start_project_tracking,
+            commands::stop_project_tracking
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -29,13 +29,22 @@
     seriesSharedFieldsChanged,
   } from "$lib/taskFields";
   import { tagsState } from "$lib/tags.svelte";
+  import { upsertCachedTask } from "$lib/tasks.svelte";
   import { effectiveDefaultCode } from "$lib/taskPreview";
+  import {
+    isTaskActive,
+    liveTrackedSecondsFor,
+    startTaskTracking,
+    stopTaskTracking,
+  } from "$lib/tracking.svelte";
   import type { Series, Task } from "$lib/types";
+  import { formatHms } from "$lib/liveTimer";
   import Autocomplete from "./Autocomplete.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
   import DatePickerPopover from "./DatePickerPopover.svelte";
   import RecurrenceBuilderDialog from "./RecurrenceBuilderDialog.svelte";
   import SeriesScopeDialog from "./SeriesScopeDialog.svelte";
+  import TimeLogSection from "./TimeLogSection.svelte";
 
   interface Props {
     open: boolean;
@@ -411,6 +420,49 @@
 
   /** "Clear" has nothing meaningful to revert to here (there's no typed-phrase override layer the way AddTaskModal has) — RecurrenceBuilderDialog closes itself either way, so this is a no-op. */
   function handleRecurrenceBuilderClear() {}
+
+  /** `true` while the opened task has a currently-active tracking session — same `isTaskActive` check as `TaskCard`'s matching button. `false` (not active) whenever `task` is `undefined`, i.e. the dialog is closed. */
+  const isTracking = $derived(task !== undefined && isTaskActive(task.id));
+
+  /** Set while a tracking toggle call is in flight, so a second click can't fire an overlapping request. */
+  let isTrackingPending = $state(false);
+
+  /**
+   * Toggles the opened task's tracking session — same shape as
+   * `TaskCard.svelte`'s `handleTrackingToggle`, applying the corrected
+   * `tracked_minutes` via `upsertCachedTask` on stop rather than routing
+   * through `onSave` (which would trigger a full task-update save flow for
+   * what is just a derived, non-editable field).
+   *
+   * This dialog is a single persistent instance reused across whichever
+   * task is currently open (see `loadSeriesInfo`'s identical concern a few
+   * lines up) — closing it and reopening a *different* task while a stop
+   * call is still in flight is well within normal click speed. Captures
+   * `task.id` before the `await` and re-checks `task?.id` against it
+   * afterward, so a late-arriving result is never applied to whatever task
+   * happens to be open by the time it resolves.
+   */
+  async function handleTrackingToggle() {
+    if (!task) return;
+    const taskId = task.id;
+    const wasTracking = isTracking;
+    isTrackingPending = true;
+    editError = "";
+    try {
+      if (wasTracking) {
+        const trackedMinutes = await stopTaskTracking(taskId);
+        if (task?.id === taskId) {
+          upsertCachedTask({ ...task, tracked_minutes: trackedMinutes });
+        }
+      } else {
+        await startTaskTracking(taskId);
+      }
+    } catch (error) {
+      editError = getErrorMessage(error, "Failed to update tracking");
+    } finally {
+      isTrackingPending = false;
+    }
+  }
 </script>
 
 <dialog
@@ -421,7 +473,36 @@
   onclick={handleBackdropClick}
 >
   {#if task}
-    <h2 id="task-edit-heading">Edit task</h2>
+    <div class="dialog-heading-row">
+      <h2 id="task-edit-heading">Edit task</h2>
+      <div class="dialog-tracking">
+        {#if isTracking}
+          <span class="dialog-tracking-ticker" title="Currently tracking">
+            {formatHms(liveTrackedSecondsFor(task) ?? 0)}
+          </span>
+        {/if}
+        <button
+          type="button"
+          class="dialog-tracking-button"
+          class:tracking-active={isTracking}
+          onclick={handleTrackingToggle}
+          disabled={isTrackingPending}
+          aria-label={isTracking ? "Stop tracking" : "Start tracking"}
+          title={isTracking ? "Stop tracking" : "Start tracking"}
+        >
+          {#if isTracking}
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" aria-hidden="true">
+              <rect x="3" y="2" width="3.5" height="12" rx="0.75" />
+              <rect x="9.5" y="2" width="3.5" height="12" rx="0.75" />
+            </svg>
+          {:else}
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" aria-hidden="true">
+              <path d="M4 2.5v11l9.5-5.5z" />
+            </svg>
+          {/if}
+        </button>
+      </div>
+    </div>
     <form class="edit-form" onsubmit={saveEdit}>
       <label>
         Title
@@ -627,6 +708,7 @@
         <button type="button" class="danger" onclick={handleDelete}>Delete</button>
       </div>
     </form>
+    <TimeLogSection {task} />
   {/if}
 </dialog>
 
@@ -684,10 +766,67 @@
   }
 
   .task-edit-dialog h2 {
-    margin: 0 0 var(--space-md);
+    margin: 0;
     font-size: var(--text-lg);
     font-weight: 600;
     letter-spacing: var(--tracking-tight);
+  }
+
+  .dialog-heading-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-sm);
+    margin-bottom: var(--space-md);
+  }
+
+  .dialog-tracking {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+    flex-shrink: 0;
+  }
+
+  .dialog-tracking-ticker {
+    font-size: var(--text-sm);
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    color: var(--color-accent);
+  }
+
+  .dialog-tracking-button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.75rem;
+    height: 1.75rem;
+    flex-shrink: 0;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-surface);
+    color: var(--color-ink-muted);
+    cursor: pointer;
+    transition:
+      background var(--duration-fast) var(--ease-out-expo),
+      color var(--duration-fast) var(--ease-out-expo);
+  }
+
+  .dialog-tracking-button:hover {
+    background: var(--color-canvas);
+    color: var(--color-ink);
+  }
+
+  .dialog-tracking-button:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+
+  /* While running, stays visibly "lit" in the accent color — mirrors
+     TaskCard's `.tracking-icon-button.tracking-active`. */
+  .dialog-tracking-button.tracking-active {
+    border-color: color-mix(in oklch, var(--color-accent) 50%, var(--color-border));
+    background: var(--color-accent-soft);
+    color: var(--color-accent);
   }
 
   .edit-form {

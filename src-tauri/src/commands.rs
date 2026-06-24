@@ -19,6 +19,8 @@ use crate::settings::{
 use crate::settings_storage;
 use crate::storage;
 use crate::task::Task;
+use crate::time_storage;
+use crate::time_tracking;
 
 /// How many days into the future a newly created series generates
 /// occurrences immediately, before any scroll-triggered extension —
@@ -36,6 +38,13 @@ const RECURRENCE_BASELINE_LOOKAHEAD_DAYS: i64 = 60;
 /// [`update_project`], and [`delete_project`] so concurrent commands can't
 /// read a stale project list and overwrite each other's changes.
 /// `series_lock` does the same for series read-modify-write cycles.
+///
+/// `time_db` is the SQLite connection (see `crate::time_storage`) backing
+/// the time-tracking engine's `time_entries` table — a single connection
+/// behind a `Mutex` rather than a pool, mirroring how every other piece of
+/// shared state here is a single resource guarded by a lock, since every
+/// Tauri command in this codebase runs synchronously and SQLite itself
+/// serializes writes per-connection anyway.
 pub struct AppState {
     pub tasks_dir: PathBuf,
     pub archive_dir: PathBuf,
@@ -44,6 +53,7 @@ pub struct AppState {
     pub series_file: PathBuf,
     pub projects_lock: Mutex<()>,
     pub series_lock: Mutex<()>,
+    pub time_db: Mutex<rusqlite::Connection>,
 }
 
 #[tauri::command]
@@ -757,6 +767,15 @@ fn subtasks_with_inherited_attributes(
 /// updated) title/project (see [`synced_subtask_container`]), and cascades
 /// its tags/due/scheduled onto every current subtask (see
 /// [`subtasks_with_inherited_attributes`]).
+///
+/// If this update moves the task to the done or cancelled status (see
+/// [`is_finished`]), also force-stops any active time-tracking session
+/// against it first and folds the recomputed `tracked_minutes` into this
+/// same write (see [`force_stop_and_recompute`]) — this is the most common
+/// real-world "task completed" path, so elapsed time is never silently lost
+/// just because the user marked it done rather than archiving/deleting it.
+/// Left untouched for every other status change, so most edits never touch
+/// the time-tracking database at all.
 #[tauri::command]
 pub fn update_task(state: State<AppState>, task: Task) -> Result<Task, String> {
     let title = task.title.trim().to_string();
@@ -797,6 +816,10 @@ pub fn update_task(state: State<AppState>, task: Task) -> Result<Task, String> {
         for subtask in subtasks_with_inherited_attributes(&tasks, container_id, &existing) {
             storage::update_task(&state.tasks_dir, &subtask).map_err(|e| e.to_string())?;
         }
+    }
+
+    if is_finished(&existing, &settings) {
+        existing.tracked_minutes = force_stop_and_recompute(&state, &existing.id)?;
     }
 
     storage::update_task(&state.tasks_dir, &existing).map_err(|e| e.to_string())?;
@@ -903,6 +926,16 @@ fn owning_task_if_container_now_empty<'a>(
 /// [`owning_task_if_container_now_empty`]) — these two cases are
 /// independent checks, not mutually exclusive branches, even though a
 /// given task can't realistically be both in this app's data model.
+///
+/// Before any file is removed, force-stops the active time-tracking session
+/// (if any) for the target task and for every cascaded subtask (see
+/// [`force_stop_and_recompute`]) — the recomputed minutes are discarded
+/// here (the markdown file is about to disappear, so there's nothing left
+/// to persist them into); the only reason this runs at all is so the
+/// SQLite session is actually ended rather than lingering "active" forever
+/// against a `task_id` that no longer resolves to any real task, which
+/// would otherwise corrupt the orphaned-session-resolution UI's later
+/// lookup of that task's title.
 #[tauri::command]
 pub fn delete_task(state: State<AppState>, id: String) -> Result<(), String> {
     let target = storage::load_task(&state.tasks_dir, &id).map_err(|e| e.to_string())?;
@@ -913,7 +946,10 @@ pub fn delete_task(state: State<AppState>, id: String) -> Result<(), String> {
         project_storage::list_projects(&state.projects_file).map_err(|e| e.to_string())?;
 
     let (subtasks, owned_container) = subtasks_and_container_to_delete(&tasks, &projects, &id);
+
+    force_stop_and_recompute(&state, &id)?;
     for subtask in &subtasks {
+        force_stop_and_recompute(&state, &subtask.id)?;
         storage::delete_task(&state.tasks_dir, &subtask.id).map_err(|e| e.to_string())?;
     }
 
@@ -975,6 +1011,13 @@ fn force_done_except_cancelled(
 /// once its purpose is served, while the work recorded in each subtask
 /// stays around as an ordinary, completed task. A no-op (returns the task
 /// unchanged) if `task_id` has no container.
+///
+/// Each subtask being marked done this way also has its active
+/// time-tracking session (if any) force-stopped first, with the recomputed
+/// `tracked_minutes` folded into the same write that persists its new
+/// status (see [`force_stop_and_recompute`]) — these subtasks complete via
+/// this cascade rather than going through [`update_task`]'s own
+/// force-stop-on-completion handling, so it has to happen here too.
 #[tauri::command]
 pub fn delete_subtask_container(state: State<AppState>, task_id: String) -> Result<Task, String> {
     let _guard = state.projects_lock.lock().map_err(|e| e.to_string())?;
@@ -999,8 +1042,9 @@ pub fn delete_subtask_container(state: State<AppState>, task_id: String) -> Resu
         &settings.done_status,
         settings.cancelled_status.as_deref(),
     );
-    for subtask in &completed {
-        storage::update_task(&state.tasks_dir, subtask).map_err(|e| e.to_string())?;
+    for mut subtask in completed {
+        subtask.tracked_minutes = force_stop_and_recompute(&state, &subtask.id)?;
+        storage::update_task(&state.tasks_dir, &subtask).map_err(|e| e.to_string())?;
     }
 
     let mut projects =
@@ -1800,6 +1844,7 @@ fn apply_project_update(
 
     let existing_id = projects[index].id.clone();
     validate_parent_id(projects, update.parent_id.as_deref(), Some(&existing_id))?;
+    let existing_tracking_task_id = projects[index].tracking_task_id.clone();
 
     let updated = Project {
         id: existing_id,
@@ -1810,6 +1855,7 @@ fn apply_project_update(
         created: existing_created,
         board: update.board,
         defaults: update.defaults,
+        tracking_task_id: existing_tracking_task_id,
     };
     projects[index] = updated.clone();
     Ok(updated)
@@ -2205,6 +2251,13 @@ fn tasks_and_containers_to_finish(
 /// If a finished task owns a subtask container, cascades to archive every
 /// one of its subtasks too and removes the now-empty container project —
 /// see [`tasks_and_containers_to_finish`].
+///
+/// Before each task is archived, force-stops its active time-tracking
+/// session (if any) and persists the recomputed `tracked_minutes` into its
+/// still-in-`tasks_dir` file first (see [`force_stop_and_recompute`]) — the
+/// archived copy must carry an accurate final tracked time, and
+/// [`storage::archive_task`] simply moves whatever's currently on disk, so
+/// the update has to land before the move.
 #[tauri::command]
 pub fn finish_day(state: State<AppState>) -> Result<FinishDayResult, String> {
     let settings =
@@ -2214,6 +2267,11 @@ pub fn finish_day(state: State<AppState>) -> Result<FinishDayResult, String> {
     let (task_ids, container_ids) = tasks_and_containers_to_finish(&tasks, &settings);
 
     for task_id in &task_ids {
+        let minutes = force_stop_and_recompute(&state, task_id)?;
+        let mut task = storage::load_task(&state.tasks_dir, task_id).map_err(|e| e.to_string())?;
+        task.tracked_minutes = minutes;
+        storage::update_task(&state.tasks_dir, &task).map_err(|e| e.to_string())?;
+
         storage::archive_task(&state.tasks_dir, &state.archive_dir, task_id)
             .map_err(|e| e.to_string())?;
     }
@@ -2230,6 +2288,397 @@ pub fn finish_day(state: State<AppState>) -> Result<FinishDayResult, String> {
     Ok(FinishDayResult {
         archived_count: task_ids.len(),
     })
+}
+
+/// The pure logic behind [`force_stop_and_recompute`] — split out so it can
+/// be exercised in tests against a real (in-memory or tempfile-backed)
+/// `Connection` and `tasks_dir`, without needing a live `State<AppState>`
+/// (which, in Tauri 2, has no public constructor outside of an actual
+/// running app — see `tauri::State`'s `CommandArg`-only construction). Ends
+/// `task_id`'s active time-tracking session, if any, and recomputes its
+/// cached `tracked_minutes`. A no-op if no session was active — returns the
+/// (possibly unchanged) recomputed minutes either way.
+fn force_stop_and_recompute_with(
+    conn: &rusqlite::Connection,
+    tasks_dir: &Path,
+    task_id: &str,
+) -> Result<u32, String> {
+    time_storage::end_entry(conn, task_id, chrono::Utc::now()).map_err(|e| e.to_string())?;
+    time_tracking::recompute_and_persist_tracked_minutes(conn, tasks_dir, task_id)
+        .map_err(|e| e.to_string())
+}
+
+/// Ends `task_id`'s active time-tracking session, if any, and recomputes its
+/// cached `tracked_minutes`. Used at every point a task stops being
+/// trackable (becomes done/cancelled, gets archived, or gets deleted) so
+/// elapsed time is never silently lost. A no-op if no session was active —
+/// returns the (possibly unchanged) recomputed minutes either way.
+fn force_stop_and_recompute(state: &State<AppState>, task_id: &str) -> Result<u32, String> {
+    let conn = state.time_db.lock().map_err(|e| e.to_string())?;
+    force_stop_and_recompute_with(&conn, &state.tasks_dir, task_id)
+}
+
+/// Starts a new time-tracking session for `task_id`. A no-op (returns the
+/// existing session rather than erroring) if `task_id` already has one
+/// active — see [`time_storage::start_entry`]. The created/existing entry
+/// itself is discarded: the frontend's own store derives "what's running"
+/// UI state from [`get_active_sessions`], not from this command's return
+/// value.
+///
+/// Validates `task_id` names a real task first, so a stale or typo'd id
+/// from a desynced frontend store fails fast here with a clear error,
+/// rather than succeeding silently and only surfacing as a confusing
+/// `NotFound` several steps later, the next time something tries to
+/// recompute that (bogus) task's `tracked_minutes`.
+#[tauri::command]
+pub fn start_tracking(state: State<AppState>, task_id: String) -> Result<(), String> {
+    storage::load_task(&state.tasks_dir, &task_id).map_err(|e| e.to_string())?;
+    let conn = state.time_db.lock().map_err(|e| e.to_string())?;
+    time_storage::start_entry(&conn, &task_id, chrono::Utc::now()).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Ends `task_id`'s active time-tracking session, if any, and returns the
+/// freshly recomputed `tracked_minutes`. Stopping a task with no active
+/// session is a defined no-op (see [`time_storage::end_entry`]), not an
+/// error — the recompute still runs unconditionally so the returned value
+/// always reflects the current persisted total.
+#[tauri::command]
+pub fn stop_tracking(state: State<AppState>, task_id: String) -> Result<u32, String> {
+    let conn = state.time_db.lock().map_err(|e| e.to_string())?;
+    time_storage::end_entry(&conn, &task_id, chrono::Utc::now()).map_err(|e| e.to_string())?;
+    time_tracking::recompute_and_persist_tracked_minutes(&conn, &state.tasks_dir, &task_id)
+        .map_err(|e| e.to_string())
+}
+
+/// Every currently-active time-tracking session across all tasks — used by
+/// the frontend to restore "what's running" UI state on launch and to
+/// detect orphaned sessions (see [`resolve_orphaned_session`]).
+#[tauri::command]
+pub fn get_active_sessions(state: State<AppState>) -> Result<Vec<time_storage::TimeEntry>, String> {
+    let conn = state.time_db.lock().map_err(|e| e.to_string())?;
+    time_storage::list_active_entries(&conn).map_err(|e| e.to_string())
+}
+
+/// Updates `last_heartbeat_at` on `task_id`'s active session, if any. Called
+/// roughly every 30 seconds by the frontend while any timer is running, so
+/// an orphaned session left behind by a force-quit/crash/power-loss can
+/// later be told apart from one that's still genuinely active (see
+/// [`resolve_orphaned_session`]). A no-op, not an error, if `task_id` has no
+/// active session.
+#[tauri::command]
+pub fn heartbeat(state: State<AppState>, task_id: String) -> Result<(), String> {
+    let conn = state.time_db.lock().map_err(|e| e.to_string())?;
+    time_storage::update_heartbeat(&conn, &task_id, chrono::Utc::now()).map_err(|e| e.to_string())
+}
+
+/// Resolves an orphaned session detected on launch (an active session whose
+/// `last_heartbeat_at` is too stale to trust — that staleness check itself
+/// is frontend logic, this command just carries out whichever choice the
+/// user made). `action` must be `"resume"` (leave the row untouched; the
+/// timer keeps counting as if nothing happened) or `"discard"` (ends the
+/// session at its `last_heartbeat_at` — the last point tracking was known to
+/// genuinely be happening — falling back to `started_at` itself if it never
+/// received even one heartbeat, rather than guessing; then recomputes that
+/// task's `tracked_minutes`). Any other `action` is rejected.
+#[tauri::command]
+pub fn resolve_orphaned_session(
+    state: State<AppState>,
+    entry_id: String,
+    action: String,
+) -> Result<(), String> {
+    validate_orphaned_session_action(&action)?;
+    match action.as_str() {
+        "resume" => Ok(()),
+        "discard" => discard_orphaned_session(&state, &entry_id),
+        _ => unreachable!("validate_orphaned_session_action already rejected anything else"),
+    }
+}
+
+/// Returns `Ok(())` if `action` is `"resume"` or `"discard"` (the only two
+/// values [`resolve_orphaned_session`] accepts), or an error naming the
+/// invalid value otherwise.
+fn validate_orphaned_session_action(action: &str) -> Result<(), String> {
+    match action {
+        "resume" | "discard" => Ok(()),
+        other => Err(format!("invalid action: '{other}'")),
+    }
+}
+
+/// The pure logic behind [`discard_orphaned_session`] — split out so it can
+/// be tested against a real `Connection`/`tasks_dir` without a live
+/// `State<AppState>` (see [`force_stop_and_recompute_with`]'s doc comment
+/// for why). Ends `entry_id`'s session at its `last_heartbeat_at`, falling
+/// back to `started_at` itself if it never received one, then recomputes
+/// the owning task's `tracked_minutes`.
+fn discard_orphaned_session_with(
+    conn: &rusqlite::Connection,
+    tasks_dir: &Path,
+    entry_id: &str,
+) -> Result<(), String> {
+    let entry = time_storage::get_entry(conn, entry_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "time entry not found".to_string())?;
+
+    let started_at = parse_rfc3339_field(&entry.started_at, "started_at")?;
+    let ended_at = match &entry.last_heartbeat_at {
+        Some(heartbeat) => parse_rfc3339_field(heartbeat, "last_heartbeat_at")?,
+        None => started_at,
+    };
+
+    time_storage::update_entry_times(conn, entry_id, started_at, Some(ended_at))
+        .map_err(|e| e.to_string())?;
+    time_tracking::recompute_and_persist_tracked_minutes(conn, tasks_dir, &entry.task_id)
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// The `"discard"` branch of [`resolve_orphaned_session`], split out so the
+/// command function itself stays a thin dispatcher.
+fn discard_orphaned_session(state: &State<AppState>, entry_id: &str) -> Result<(), String> {
+    let conn = state.time_db.lock().map_err(|e| e.to_string())?;
+    discard_orphaned_session_with(&conn, &state.tasks_dir, entry_id)
+}
+
+/// Parses an RFC3339 timestamp read back from `time_entries`, mapping a
+/// parse failure to a clear error naming the offending field — used for
+/// values that were already validated/written by this same codebase, so a
+/// failure here would indicate file/DB corruption rather than bad user
+/// input.
+fn parse_rfc3339_field(value: &str, field: &str) -> Result<chrono::DateTime<chrono::Utc>, String> {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .map_err(|e| format!("stored {field} '{value}' is not valid RFC3339: {e}"))
+}
+
+/// Parses a client-supplied RFC3339 timestamp for a manual time-entry
+/// command (`add_manual_time_entry`/`update_time_entry`), mapping a parse
+/// failure to a clear, field-named error.
+fn parse_rfc3339_input(value: &str, field: &str) -> Result<chrono::DateTime<chrono::Utc>, String> {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .map_err(|e| format!("{field} is not a valid RFC3339 timestamp: {e}"))
+}
+
+/// Returns `Ok(())` if `ended` is `None` (an open/currently-running entry)
+/// or comes strictly after `started`, or an error otherwise — a manual
+/// time entry recording zero or negative elapsed time has no meaning.
+/// Shared by `add_manual_time_entry` (where `ended` is always `Some`) and
+/// `update_time_entry` (where it may be `None`, reopening the entry).
+fn validate_time_range(
+    started: chrono::DateTime<chrono::Utc>,
+    ended: Option<chrono::DateTime<chrono::Utc>>,
+) -> Result<(), String> {
+    if let Some(ended) = ended {
+        if ended <= started {
+            return Err("end time must be after start time".to_string());
+        }
+    }
+    Ok(())
+}
+
+/// Records a manually-entered, already-completed time-tracking session for
+/// `task_id`. Rejects `ended_at` values that don't come strictly after
+/// `started_at` (see [`validate_time_range`]). Recomputes `tracked_minutes`
+/// afterward.
+///
+/// Validates `task_id` names a real task *before* inserting the entry —
+/// otherwise a bogus id would still commit a real `time_entries` row (since
+/// SQLite enforces no foreign key here) only to fail moments later inside
+/// the recompute step, leaving an orphaned entry behind despite the overall
+/// command reporting an error.
+#[tauri::command]
+pub fn add_manual_time_entry(
+    state: State<AppState>,
+    task_id: String,
+    started_at: String,
+    ended_at: String,
+) -> Result<(), String> {
+    storage::load_task(&state.tasks_dir, &task_id).map_err(|e| e.to_string())?;
+    let started = parse_rfc3339_input(&started_at, "started_at")?;
+    let ended = parse_rfc3339_input(&ended_at, "ended_at")?;
+    validate_time_range(started, Some(ended))?;
+
+    let conn = state.time_db.lock().map_err(|e| e.to_string())?;
+    time_storage::insert_completed_entry(&conn, &task_id, started, ended)
+        .map_err(|e| e.to_string())?;
+    time_tracking::recompute_and_persist_tracked_minutes(&conn, &state.tasks_dir, &task_id)
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Overwrites an existing time entry's `started_at`/`ended_at` for manual
+/// correction. `ended_at` of `None` reopens the entry as currently-running;
+/// if given, it must come strictly after `started_at` (see
+/// [`validate_time_range`]). Recomputes the owning task's
+/// `tracked_minutes` afterward (looked up via the entry itself, since the
+/// caller only supplies an entry id).
+#[tauri::command]
+pub fn update_time_entry(
+    state: State<AppState>,
+    entry_id: String,
+    started_at: String,
+    ended_at: Option<String>,
+) -> Result<(), String> {
+    let started = parse_rfc3339_input(&started_at, "started_at")?;
+    let ended = match &ended_at {
+        Some(value) => Some(parse_rfc3339_input(value, "ended_at")?),
+        None => None,
+    };
+    validate_time_range(started, ended)?;
+
+    let conn = state.time_db.lock().map_err(|e| e.to_string())?;
+    let entry = time_storage::get_entry(&conn, &entry_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "time entry not found".to_string())?;
+
+    time_storage::update_entry_times(&conn, &entry_id, started, ended)
+        .map_err(|e| e.to_string())?;
+    time_tracking::recompute_and_persist_tracked_minutes(&conn, &state.tasks_dir, &entry.task_id)
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Deletes a single time entry by id, then recomputes its task's
+/// `tracked_minutes`. Unlike the force-stop cascade's use of
+/// [`time_storage::end_entry`] (a deliberate no-op when there's nothing to
+/// end), this is a direct user-initiated delete of one specific, known-to-
+/// exist entry from the time-log UI — so a missing `entry_id` is treated as
+/// a real error rather than silently doing nothing.
+#[tauri::command]
+pub fn delete_time_entry(state: State<AppState>, entry_id: String) -> Result<(), String> {
+    let conn = state.time_db.lock().map_err(|e| e.to_string())?;
+    let entry = time_storage::get_entry(&conn, &entry_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "time entry not found".to_string())?;
+
+    time_storage::delete_entry(&conn, &entry_id).map_err(|e| e.to_string())?;
+    time_tracking::recompute_and_persist_tracked_minutes(&conn, &state.tasks_dir, &entry.task_id)
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Every time entry (active or completed) recorded against `task_id` —
+/// backs the time-log UI. Date-range filtering is deferred to the Phase
+/// 2/3 dashboard work (see the time-tracking-engine spec); not implemented
+/// here.
+#[tauri::command]
+pub fn list_time_entries(
+    state: State<AppState>,
+    task_id: String,
+) -> Result<Vec<time_storage::TimeEntry>, String> {
+    let conn = state.time_db.lock().map_err(|e| e.to_string())?;
+    time_storage::list_entries_for_task(&conn, &task_id).map_err(|e| e.to_string())
+}
+
+/// Looks up `project_id` within `projects` and either returns its existing
+/// tracking task unchanged or lazily creates one — the pure read-modify
+/// step behind [`get_or_create_tracking_task`], split out so it can be unit
+/// tested without a live `State<AppState>` (mirrors how
+/// [`get_or_create_subtask_container`] is itself the pure helper behind
+/// [`ensure_subtask_container`]).
+///
+/// `Project.tracking_task_id` (see `Project::tracking_task_id`'s own doc
+/// comment) is updated on `projects[index]` in place when a new tracking
+/// task is created. If it already names a task that still loads
+/// successfully from `tasks_dir`, that id is reused unchanged — including
+/// when the file lookup itself fails to parse for reasons other than "the
+/// file doesn't exist" (treated the same as a missing file: recreate
+/// rather than propagate an unrelated parse error up through a lazy
+/// creation path). Returns `Err` only when `project_id` doesn't name any
+/// project in `projects`.
+fn get_or_create_tracking_task_for_project(
+    tasks_dir: &Path,
+    projects: &mut [Project],
+    project_id: &str,
+) -> Result<Task, String> {
+    let index = projects
+        .iter()
+        .position(|p| p.id == project_id)
+        .ok_or_else(|| "project not found".to_string())?;
+
+    if let Some(existing_id) = &projects[index].tracking_task_id {
+        if let Ok(existing_task) = storage::load_task(tasks_dir, existing_id) {
+            return Ok(existing_task);
+        }
+    }
+
+    let mut tracking_task = Task::new(format!("{} — General time", projects[index].name));
+    tracking_task.hidden = true;
+    tracking_task.project_id = Some(project_id.to_string());
+    projects[index].tracking_task_id = Some(tracking_task.id.clone());
+
+    Ok(tracking_task)
+}
+
+/// Looks up or lazily creates `project_id`'s "tracking task" — the hidden
+/// `Task` (see `Task::hidden`) used to track a project as a whole, rather
+/// than any single task within it (see `Project::tracking_task_id`).
+/// Directly mirrors [`ensure_subtask_container`], just inverted: a project
+/// growing a hidden task instead of a task growing a hidden project. See
+/// [`get_or_create_tracking_task_for_project`] for the pure lookup/creation
+/// logic; this wrapper just loads/persists the project list and the new
+/// task file (when one was created) around it.
+fn get_or_create_tracking_task(
+    state: &State<AppState>,
+    project_id: &str,
+) -> Result<String, String> {
+    let _guard = state.projects_lock.lock().map_err(|e| e.to_string())?;
+    let mut projects =
+        project_storage::list_projects(&state.projects_file).map_err(|e| e.to_string())?;
+
+    let before = projects
+        .iter()
+        .find(|p| p.id == project_id)
+        .and_then(|p| p.tracking_task_id.clone());
+
+    let tracking_task =
+        get_or_create_tracking_task_for_project(&state.tasks_dir, &mut projects, project_id)?;
+
+    if Some(tracking_task.id.clone()) != before {
+        storage::save_task(&state.tasks_dir, &tracking_task).map_err(|e| e.to_string())?;
+        project_storage::save_projects(&state.projects_file, &projects)
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(tracking_task.id)
+}
+
+/// Starts time-tracking for `project_id` as a whole, lazily creating its
+/// hidden tracking task on first use (see [`get_or_create_tracking_task`]),
+/// then delegating to the same logic as [`start_tracking`].
+#[tauri::command]
+pub fn start_project_tracking(state: State<AppState>, project_id: String) -> Result<(), String> {
+    let task_id = get_or_create_tracking_task(&state, &project_id)?;
+    let conn = state.time_db.lock().map_err(|e| e.to_string())?;
+    time_storage::start_entry(&conn, &task_id, chrono::Utc::now()).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Stops time-tracking for `project_id` as a whole and returns the
+/// recomputed `tracked_minutes` for its tracking task. Unlike
+/// [`start_project_tracking`], does not lazily create the tracking task —
+/// a project that's never been tracked has nothing to stop, which is a
+/// real error here (unlike [`stop_tracking`]'s no-active-session no-op),
+/// since the caller should never be able to reach "stop" without having
+/// reached "start" first.
+#[tauri::command]
+pub fn stop_project_tracking(state: State<AppState>, project_id: String) -> Result<u32, String> {
+    let projects =
+        project_storage::list_projects(&state.projects_file).map_err(|e| e.to_string())?;
+    let project = projects
+        .iter()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| "project not found".to_string())?;
+    let task_id = project
+        .tracking_task_id
+        .clone()
+        .ok_or_else(|| "project has no tracking task".to_string())?;
+
+    let conn = state.time_db.lock().map_err(|e| e.to_string())?;
+    time_storage::end_entry(&conn, &task_id, chrono::Utc::now()).map_err(|e| e.to_string())?;
+    time_tracking::recompute_and_persist_tracked_minutes(&conn, &state.tasks_dir, &task_id)
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -3070,6 +3519,85 @@ mod tests {
 
         assert_ne!(container.id, "already-deleted-container");
         assert_eq!(task.subtask_project_id, Some(container.id));
+    }
+
+    #[test]
+    fn get_or_create_tracking_task_for_project_creates_one_on_first_call() {
+        let tasks_dir = tempdir().unwrap();
+        let project = Project::new("Acme Launch".to_string(), "#3b82f6".to_string(), 1);
+        let project_id = project.id.clone();
+        let mut projects = vec![project];
+
+        let tracking_task =
+            get_or_create_tracking_task_for_project(tasks_dir.path(), &mut projects, &project_id)
+                .unwrap();
+
+        assert_eq!(tracking_task.title, "Acme Launch — General time");
+        assert_eq!(tracking_task.project_id, Some(project_id.clone()));
+        assert_eq!(projects[0].tracking_task_id, Some(tracking_task.id.clone()));
+    }
+
+    #[test]
+    fn get_or_create_tracking_task_for_project_created_task_is_hidden() {
+        let tasks_dir = tempdir().unwrap();
+        let project = Project::new("Acme Launch".to_string(), "#3b82f6".to_string(), 1);
+        let project_id = project.id.clone();
+        let mut projects = vec![project];
+
+        let tracking_task =
+            get_or_create_tracking_task_for_project(tasks_dir.path(), &mut projects, &project_id)
+                .unwrap();
+
+        assert!(tracking_task.hidden);
+    }
+
+    #[test]
+    fn get_or_create_tracking_task_for_project_returns_the_existing_one_on_a_second_call() {
+        let tasks_dir = tempdir().unwrap();
+        let project = Project::new("Acme Launch".to_string(), "#3b82f6".to_string(), 1);
+        let project_id = project.id.clone();
+        let mut projects = vec![project];
+
+        let first =
+            get_or_create_tracking_task_for_project(tasks_dir.path(), &mut projects, &project_id)
+                .unwrap();
+        storage::save_task(tasks_dir.path(), &first).unwrap();
+
+        let second =
+            get_or_create_tracking_task_for_project(tasks_dir.path(), &mut projects, &project_id)
+                .unwrap();
+
+        assert_eq!(first.id, second.id);
+    }
+
+    #[test]
+    fn get_or_create_tracking_task_for_project_recreates_one_for_a_stale_pointer() {
+        let tasks_dir = tempdir().unwrap();
+        let mut project = Project::new("Acme Launch".to_string(), "#3b82f6".to_string(), 1);
+        project.tracking_task_id = Some("already-deleted-task".to_string());
+        let project_id = project.id.clone();
+        let mut projects = vec![project];
+
+        let tracking_task =
+            get_or_create_tracking_task_for_project(tasks_dir.path(), &mut projects, &project_id)
+                .unwrap();
+
+        assert_ne!(tracking_task.id, "already-deleted-task");
+        assert_eq!(projects[0].tracking_task_id, Some(tracking_task.id));
+    }
+
+    #[test]
+    fn get_or_create_tracking_task_for_project_errors_for_an_unknown_project() {
+        let tasks_dir = tempdir().unwrap();
+        let mut projects: Vec<Project> = vec![];
+
+        let result = get_or_create_tracking_task_for_project(
+            tasks_dir.path(),
+            &mut projects,
+            "does-not-exist",
+        );
+
+        assert!(result.is_err());
     }
 
     #[test]
@@ -4776,5 +5304,533 @@ mod tests {
         let projects = vec![a, b];
 
         assert!(validate_parent_id(&projects, Some("b"), Some("a")).is_ok());
+    }
+
+    /// Integration tests for the force-stop cascade wiring (part C of the
+    /// time-tracking-engine Milestone 2 plan): `update_task` completing a
+    /// task, `delete_subtask_container` completing every subtask,
+    /// `finish_day` archiving a task, and `delete_task` removing a task,
+    /// all force-stop any active time-tracking session first.
+    ///
+    /// These exercise [`force_stop_and_recompute_with`] (the pure helper
+    /// behind [`force_stop_and_recompute`]) directly against a real tempdir
+    /// + in-memory SQLite connection, combined with each call site's own
+    /// real cascade-decision logic (`is_finished`, `force_done_except_cancelled`,
+    /// `tasks_and_containers_to_finish`, `subtasks_and_container_to_delete`)
+    /// — `#[tauri::command]` functions themselves can't be invoked directly
+    /// in a unit test, since `tauri::State` has no public constructor
+    /// outside of a running app (see [`force_stop_and_recompute_with`]'s
+    /// own doc comment), so this is the closest faithful reproduction of
+    /// each wiring point's actual end-to-end behavior.
+    mod force_stop_cascade_tests {
+        use super::*;
+        use rusqlite::Connection;
+
+        fn setup() -> (tempfile::TempDir, Connection) {
+            let tasks_dir = tempdir().unwrap();
+            let conn = Connection::open_in_memory().unwrap();
+            time_storage::init_schema(&conn).unwrap();
+            (tasks_dir, conn)
+        }
+
+        fn dt(rfc3339: &str) -> chrono::DateTime<chrono::Utc> {
+            chrono::DateTime::parse_from_rfc3339(rfc3339)
+                .unwrap()
+                .with_timezone(&chrono::Utc)
+        }
+
+        // --- update_task's "completing a task force-stops it" path ---
+
+        #[test]
+        fn completing_a_task_force_stops_its_active_session_and_updates_tracked_minutes() {
+            let (tasks_dir, conn) = setup();
+            let task = Task::new("Write report".to_string());
+            storage::save_task(tasks_dir.path(), &task).unwrap();
+            time_storage::start_entry(&conn, &task.id, dt("2026-06-15T09:00:00+00:00")).unwrap();
+
+            let settings = Settings::default();
+            let mut existing = task.clone();
+            existing.status = settings.done_status.clone();
+            assert!(is_finished(&existing, &settings));
+
+            // force_stop_and_recompute_with always ends the session at
+            // chrono::Utc::now(), so the exact elapsed minutes depends on
+            // wall-clock time at test-run time — assert only that *some*
+            // positive amount of time was captured and persisted, not an
+            // exact value, to avoid a flaky wall-clock-dependent assertion.
+            let minutes =
+                force_stop_and_recompute_with(&conn, tasks_dir.path(), &existing.id).unwrap();
+
+            assert!(
+                minutes > 0,
+                "expected a positive elapsed duration, got {minutes}"
+            );
+            assert_eq!(
+                time_storage::get_active_entry_for_task(&conn, &existing.id).unwrap(),
+                None
+            );
+            let reloaded = storage::load_task(tasks_dir.path(), &existing.id).unwrap();
+            assert_eq!(reloaded.tracked_minutes, minutes);
+        }
+
+        #[test]
+        fn completing_a_task_with_no_active_session_is_a_no_op() {
+            let (tasks_dir, conn) = setup();
+            let task = Task::new("Write report".to_string());
+            storage::save_task(tasks_dir.path(), &task).unwrap();
+
+            let minutes = force_stop_and_recompute_with(&conn, tasks_dir.path(), &task.id).unwrap();
+
+            assert_eq!(minutes, 0);
+            assert_eq!(
+                time_storage::get_active_entry_for_task(&conn, &task.id).unwrap(),
+                None
+            );
+        }
+
+        #[test]
+        fn is_finished_does_not_flag_a_task_left_in_a_non_terminal_status() {
+            let settings = Settings::default();
+            let mut task = Task::new("Write report".to_string());
+            task.status = "in-progress".to_string();
+
+            assert!(!is_finished(&task, &settings));
+        }
+
+        // --- delete_subtask_container's per-subtask force-stop ---
+
+        #[test]
+        fn delete_subtask_container_cascade_force_stops_every_completed_subtasks_session() {
+            let (tasks_dir, conn) = setup();
+            let settings = Settings::default();
+
+            let parent_project_id = "parent-project".to_string();
+            let subtask_a = Task::new("Subtask A".to_string());
+            let subtask_b = Task::new("Subtask B".to_string());
+            storage::save_task(tasks_dir.path(), &subtask_a).unwrap();
+            storage::save_task(tasks_dir.path(), &subtask_b).unwrap();
+
+            time_storage::start_entry(&conn, &subtask_a.id, dt("2026-06-15T09:00:00+00:00"))
+                .unwrap();
+            time_storage::start_entry(&conn, &subtask_b.id, dt("2026-06-15T10:00:00+00:00"))
+                .unwrap();
+
+            let reassigned = vec![
+                Task {
+                    project_id: Some(parent_project_id.clone()),
+                    ..subtask_a.clone()
+                },
+                Task {
+                    project_id: Some(parent_project_id.clone()),
+                    ..subtask_b.clone()
+                },
+            ];
+            let completed = force_done_except_cancelled(
+                reassigned,
+                &settings.done_status,
+                settings.cancelled_status.as_deref(),
+            );
+            assert_eq!(completed.len(), 2);
+
+            for mut subtask in completed {
+                subtask.tracked_minutes =
+                    force_stop_and_recompute_with(&conn, tasks_dir.path(), &subtask.id).unwrap();
+                storage::update_task(tasks_dir.path(), &subtask).unwrap();
+            }
+
+            assert_eq!(
+                time_storage::get_active_entry_for_task(&conn, &subtask_a.id).unwrap(),
+                None
+            );
+            assert_eq!(
+                time_storage::get_active_entry_for_task(&conn, &subtask_b.id).unwrap(),
+                None
+            );
+            let reloaded_a = storage::load_task(tasks_dir.path(), &subtask_a.id).unwrap();
+            assert!(reloaded_a.tracked_minutes > 0);
+        }
+
+        #[test]
+        fn delete_subtask_container_cascade_is_a_no_op_for_subtasks_with_no_active_session() {
+            let (tasks_dir, conn) = setup();
+            let settings = Settings::default();
+
+            let subtask = Task::new("Subtask A".to_string());
+            storage::save_task(tasks_dir.path(), &subtask).unwrap();
+
+            let completed = force_done_except_cancelled(
+                vec![subtask.clone()],
+                &settings.done_status,
+                settings.cancelled_status.as_deref(),
+            );
+
+            for mut subtask in completed {
+                subtask.tracked_minutes =
+                    force_stop_and_recompute_with(&conn, tasks_dir.path(), &subtask.id).unwrap();
+                storage::update_task(tasks_dir.path(), &subtask).unwrap();
+            }
+
+            let reloaded = storage::load_task(tasks_dir.path(), &subtask.id).unwrap();
+            assert_eq!(reloaded.tracked_minutes, 0);
+        }
+
+        // --- finish_day's force-stop-then-archive ordering ---
+
+        #[test]
+        fn finish_day_force_stops_and_persists_tracked_minutes_before_archiving() {
+            let tasks_dir = tempdir().unwrap();
+            let archive_dir = tempdir().unwrap();
+            let conn = Connection::open_in_memory().unwrap();
+            time_storage::init_schema(&conn).unwrap();
+            let settings = Settings::default();
+
+            let mut task = Task::new("Finish this".to_string());
+            task.status = settings.done_status.clone();
+            storage::save_task(tasks_dir.path(), &task).unwrap();
+            time_storage::start_entry(&conn, &task.id, dt("2026-06-15T09:00:00+00:00")).unwrap();
+
+            let (task_ids, _) = tasks_and_containers_to_finish(&[task.clone()], &settings);
+            assert_eq!(task_ids, vec![task.id.clone()]);
+
+            for task_id in &task_ids {
+                let minutes =
+                    force_stop_and_recompute_with(&conn, tasks_dir.path(), task_id).unwrap();
+                let mut t = storage::load_task(tasks_dir.path(), task_id).unwrap();
+                t.tracked_minutes = minutes;
+                storage::update_task(tasks_dir.path(), &t).unwrap();
+
+                storage::archive_task(tasks_dir.path(), archive_dir.path(), task_id).unwrap();
+            }
+
+            assert_eq!(
+                time_storage::get_active_entry_for_task(&conn, &task.id).unwrap(),
+                None
+            );
+            let archived = storage::load_task(archive_dir.path(), &task.id).unwrap();
+            assert!(archived.tracked_minutes > 0);
+        }
+
+        #[test]
+        fn finish_day_force_stop_is_a_no_op_when_nothing_was_tracking() {
+            let tasks_dir = tempdir().unwrap();
+            let archive_dir = tempdir().unwrap();
+            let conn = Connection::open_in_memory().unwrap();
+            time_storage::init_schema(&conn).unwrap();
+            let settings = Settings::default();
+
+            let mut task = Task::new("Finish this".to_string());
+            task.status = settings.done_status.clone();
+            storage::save_task(tasks_dir.path(), &task).unwrap();
+
+            let (task_ids, _) = tasks_and_containers_to_finish(&[task.clone()], &settings);
+            for task_id in &task_ids {
+                let minutes =
+                    force_stop_and_recompute_with(&conn, tasks_dir.path(), task_id).unwrap();
+                let mut t = storage::load_task(tasks_dir.path(), task_id).unwrap();
+                t.tracked_minutes = minutes;
+                storage::update_task(tasks_dir.path(), &t).unwrap();
+                storage::archive_task(tasks_dir.path(), archive_dir.path(), task_id).unwrap();
+            }
+
+            let archived = storage::load_task(archive_dir.path(), &task.id).unwrap();
+            assert_eq!(archived.tracked_minutes, 0);
+        }
+
+        // --- delete_task's force-stop of itself and every cascaded subtask ---
+
+        #[test]
+        fn delete_task_force_stops_the_targets_active_session_before_deletion() {
+            let (tasks_dir, conn) = setup();
+            let task = Task::new("Delete me".to_string());
+            storage::save_task(tasks_dir.path(), &task).unwrap();
+            time_storage::start_entry(&conn, &task.id, dt("2026-06-15T09:00:00+00:00")).unwrap();
+
+            force_stop_and_recompute_with(&conn, tasks_dir.path(), &task.id).unwrap();
+            storage::delete_task(tasks_dir.path(), &task.id).unwrap();
+
+            assert_eq!(
+                time_storage::get_active_entry_for_task(&conn, &task.id).unwrap(),
+                None
+            );
+        }
+
+        #[test]
+        fn delete_task_force_stops_every_cascaded_subtasks_active_session_too() {
+            let (tasks_dir, conn) = setup();
+            let parent = Task::new("Parent".to_string());
+            let subtask = Task::new("Subtask".to_string());
+            storage::save_task(tasks_dir.path(), &parent).unwrap();
+            storage::save_task(tasks_dir.path(), &subtask).unwrap();
+            time_storage::start_entry(&conn, &parent.id, dt("2026-06-15T09:00:00+00:00")).unwrap();
+            time_storage::start_entry(&conn, &subtask.id, dt("2026-06-15T09:30:00+00:00")).unwrap();
+
+            force_stop_and_recompute_with(&conn, tasks_dir.path(), &parent.id).unwrap();
+            for subtask_id in [&subtask.id] {
+                force_stop_and_recompute_with(&conn, tasks_dir.path(), subtask_id).unwrap();
+                storage::delete_task(tasks_dir.path(), subtask_id).unwrap();
+            }
+            storage::delete_task(tasks_dir.path(), &parent.id).unwrap();
+
+            assert_eq!(
+                time_storage::get_active_entry_for_task(&conn, &parent.id).unwrap(),
+                None
+            );
+            assert_eq!(
+                time_storage::get_active_entry_for_task(&conn, &subtask.id).unwrap(),
+                None
+            );
+        }
+
+        #[test]
+        fn delete_task_force_stop_is_a_no_op_when_no_session_was_active() {
+            let (tasks_dir, conn) = setup();
+            let task = Task::new("Delete me".to_string());
+            storage::save_task(tasks_dir.path(), &task).unwrap();
+
+            let result = force_stop_and_recompute_with(&conn, tasks_dir.path(), &task.id);
+            storage::delete_task(tasks_dir.path(), &task.id).unwrap();
+
+            assert!(result.is_ok());
+            assert_eq!(result.unwrap(), 0);
+        }
+    }
+
+    mod time_tracking_command_helper_tests {
+        use super::*;
+        use rusqlite::Connection;
+
+        fn setup() -> (tempfile::TempDir, Connection) {
+            let tasks_dir = tempdir().unwrap();
+            let conn = Connection::open_in_memory().unwrap();
+            time_storage::init_schema(&conn).unwrap();
+            (tasks_dir, conn)
+        }
+
+        fn dt(rfc3339: &str) -> chrono::DateTime<chrono::Utc> {
+            chrono::DateTime::parse_from_rfc3339(rfc3339)
+                .unwrap()
+                .with_timezone(&chrono::Utc)
+        }
+
+        #[test]
+        fn validate_orphaned_session_action_accepts_resume() {
+            assert!(validate_orphaned_session_action("resume").is_ok());
+        }
+
+        #[test]
+        fn validate_orphaned_session_action_accepts_discard() {
+            assert!(validate_orphaned_session_action("discard").is_ok());
+        }
+
+        #[test]
+        fn validate_orphaned_session_action_rejects_an_unknown_action() {
+            let err = validate_orphaned_session_action("delete-forever").unwrap_err();
+            assert!(err.contains("delete-forever"));
+        }
+
+        #[test]
+        fn validate_orphaned_session_action_rejects_an_empty_action() {
+            assert!(validate_orphaned_session_action("").is_err());
+        }
+
+        #[test]
+        fn parse_rfc3339_field_accepts_a_valid_timestamp() {
+            let result = parse_rfc3339_field("2026-06-15T09:00:00+00:00", "started_at");
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn parse_rfc3339_field_rejects_a_malformed_timestamp() {
+            let err = parse_rfc3339_field("not-a-date", "started_at").unwrap_err();
+            assert!(err.contains("started_at"));
+        }
+
+        #[test]
+        fn parse_rfc3339_input_accepts_a_valid_timestamp() {
+            let result = parse_rfc3339_input("2026-06-15T09:00:00+00:00", "started_at");
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn parse_rfc3339_input_rejects_a_malformed_timestamp() {
+            let err = parse_rfc3339_input("not-a-date", "ended_at").unwrap_err();
+            assert!(err.contains("ended_at"));
+        }
+
+        #[test]
+        fn discard_orphaned_session_with_ends_at_the_last_heartbeat() {
+            let (tasks_dir, conn) = setup();
+            let task = Task::new("Tracked task".to_string());
+            storage::save_task(tasks_dir.path(), &task).unwrap();
+            let entry = time_storage::start_entry(&conn, &task.id, dt("2026-06-15T09:00:00+00:00"))
+                .unwrap();
+            time_storage::update_heartbeat(&conn, &task.id, dt("2026-06-15T09:20:00+00:00"))
+                .unwrap();
+
+            discard_orphaned_session_with(&conn, tasks_dir.path(), &entry.id).unwrap();
+
+            let stored = time_storage::get_entry(&conn, &entry.id).unwrap().unwrap();
+            assert_eq!(
+                stored.ended_at,
+                Some("2026-06-15T09:20:00+00:00".to_string())
+            );
+            let reloaded = storage::load_task(tasks_dir.path(), &task.id).unwrap();
+            assert_eq!(reloaded.tracked_minutes, 20);
+        }
+
+        #[test]
+        fn discard_orphaned_session_with_falls_back_to_started_at_when_no_heartbeat_was_ever_recorded(
+        ) {
+            let (tasks_dir, conn) = setup();
+            let task = Task::new("Tracked task".to_string());
+            storage::save_task(tasks_dir.path(), &task).unwrap();
+            let entry = time_storage::start_entry(&conn, &task.id, dt("2026-06-15T09:00:00+00:00"))
+                .unwrap();
+
+            discard_orphaned_session_with(&conn, tasks_dir.path(), &entry.id).unwrap();
+
+            let stored = time_storage::get_entry(&conn, &entry.id).unwrap().unwrap();
+            assert_eq!(
+                stored.ended_at,
+                Some("2026-06-15T09:00:00+00:00".to_string())
+            );
+            let reloaded = storage::load_task(tasks_dir.path(), &task.id).unwrap();
+            assert_eq!(reloaded.tracked_minutes, 0);
+        }
+
+        #[test]
+        fn discard_orphaned_session_with_errors_for_an_unknown_entry_id() {
+            let (tasks_dir, conn) = setup();
+
+            let result = discard_orphaned_session_with(&conn, tasks_dir.path(), "does-not-exist");
+
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn discard_orphaned_session_with_does_not_disturb_other_tasks_active_sessions() {
+            let (tasks_dir, conn) = setup();
+            let task_a = Task::new("Task A".to_string());
+            let task_b = Task::new("Task B".to_string());
+            storage::save_task(tasks_dir.path(), &task_a).unwrap();
+            storage::save_task(tasks_dir.path(), &task_b).unwrap();
+            let entry_a =
+                time_storage::start_entry(&conn, &task_a.id, dt("2026-06-15T09:00:00+00:00"))
+                    .unwrap();
+            time_storage::start_entry(&conn, &task_b.id, dt("2026-06-15T09:00:00+00:00")).unwrap();
+
+            discard_orphaned_session_with(&conn, tasks_dir.path(), &entry_a.id).unwrap();
+
+            assert_eq!(
+                time_storage::get_active_entry_for_task(&conn, &task_a.id).unwrap(),
+                None
+            );
+            assert!(time_storage::get_active_entry_for_task(&conn, &task_b.id)
+                .unwrap()
+                .is_some());
+        }
+
+        #[test]
+        fn validate_time_range_accepts_an_end_strictly_after_start() {
+            let started = dt("2026-06-15T09:00:00+00:00");
+            let ended = dt("2026-06-15T09:30:00+00:00");
+
+            assert!(validate_time_range(started, Some(ended)).is_ok());
+        }
+
+        #[test]
+        fn validate_time_range_accepts_a_none_end_reopening_the_entry() {
+            let started = dt("2026-06-15T09:00:00+00:00");
+
+            assert!(validate_time_range(started, None).is_ok());
+        }
+
+        #[test]
+        fn validate_time_range_rejects_an_end_equal_to_start() {
+            let started = dt("2026-06-15T09:00:00+00:00");
+
+            let err = validate_time_range(started, Some(started)).unwrap_err();
+            assert!(err.contains("end time"));
+        }
+
+        #[test]
+        fn validate_time_range_rejects_an_end_before_start() {
+            let started = dt("2026-06-15T09:30:00+00:00");
+            let ended = dt("2026-06-15T09:00:00+00:00");
+
+            assert!(validate_time_range(started, Some(ended)).is_err());
+        }
+
+        #[test]
+        fn manual_entry_then_recompute_updates_tracked_minutes() {
+            let (tasks_dir, conn) = setup();
+            let task = Task::new("Write report".to_string());
+            storage::save_task(tasks_dir.path(), &task).unwrap();
+
+            let started = dt("2026-06-15T09:00:00+00:00");
+            let ended = dt("2026-06-15T09:45:00+00:00");
+            validate_time_range(started, Some(ended)).unwrap();
+            time_storage::insert_completed_entry(&conn, &task.id, started, ended).unwrap();
+            time_tracking::recompute_and_persist_tracked_minutes(&conn, tasks_dir.path(), &task.id)
+                .unwrap();
+
+            let reloaded = storage::load_task(tasks_dir.path(), &task.id).unwrap();
+            assert_eq!(reloaded.tracked_minutes, 45);
+        }
+
+        #[test]
+        fn update_entry_then_recompute_reflects_the_corrected_duration() {
+            let (tasks_dir, conn) = setup();
+            let task = Task::new("Write report".to_string());
+            storage::save_task(tasks_dir.path(), &task).unwrap();
+            let entry = time_storage::insert_completed_entry(
+                &conn,
+                &task.id,
+                dt("2026-06-15T09:00:00+00:00"),
+                dt("2026-06-15T09:10:00+00:00"),
+            )
+            .unwrap();
+            time_tracking::recompute_and_persist_tracked_minutes(&conn, tasks_dir.path(), &task.id)
+                .unwrap();
+
+            let corrected_started = dt("2026-06-15T09:00:00+00:00");
+            let corrected_ended = dt("2026-06-15T10:00:00+00:00");
+            validate_time_range(corrected_started, Some(corrected_ended)).unwrap();
+            time_storage::update_entry_times(
+                &conn,
+                &entry.id,
+                corrected_started,
+                Some(corrected_ended),
+            )
+            .unwrap();
+            time_tracking::recompute_and_persist_tracked_minutes(&conn, tasks_dir.path(), &task.id)
+                .unwrap();
+
+            let reloaded = storage::load_task(tasks_dir.path(), &task.id).unwrap();
+            assert_eq!(reloaded.tracked_minutes, 60);
+        }
+
+        #[test]
+        fn delete_entry_then_recompute_drops_its_contribution() {
+            let (tasks_dir, conn) = setup();
+            let task = Task::new("Write report".to_string());
+            storage::save_task(tasks_dir.path(), &task).unwrap();
+            let entry = time_storage::insert_completed_entry(
+                &conn,
+                &task.id,
+                dt("2026-06-15T09:00:00+00:00"),
+                dt("2026-06-15T09:30:00+00:00"),
+            )
+            .unwrap();
+            time_tracking::recompute_and_persist_tracked_minutes(&conn, tasks_dir.path(), &task.id)
+                .unwrap();
+
+            time_storage::delete_entry(&conn, &entry.id).unwrap();
+            time_tracking::recompute_and_persist_tracked_minutes(&conn, tasks_dir.path(), &task.id)
+                .unwrap();
+
+            let reloaded = storage::load_task(tasks_dir.path(), &task.id).unwrap();
+            assert_eq!(reloaded.tracked_minutes, 0);
+        }
     }
 }
