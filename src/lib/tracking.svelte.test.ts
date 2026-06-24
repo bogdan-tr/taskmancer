@@ -38,6 +38,7 @@ function makeSettings(overrides: Partial<Settings> = {}): Settings {
     max_visible_subtasks: 5,
     tracking_auto_transition_enabled: false,
     tracking_auto_transition_status_id: undefined,
+    card_tracked_time_display: "total",
     ...overrides,
   };
 }
@@ -238,6 +239,55 @@ describe("tracking.svelte", () => {
       expect(liveTrackedSecondsFor(makeTask({ id: "task-1", tracked_minutes: 0 }))).toBe(
         elapsedSecondsFor("task-1"),
       );
+    });
+  });
+
+  describe("liveDisplaySecondsFor", () => {
+    it("returns undefined when the task has no active session, regardless of mode", async () => {
+      const { trackingState, liveDisplaySecondsFor } = await import("./tracking.svelte");
+      trackingState.activeSessions = [];
+
+      const task = makeTask({ id: "task-1", tracked_minutes: 30 });
+      expect(liveDisplaySecondsFor(task, "total")).toBeUndefined();
+      expect(liveDisplaySecondsFor(task, "session")).toBeUndefined();
+    });
+
+    it("'total' mode includes prior tracked minutes, matching liveTrackedSecondsFor", async () => {
+      const { trackingState, liveDisplaySecondsFor } = await import("./tracking.svelte");
+      trackingState.activeSessions = [
+        makeEntry({ task_id: "task-1", started_at: "2026-06-15T10:00:00+00:00" }),
+      ];
+      trackingState.nowMs = Date.parse("2026-06-15T10:00:10+00:00");
+
+      // 2 prior minutes (120s) + 10s of the current session = 130s.
+      expect(liveDisplaySecondsFor(makeTask({ id: "task-1", tracked_minutes: 2 }), "total")).toBe(130);
+    });
+
+    it("'session' mode ignores prior tracked minutes, matching elapsedSecondsFor", async () => {
+      const { trackingState, liveDisplaySecondsFor, elapsedSecondsFor } = await import("./tracking.svelte");
+      trackingState.activeSessions = [
+        makeEntry({ task_id: "task-1", started_at: "2026-06-15T10:00:00+00:00" }),
+      ];
+      trackingState.nowMs = Date.parse("2026-06-15T10:00:10+00:00");
+
+      // 2 prior minutes are deliberately NOT included — just the 10s of this session.
+      const task = makeTask({ id: "task-1", tracked_minutes: 2 });
+      expect(liveDisplaySecondsFor(task, "session")).toBe(10);
+      expect(liveDisplaySecondsFor(task, "session")).toBe(elapsedSecondsFor("task-1"));
+    });
+
+    it("'session' mode restarts from zero on every resume, unlike 'total'", async () => {
+      const { trackingState, liveDisplaySecondsFor } = await import("./tracking.svelte");
+      const task = makeTask({ id: "task-1", tracked_minutes: 5 });
+
+      // Freshly resumed: only 3 seconds into the new session so far.
+      trackingState.activeSessions = [
+        makeEntry({ task_id: "task-1", started_at: "2026-06-15T11:00:00+00:00" }),
+      ];
+      trackingState.nowMs = Date.parse("2026-06-15T11:00:03+00:00");
+
+      expect(liveDisplaySecondsFor(task, "session")).toBe(3);
+      expect(liveDisplaySecondsFor(task, "total")).toBe(303);
     });
   });
 

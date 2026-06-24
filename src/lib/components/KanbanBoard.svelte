@@ -65,7 +65,7 @@
   import { refreshTags } from "$lib/tags.svelte";
   import {
     isTaskActive,
-    liveTrackedSecondsFor,
+    liveDisplaySecondsFor,
     startProjectTracking,
     stopProjectTracking,
   } from "$lib/tracking.svelte";
@@ -212,10 +212,13 @@
    * bar here — passed to `WeekView`/`CalendarView` instead of `visibleTasks`
    * directly, mirroring the equivalent exclusion `boardVisible` (inside
    * `refresh`/`replaceTask`) applies to the Kanban grid's own buckets. See
-   * `isHiddenAsSubtask`'s own doc comment for the exact rule.
+   * `isHiddenAsSubtask`'s own doc comment for the exact rule. Also excludes
+   * any `task.hidden` task (e.g. a project's auto-generated time-tracking
+   * anchor, see `Task.hidden`'s own doc comment) — never a real, user-facing
+   * task, so it must never render as a bar here either.
    */
   let weekCalendarTasks = $derived(
-    visibleTasks.filter((task) => !isHiddenAsSubtask(task, visibleTasks, projectFilter)),
+    visibleTasks.filter((task) => !task.hidden && !isHiddenAsSubtask(task, visibleTasks, projectFilter)),
   );
 
   /** Opens the add-task modal, optionally pre-marking it as creating a subtask of the given task (the "Create Subtask" entry points). */
@@ -352,7 +355,8 @@
       visibleTasks = visible;
       const today = formatDateISO(new Date());
       const boardVisible = visible.filter(
-        (task) => isVisibleOnBoard(task, today) && !isHiddenAsSubtask(task, visible, projectFilter),
+        (task) =>
+          !task.hidden && isVisibleOnBoard(task, today) && !isHiddenAsSubtask(task, visible, projectFilter),
       );
       buckets = groupByStatusAndPriority(boardVisible, priorities, boardStatusIds, groupByPriority);
       recomputeHasOther();
@@ -478,6 +482,7 @@
 
     const withoutUpdated = removeTaskFromBuckets(buckets, updated.id);
     buckets =
+      !updated.hidden &&
       isVisibleOnBoard(updated, formatDateISO(new Date())) &&
       !isHiddenAsSubtask(updated, visibleTasks, projectFilter)
         ? insertTaskIntoBuckets(withoutUpdated, updated, priorities, groupByPriority)
@@ -592,7 +597,7 @@
     project?.tracking_task_id !== undefined && isTaskActive(project.tracking_task_id),
   );
 
-  /** The hidden tracker task itself, for `liveTrackedSecondsFor`'s ticker — needs the task's own `tracked_minutes`, not just its id. */
+  /** The hidden tracker task itself, for `liveDisplaySecondsFor`'s ticker — needs the task's own `tracked_minutes`, not just its id. */
   const projectTrackingTask = $derived(
     project?.tracking_task_id !== undefined
       ? tasksState.items.find((t) => t.id === project.tracking_task_id)
@@ -808,7 +813,12 @@
         <div class="project-tracking">
           {#if isProjectTracking && projectTrackingTask}
             <span class="project-tracking-ticker" title="Currently tracking this project">
-              {formatHms(liveTrackedSecondsFor(projectTrackingTask) ?? 0)}
+              {formatHms(
+                liveDisplaySecondsFor(
+                  projectTrackingTask,
+                  settingsState.current?.card_tracked_time_display ?? "total",
+                ) ?? 0,
+              )}
             </span>
           {/if}
           <button

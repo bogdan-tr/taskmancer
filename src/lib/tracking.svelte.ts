@@ -100,6 +100,34 @@ export function liveTrackedSecondsFor(task: Pick<Task, "id" | "tracked_minutes">
 }
 
 /**
+ * `Settings.card_tracked_time_display`'s two values — see that field's own
+ * Rust doc comment for the exact meaning of each.
+ */
+export type CardTrackedTimeDisplay = "total" | "session";
+
+/**
+ * The live ticker seconds to show for `task` while its timer is running,
+ * per the configurable `Settings.card_tracked_time_display` setting:
+ * `"total"` (the default) shows `liveTrackedSecondsFor` (cumulative,
+ * survives pause/resume); `"session"` shows only `elapsedSecondsFor` (just
+ * the current session, restarting from `0:00` on every resume — a
+ * deliberate choice some users want, e.g. to see "how long have I been at
+ * this right now"). `undefined` if `task.id` isn't currently active,
+ * regardless of mode.
+ *
+ * This only affects the *live*, actively-running display. The static chip
+ * shown once a task's timer is stopped always shows the lifetime total
+ * (`task.tracked_minutes`) either way — there's no "current session" once
+ * stopped, so this setting has nothing to apply to at that point.
+ */
+export function liveDisplaySecondsFor(
+  task: Pick<Task, "id" | "tracked_minutes">,
+  displayMode: CardTrackedTimeDisplay,
+): number | undefined {
+  return displayMode === "session" ? elapsedSecondsFor(task.id) : liveTrackedSecondsFor(task);
+}
+
+/**
  * Resolves the status id a task should auto-transition to when tracking
  * starts, per the time-tracking-engine spec's "auto-transition status on
  * tracking start" setting:

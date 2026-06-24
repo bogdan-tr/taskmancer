@@ -1,5 +1,6 @@
 import type { InkMode } from "./colorPresets";
 import type { DueRule, RecurrenceFrequency } from "./recurrence";
+import type { CardTrackedTimeDisplay } from "./tracking.svelte";
 
 export interface Task {
   id: string;
@@ -221,6 +222,14 @@ export interface Settings {
    * isn't backlog/done/cancelled.
    */
   tracking_auto_transition_status_id?: string;
+  /**
+   * Whether a card's *live* ticker (while its timer is running) shows the
+   * cumulative tracked total (`"total"`, the default) or just the current
+   * session's own elapsed time, restarting from `0:00` on every resume
+   * (`"session"`). The static chip shown once a timer is stopped always
+   * shows the lifetime total either way. See `liveDisplaySecondsFor`.
+   */
+  card_tracked_time_display: CardTrackedTimeDisplay;
 }
 
 /**

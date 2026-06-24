@@ -49,7 +49,7 @@
   import { upsertCachedTask } from "$lib/tasks.svelte";
   import {
     isTaskActive,
-    liveTrackedSecondsFor,
+    liveDisplaySecondsFor,
     startTaskTracking,
     stopTaskTracking,
   } from "$lib/tracking.svelte";
@@ -773,9 +773,9 @@
       {/if}
       {#if isTracking}
         <span class="chip tracked tracked-live" title="Currently tracking">
-          {formatHms(liveTrackedSecondsFor(task) ?? 0)}
+          {formatHms(liveDisplaySecondsFor(task, settingsState.current?.card_tracked_time_display ?? "total") ?? 0)}
         </span>
-      {:else if task.tracked_minutes > 0}
+      {:else}
         <span class="chip tracked" title="Tracked time">{formatMinutes(task.tracked_minutes)} tracked</span>
       {/if}
       {#each task.tags as tag (tag)}

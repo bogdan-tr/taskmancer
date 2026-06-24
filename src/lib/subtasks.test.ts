@@ -394,6 +394,12 @@ describe("subtaskNameSuggestions", () => {
     expect(subtaskNameSuggestions([owner, subtask], "Ref", "done", "cancelled")).toEqual([]);
   });
 
+  test("excludes hidden tasks (e.g. a project's auto-generated time-tracking anchor)", () => {
+    const task = makeTask({ id: "task", title: "General time", status: "backlog", hidden: true });
+
+    expect(subtaskNameSuggestions([task], "Gen", "done", "cancelled")).toEqual([]);
+  });
+
   test("matches case-insensitively", () => {
     const task = makeTask({ id: "task", title: "Refactor" });
 

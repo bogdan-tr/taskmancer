@@ -174,6 +174,7 @@ export function subtaskNameSuggestions(
   const lowerTyped = typedText.toLowerCase();
   const candidates = tasks.filter(
     (t) =>
+      !t.hidden &&
       t.status !== doneStatusId &&
       t.status !== cancelledStatusId &&
       !isSubtask(t, tasks) &&

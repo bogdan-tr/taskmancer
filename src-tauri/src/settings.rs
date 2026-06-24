@@ -54,6 +54,24 @@ fn default_max_visible_subtasks() -> u32 {
     5
 }
 
+/// The fixed set of values accepted by `Settings.card_tracked_time_display`.
+/// `"total"`: a card's live ticker (while its timer is running) shows the
+/// task's cumulative tracked time across every past session plus the
+/// current one — see the frontend's `liveTrackedSecondsFor`. `"session"`:
+/// the live ticker shows only the current session's own elapsed time,
+/// restarting from zero on every resume. Either way, the *stopped*-state
+/// chip (no timer currently running) always shows the lifetime total
+/// regardless of this setting — there is no "current session" once
+/// stopped, so showing anything else there wouldn't be meaningful.
+pub const CARD_TRACKED_TIME_DISPLAY_MODES: &[&str] = &["total", "session"];
+
+/// Default `Settings.card_tracked_time_display`: matches the behavior this
+/// shipped with before the setting existed (the live ticker shows the
+/// cumulative total, never resetting on resume).
+fn default_card_tracked_time_display() -> String {
+    "total".to_string()
+}
+
 /// A user-defined priority level: an id stored in `Task.priority`, a display
 /// label, a `color` used to render that priority throughout the UI, and a
 /// `rank` used to sort tasks by priority (lower `rank` sorts first / is
@@ -175,6 +193,9 @@ pub struct TaskDefaults {
 /// status list that isn't backlog/done/cancelled — that fallback resolution
 /// itself is later-milestone frontend logic, not implemented here; this
 /// struct only stores the two raw settings values.
+///
+/// `card_tracked_time_display` is one of [`CARD_TRACKED_TIME_DISPLAY_MODES`]
+/// — see that constant's own doc comment for what each value means.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Settings {
     #[serde(default)]
@@ -207,6 +228,8 @@ pub struct Settings {
     pub tracking_auto_transition_enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tracking_auto_transition_status_id: Option<String>,
+    #[serde(default = "default_card_tracked_time_display")]
+    pub card_tracked_time_display: String,
 }
 
 impl Default for Settings {
@@ -290,6 +313,7 @@ impl Default for Settings {
             max_visible_subtasks: default_max_visible_subtasks(),
             tracking_auto_transition_enabled: false,
             tracking_auto_transition_status_id: None,
+            card_tracked_time_display: default_card_tracked_time_display(),
         }
     }
 }
@@ -490,6 +514,19 @@ pub fn validate_ink_mode(value: &str) -> Result<(), String> {
     }
 }
 
+/// Returns `Ok(())` if `value` is one of [`CARD_TRACKED_TIME_DISPLAY_MODES`],
+/// or an error naming the invalid value otherwise. Used for
+/// `Settings.card_tracked_time_display`.
+pub fn validate_card_tracked_time_display(value: &str) -> Result<(), String> {
+    if CARD_TRACKED_TIME_DISPLAY_MODES.contains(&value) {
+        Ok(())
+    } else {
+        Err(format!(
+            "'{value}' is not a recognized card tracked-time display mode"
+        ))
+    }
+}
+
 /// Validates settings before they're persisted: `priorities` and `statuses`
 /// must each be non-empty with unique ids (an empty or duplicate-id list
 /// would make `validate_priority_id`/`validate_status_id` reject every task
@@ -570,6 +607,8 @@ pub fn validate_settings(settings: &Settings) -> Result<(), String> {
     if let Some(status_id) = &settings.tracking_auto_transition_status_id {
         validate_status_id(settings, status_id)?;
     }
+
+    validate_card_tracked_time_display(&settings.card_tracked_time_display)?;
 
     Ok(())
 }
@@ -1132,6 +1171,61 @@ mod tests {
         };
 
         assert!(validate_settings(&settings).is_ok());
+    }
+
+    #[test]
+    fn default_settings_seed_shows_the_cumulative_total_on_cards() {
+        let settings = Settings::default();
+
+        assert_eq!(settings.card_tracked_time_display, "total");
+    }
+
+    #[test]
+    fn deserializing_settings_without_card_tracked_time_display_defaults_to_total() {
+        let settings: Settings = serde_json::from_str("{}").unwrap();
+
+        assert_eq!(settings.card_tracked_time_display, "total");
+    }
+
+    #[test]
+    fn card_tracked_time_display_round_trips_when_set_to_session() {
+        let settings = Settings {
+            card_tracked_time_display: "session".to_string(),
+            ..Settings::default()
+        };
+
+        let json = serde_json::to_string(&settings).expect("serialization should succeed");
+        let parsed: Settings = serde_json::from_str(&json).expect("parsing should succeed");
+
+        assert_eq!(parsed.card_tracked_time_display, "session");
+    }
+
+    #[test]
+    fn validate_card_tracked_time_display_accepts_every_defined_mode() {
+        for mode in CARD_TRACKED_TIME_DISPLAY_MODES {
+            assert!(
+                validate_card_tracked_time_display(mode).is_ok(),
+                "{mode} should be valid"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_card_tracked_time_display_rejects_an_unknown_mode() {
+        let err = validate_card_tracked_time_display("always-on").unwrap_err();
+        assert!(err.contains("always-on"));
+    }
+
+    #[test]
+    fn validate_settings_rejects_an_unknown_card_tracked_time_display() {
+        let settings = Settings {
+            default_project_id: "some-project-id".to_string(),
+            card_tracked_time_display: "always-on".to_string(),
+            ..Settings::default()
+        };
+
+        let err = validate_settings(&settings).unwrap_err();
+        assert!(err.contains("always-on"));
     }
 
     #[test]

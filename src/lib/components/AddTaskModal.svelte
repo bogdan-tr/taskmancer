@@ -317,6 +317,7 @@
     const cancelledStatusId = settingsState.current?.cancelled_status;
     return allTasks.find(
       (t) =>
+        !t.hidden &&
         t.title.toLowerCase() === typed &&
         t.status !== doneStatusId &&
         t.status !== cancelledStatusId &&

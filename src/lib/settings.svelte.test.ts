@@ -26,6 +26,7 @@ const sampleSettings: Settings = {
   parent_estimate_includes_own_value: false,
   max_visible_subtasks: 5,
   tracking_auto_transition_enabled: false,
+  card_tracked_time_display: "total",
 };
 
 vi.mock("./api", () => ({

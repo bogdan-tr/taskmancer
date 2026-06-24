@@ -42,6 +42,21 @@
       isSaving = false;
     }
   }
+
+  async function handleCardTrackedTimeDisplayChange(event: Event) {
+    if (!settingsState.current) return;
+    const value = (event.currentTarget as HTMLSelectElement).value as "total" | "session";
+
+    isSaving = true;
+    try {
+      await persistSettings({ ...settingsState.current, card_tracked_time_display: value });
+      errorMessage = "";
+    } catch (error) {
+      errorMessage = getErrorMessage(error, "Failed to save");
+    } finally {
+      isSaving = false;
+    }
+  }
 </script>
 
 <section aria-labelledby="tracking-heading">
@@ -85,6 +100,28 @@
         {#each sortedStatuses(settingsState.current.statuses) as status (status.id)}
           <option value={status.id}>{status.label}</option>
         {/each}
+      </select>
+    </label>
+
+    <label class="select-row">
+      <span class="toggle-text">
+        <span class="toggle-label">Card timer display while running</span>
+        <span class="toggle-description">
+          "Total time" continues from a task's full tracked history across every pause/resume.
+          "Current session only" restarts from 0:00 each time you resume — useful for seeing how
+          long you've been at it right now. Only affects the live ticker; the chip shown once a
+          timer is stopped always shows the full total either way. The sidebar's "timers running"
+          list always shows the full total too, regardless of this setting.
+        </span>
+      </span>
+      <select
+        value={settingsState.current.card_tracked_time_display}
+        onchange={handleCardTrackedTimeDisplayChange}
+        disabled={isSaving}
+        aria-label="Card timer display while running"
+      >
+        <option value="total">Total time</option>
+        <option value="session">Current session only</option>
       </select>
     </label>
 

@@ -1,23 +1,65 @@
 <script lang="ts">
+  import { legibleInkColor, neonCardColor, NEON_CARD_CHROMA_BOOST, NEON_CARD_LIGHTNESS } from "$lib/colorPresets";
+  import { displayState } from "$lib/displaySettings.svelte";
   import { getErrorMessage } from "$lib/errors";
   import { formatHms } from "$lib/liveTimer";
+  import { resolveCardLightness, resolveInkMode, resolveProjectColor } from "$lib/projectColor";
+  import { projectsState } from "$lib/projects.svelte";
+  import { settingsState } from "$lib/settings.svelte";
   import { sidebarState } from "$lib/sidebar.svelte";
   import { refreshTasks, tasksState } from "$lib/tasks.svelte";
   import { liveTrackedSecondsFor, stopTaskTracking, trackingState } from "$lib/tracking.svelte";
+  import type { Task } from "$lib/types";
 
   let expanded = $state(false);
   /** The `task_id` of whichever active session currently has a stop call in flight, so its own stop button disables without blocking the others. */
   let pendingTaskId: string | undefined = $state(undefined);
   let errorMessage = $state("");
 
+  function taskFor(taskId: string): Task | undefined {
+    return tasksState.items.find((t) => t.id === taskId);
+  }
+
   function taskTitleFor(taskId: string): string {
-    return tasksState.items.find((t) => t.id === taskId)?.title ?? "Unknown task";
+    return taskFor(taskId)?.title ?? "Unknown task";
   }
 
   /** Live "total tracked so far" seconds for `taskId`, via `liveTrackedSecondsFor` — needs the task's own `tracked_minutes`, not just its id, so this looks it up the same way `taskTitleFor` does. `0` if the task can't be found (shouldn't happen for a session this tray is actively showing). */
   function liveSecondsFor(taskId: string): number {
-    const task = tasksState.items.find((t) => t.id === taskId);
+    const task = taskFor(taskId);
     return (task ? liveTrackedSecondsFor(task) : undefined) ?? 0;
+  }
+
+  /** `true` when the row for `taskId` should pick up its task's project color, mirroring `TaskCard.svelte`'s own `isColorCoded` gate — when the global "color code" display setting is off, cards render with no project tint, and this tray must match that exactly rather than forcing color the cards themselves don't have. */
+  function isRowColorCoded(taskId: string): boolean {
+    return displayState.cardColorMode === "color_code" && taskFor(taskId) !== undefined;
+  }
+
+  /**
+   * `--tray-row-bg`/`--tray-row-text` custom-property values for `taskId`'s
+   * row, via the exact same `resolveProjectColor`/`resolveCardLightness`/
+   * `neonCardColor`/`resolveInkMode`/`legibleInkColor` derivation chain
+   * `TaskCard.svelte` itself uses for `--task-color-code-bg`/`-text` — so a
+   * task being tracked here renders with the identical background/text
+   * color its own kanban card would. Only meaningful when `isRowColorCoded`
+   * is `true`; the CSS rule consuming these variables is scoped to that
+   * same condition via the `.tray-row-colored` class.
+   */
+  function rowColorStyle(taskId: string): string {
+    const task = taskFor(taskId);
+    if (!task) return "";
+
+    const projectColor = resolveProjectColor(task.project_id, projectsState.items);
+    const cardLightness = resolveCardLightness(
+      task.project_id,
+      projectsState.items,
+      settingsState.current?.card_lightness ?? NEON_CARD_LIGHTNESS,
+    );
+    const background = neonCardColor(projectColor, cardLightness, NEON_CARD_CHROMA_BOOST);
+    const inkMode = resolveInkMode(task.project_id, projectsState.items, settingsState.current?.ink_mode ?? "auto");
+    const textColor = legibleInkColor(background, inkMode);
+
+    return `--tray-row-bg: ${background}; --tray-row-text: ${textColor};`;
   }
 
   /**
@@ -90,7 +132,11 @@
       {#if expanded}
         <ul class="tray-list" id="tracking-tray-list">
           {#each trackingState.activeSessions as entry (entry.id)}
-            <li class="tray-row">
+            <li
+              class="tray-row"
+              class:tray-row-colored={isRowColorCoded(entry.task_id)}
+              style={isRowColorCoded(entry.task_id) ? rowColorStyle(entry.task_id) : undefined}
+            >
               <span class="tray-row-title">{taskTitleFor(entry.task_id)}</span>
               <span class="tray-row-ticker">{formatHms(liveSecondsFor(entry.task_id))}</span>
               <button
@@ -179,6 +225,21 @@
     padding: var(--space-2xs) var(--space-sm);
     border-radius: var(--radius-sm);
     background: var(--color-surface);
+  }
+
+  /* Matches the tracked task's own kanban card background exactly, via the
+     `--tray-row-bg`/`--tray-row-text` custom properties `rowColorStyle`
+     computes with the identical derivation `TaskCard.svelte` uses for
+     `--task-color-code-bg`/`-text`. Only the title text adapts for
+     legibility — the ticker keeps its own accent color regardless,
+     mirroring how `.chip.tracked-live` is likewise untouched by
+     `.task.color-coded` on the card itself. */
+  .tray-row-colored {
+    background: var(--tray-row-bg);
+  }
+
+  .tray-row-colored .tray-row-title {
+    color: var(--tray-row-text);
   }
 
   .tray-row-title {

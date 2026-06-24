@@ -33,7 +33,7 @@
   import { effectiveDefaultCode } from "$lib/taskPreview";
   import {
     isTaskActive,
-    liveTrackedSecondsFor,
+    liveDisplaySecondsFor,
     startTaskTracking,
     stopTaskTracking,
   } from "$lib/tracking.svelte";
@@ -478,7 +478,7 @@
       <div class="dialog-tracking">
         {#if isTracking}
           <span class="dialog-tracking-ticker" title="Currently tracking">
-            {formatHms(liveTrackedSecondsFor(task) ?? 0)}
+            {formatHms(liveDisplaySecondsFor(task, settingsState.current?.card_tracked_time_display ?? "total") ?? 0)}
           </span>
         {/if}
         <button
