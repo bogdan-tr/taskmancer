@@ -87,21 +87,23 @@
 {#if barEnabled}
   <div
     class="status-line"
+    class:tint={tilesTint && !!stats}
     style={tilesTint && stats ? `--tier-tint: ${tierTintColor(stats.status_tier)}` : undefined}
   >
     {#if stats && (showBadge || displayedStatIds.length > 0)}
       <div class="stat-tiles">
         {#if showBadge}
-          <span
-            class="status-badge"
+          <div
+            class="stat-tile badge-tile"
             class:severe={stats.status_tier === "severe"}
             class:critical={stats.status_tier === "critical"}
             class:needs-attention={stats.status_tier === "needs_attention"}
             class:on-track={stats.status_tier === "on_track"}
             class:great={stats.status_tier === "great"}
           >
-            {tierLabel(stats.status_tier)}
-          </span>
+            <span class="stat-tile-label">Status</span>
+            <span class="stat-tile-value badge-value">{tierLabel(stats.status_tier)}</span>
+          </div>
         {/if}
         {#each displayedStatIds as statId (statId)}
           <div class="stat-tile" class:tint-tile={tilesTint}>
@@ -123,44 +125,15 @@
     background: var(--color-surface);
   }
 
-  .status-badge {
-    flex-shrink: 0;
-    align-self: center;
-    padding: var(--space-4xs) var(--space-xs);
-    border-radius: var(--radius-pill);
-    font-size: var(--text-xs);
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: var(--tracking-wide);
-    color: white;
-  }
-
-  .status-badge.severe {
-    background: oklch(58% 0.19 25);
-  }
-
-  .status-badge.critical {
-    background: oklch(62% 0.17 45);
-  }
-
-  .status-badge.needs-attention {
-    background: oklch(72% 0.15 70);
-    color: var(--color-ink);
-  }
-
-  .status-badge.on-track {
-    background: oklch(75% 0.13 145);
-    color: var(--color-ink);
-  }
-
-  .status-badge.great {
-    background: oklch(68% 0.15 145);
+  .status-line.tint {
+    background: color-mix(in oklch, var(--tier-tint) 16%, var(--color-surface));
+    border-color: color-mix(in oklch, var(--tier-tint) 35%, var(--color-border));
   }
 
   .stat-tiles {
     display: flex;
     flex-wrap: wrap;
-    align-items: center;
+    align-items: stretch;
     gap: var(--space-sm);
   }
 
@@ -180,6 +153,49 @@
     border-color: color-mix(in oklch, var(--tier-tint) 25%, var(--color-border));
   }
 
+  /* Badge tile: same box shape as other tiles but colored by tier */
+  .badge-tile {
+    border-width: 0;
+  }
+
+  .badge-tile.severe {
+    background: oklch(58% 0.19 25);
+  }
+
+  .badge-tile.critical {
+    background: oklch(62% 0.17 45);
+  }
+
+  .badge-tile.needs-attention {
+    background: oklch(72% 0.15 70);
+  }
+
+  .badge-tile.on-track {
+    background: oklch(75% 0.13 145);
+  }
+
+  .badge-tile.great {
+    background: oklch(68% 0.15 145);
+  }
+
+  .badge-tile .stat-tile-label {
+    color: oklch(from currentColor l c h / 0.75);
+    mix-blend-mode: multiply;
+  }
+
+  .badge-tile .stat-tile-label,
+  .badge-tile .badge-value {
+    color: white;
+  }
+
+  /* needs-attention and on-track are lighter — use dark ink for legibility */
+  .badge-tile.needs-attention .stat-tile-label,
+  .badge-tile.needs-attention .badge-value,
+  .badge-tile.on-track .stat-tile-label,
+  .badge-tile.on-track .badge-value {
+    color: oklch(18% 0 0);
+  }
+
   .stat-tile-label {
     font-size: var(--text-xs);
     color: var(--color-ink-muted);
@@ -190,5 +206,11 @@
   .stat-tile-value {
     font-size: var(--text-sm);
     font-weight: 600;
+    color: var(--color-ink);
+  }
+
+  .badge-value {
+    font-size: var(--text-sm);
+    font-weight: 700;
   }
 </style>

@@ -2953,14 +2953,17 @@ pub fn get_global_status_stats(
     let today = chrono::Local::now().date_naive();
     let now = chrono::Utc::now();
 
-    // Task counts by status — non-hidden active tasks only.
-    let visible_tasks: Vec<&Task> = active_tasks.iter().filter(|t| !t.hidden).collect();
+    // Task counts by status — non-hidden, actively scheduled (scheduled.is_some()) active tasks.
+    let scheduled_tasks: Vec<&Task> = active_tasks
+        .iter()
+        .filter(|t| !t.hidden && t.scheduled.is_some())
+        .collect();
 
     let mut tasks_by_status: Vec<(String, usize)> = settings
         .statuses
         .iter()
         .filter_map(|status_def| {
-            let count = visible_tasks
+            let count = scheduled_tasks
                 .iter()
                 .filter(|t| t.status == status_def.id)
                 .count();
@@ -2977,14 +2980,23 @@ pub fn get_global_status_stats(
         settings.statuses.iter().map(|s| s.id.as_str()).collect();
     let mut unknown_counts: std::collections::HashMap<String, usize> =
         std::collections::HashMap::new();
-    for task in &visible_tasks {
+    for task in &scheduled_tasks {
         if !known_status_ids.contains(task.status.as_str()) {
             *unknown_counts.entry(task.status.clone()).or_insert(0) += 1;
         }
     }
     tasks_by_status.extend(unknown_counts.into_iter());
 
-    let total_projects = projects.len();
+    // Project count: exclude subtask container projects (those whose id appears
+    // as `subtask_project_id` on any active task).
+    let subtask_container_ids: std::collections::HashSet<&str> = active_tasks
+        .iter()
+        .filter_map(|t| t.subtask_project_id.as_deref())
+        .collect();
+    let total_projects = projects
+        .iter()
+        .filter(|p| !subtask_container_ids.contains(p.id.as_str()))
+        .count();
 
     let conn = state.time_db.lock().map_err(|e| e.to_string())?;
 
