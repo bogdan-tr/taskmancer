@@ -167,33 +167,20 @@
   }
 
   .badge-tile.needs-attention {
-    background: oklch(72% 0.15 70);
+    background: oklch(52% 0.15 70);
   }
 
   .badge-tile.on-track {
-    background: oklch(75% 0.13 145);
+    background: oklch(50% 0.14 145);
   }
 
   .badge-tile.great {
-    background: oklch(68% 0.15 145);
-  }
-
-  .badge-tile .stat-tile-label {
-    color: oklch(from currentColor l c h / 0.75);
-    mix-blend-mode: multiply;
+    background: oklch(50% 0.16 145);
   }
 
   .badge-tile .stat-tile-label,
   .badge-tile .badge-value {
     color: white;
-  }
-
-  /* needs-attention and on-track are lighter — use dark ink for legibility */
-  .badge-tile.needs-attention .stat-tile-label,
-  .badge-tile.needs-attention .badge-value,
-  .badge-tile.on-track .stat-tile-label,
-  .badge-tile.on-track .badge-value {
-    color: oklch(18% 0 0);
   }
 
   .stat-tile-label {
