@@ -23,6 +23,7 @@
   import CalendarView from "$lib/components/CalendarView.svelte";
   import ConfirmDialog from "$lib/components/ConfirmDialog.svelte";
   import KanbanGrid from "$lib/components/KanbanGrid.svelte";
+  import GlobalStatusBar from "$lib/components/GlobalStatusBar.svelte";
   import ProjectStatusLine from "$lib/components/ProjectStatusLine.svelte";
   import WeekView from "$lib/components/WeekView.svelte";
   import { displayState } from "$lib/displaySettings.svelte";
@@ -732,6 +733,7 @@
       );
       errorMessage = "";
       finishDayMessage = "";
+      void refreshStatusLine();
     } catch (error) {
       errorMessage = getErrorMessage(error, "Failed to reorder tasks");
       await refresh();
@@ -924,7 +926,13 @@
   </header>
 
   {#if project}
-    <ProjectStatusLine projectId={project.id} projectName={project.name} />
+    <ProjectStatusLine
+      projectId={project.id}
+      projectName={project.name}
+      statusBarEnabledOverride={project.board.status_bar_enabled_override}
+    />
+  {:else if !projectFilter}
+    <GlobalStatusBar />
   {/if}
 
   <AddTaskModal

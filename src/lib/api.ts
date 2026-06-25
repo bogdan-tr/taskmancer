@@ -5,6 +5,7 @@ import type { DueRule, RecurrenceFrequency, SeriesEditScope } from "./recurrence
 import type {
   DeleteProjectResult,
   FinishDayResult,
+  GlobalStatusStats,
   Project,
   ProjectStatusStats,
   ProjectTaskStrategy,
@@ -269,4 +270,9 @@ export async function duplicateStatusLayout(layoutId: string, newName: string): 
 /** Permanently deletes `layoutId`. Rejects if any project or the global default still references it. */
 export async function deleteStatusLayout(layoutId: string): Promise<void> {
   return invoke<void>("delete_status_layout", { layoutId });
+}
+
+/** Returns global stats for the "All tasks" status bar, computed as of "now". */
+export async function getGlobalStatusStats(weekStartsOn: WeekStartsOn): Promise<GlobalStatusStats> {
+  return invoke<GlobalStatusStats>("get_global_status_stats", { weekStartsOn });
 }

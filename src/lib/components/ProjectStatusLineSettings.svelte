@@ -1,11 +1,13 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { listStatusLayouts } from "$lib/api";
+  import { displayState } from "$lib/displaySettings.svelte";
   import { getErrorMessage } from "$lib/errors";
   import { FALLBACK_PRIORITIES } from "$lib/priorities.svelte";
   import { persistSettings, settingsState } from "$lib/settings.svelte";
   import { TIER_LABELS } from "$lib/statusTierRuleOverrides";
   import type { StatLayout, StatusTierRule } from "$lib/types";
+  import StatusLineLayoutEditor from "./StatusLineLayoutEditor.svelte";
   import StatusTierRuleFields from "./StatusTierRuleFields.svelte";
 
   let layouts = $state<StatLayout[]>([]);
@@ -23,51 +25,28 @@
 
   let priorities = $derived(settingsState.current?.priorities ?? FALLBACK_PRIORITIES);
 
+  async function save(patch: Partial<(typeof settingsState)["current"]>) {
+    if (!settingsState.current) return;
+    isSaving = true;
+    try {
+      await persistSettings({ ...settingsState.current, ...(patch as object) });
+      errorMessage = "";
+    } catch (error) {
+      errorMessage = getErrorMessage(error, "Failed to save");
+    } finally {
+      isSaving = false;
+    }
+  }
+
   async function handleDefaultLayoutChange(event: Event) {
-    if (!settingsState.current) return;
     const value = (event.currentTarget as HTMLSelectElement).value;
-
-    isSaving = true;
-    try {
-      await persistSettings({ ...settingsState.current, default_status_line_layout_id: value });
-      errorMessage = "";
-    } catch (error) {
-      errorMessage = getErrorMessage(error, "Failed to save");
-    } finally {
-      isSaving = false;
-    }
+    await save({ default_status_line_layout_id: value });
   }
 
-  async function handleBarStyleChange(event: Event) {
-    if (!settingsState.current) return;
-    const value = (event.currentTarget as HTMLSelectElement).value as "tiles" | "chips" | "tint";
-
-    isSaving = true;
-    try {
-      await persistSettings({ ...settingsState.current, status_bar_style: value });
-      errorMessage = "";
-    } catch (error) {
-      errorMessage = getErrorMessage(error, "Failed to save");
-    } finally {
-      isSaving = false;
-    }
-  }
-
-  /** Ignores anything that doesn't parse to a positive integer, leaving the stored setting untouched — mirrors `SubtasksSettings.svelte`'s `handleMaxVisibleSubtasksChange`, except 0 is invalid here (a 0-week trailing average is meaningless). */
   async function handleAvgTimePerWeekWindowChange(event: Event) {
-    if (!settingsState.current) return;
     const parsed = Number.parseInt((event.currentTarget as HTMLInputElement).value, 10);
     if (!Number.isInteger(parsed) || parsed <= 0) return;
-
-    isSaving = true;
-    try {
-      await persistSettings({ ...settingsState.current, avg_time_per_week_window: parsed });
-      errorMessage = "";
-    } catch (error) {
-      errorMessage = getErrorMessage(error, "Failed to save");
-    } finally {
-      isSaving = false;
-    }
+    await save({ avg_time_per_week_window: parsed });
   }
 
   async function handleTierRuleChange(tierIndex: number, rule: StatusTierRule) {
@@ -75,15 +54,26 @@
     const nextRules = settingsState.current.default_status_tier_rules.map((existing, index) =>
       index === tierIndex ? rule : existing,
     );
+    await save({ default_status_tier_rules: nextRules });
+  }
 
-    isSaving = true;
+  async function handleEnabledChange(event: Event) {
+    const checked = (event.currentTarget as HTMLInputElement).checked;
+    await save({ status_bar_enabled: checked });
+  }
+
+  async function handleTintChange(event: Event) {
+    const checked = (event.currentTarget as HTMLInputElement).checked;
+    await save({ status_bar_tile_tint: checked });
+  }
+
+  /** Called by StatusLineLayoutEditor when the user picks/creates a new default layout. */
+  async function handlePickDefaultLayout(layoutId: string) {
+    await save({ default_status_line_layout_id: layoutId });
     try {
-      await persistSettings({ ...settingsState.current, default_status_tier_rules: nextRules });
-      errorMessage = "";
-    } catch (error) {
-      errorMessage = getErrorMessage(error, "Failed to save");
-    } finally {
-      isSaving = false;
+      layouts = await listStatusLayouts();
+    } catch {
+      // Leave stale list; cosmetic-only
     }
   }
 </script>
@@ -96,6 +86,39 @@
   {#if !settingsState.current}
     <p class="loading">Loading…</p>
   {:else}
+    <label class="toggle-row">
+      <span class="toggle-text">
+        <span class="toggle-label">Enable status bar</span>
+        <span class="toggle-description">
+          Show the status bar above each project's kanban board. Can be overridden per-project in
+          the project's Settings tab.
+        </span>
+      </span>
+      <input
+        type="checkbox"
+        checked={settingsState.current.status_bar_enabled}
+        onchange={handleEnabledChange}
+        disabled={isSaving}
+        aria-label="Enable status bar"
+      />
+    </label>
+
+    <label class="toggle-row">
+      <span class="toggle-text">
+        <span class="toggle-label">Tile tint background</span>
+        <span class="toggle-description">
+          Tint each stat tile's background with the current project's health-badge color.
+        </span>
+      </span>
+      <input
+        type="checkbox"
+        checked={settingsState.current.status_bar_tile_tint}
+        onchange={handleTintChange}
+        disabled={isSaving}
+        aria-label="Tile tint background"
+      />
+    </label>
+
     <label class="number-row">
       <span class="toggle-text">
         <span class="toggle-label">Default layout</span>
@@ -103,31 +126,23 @@
           Which saved layout a project's status line renders when it hasn't set its own override.
         </span>
       </span>
-      <select
-        value={settingsState.current.default_status_line_layout_id}
-        onchange={handleDefaultLayoutChange}
-        disabled={isSaving}
-        aria-label="Default layout"
-      >
-        {#each layouts as layout (layout.id)}
-          <option value={layout.id}>{layout.name}</option>
-        {/each}
-      </select>
-    </label>
-
-    <label class="number-row">
-      <span class="toggle-text">
-        <span class="toggle-label">Bar style</span>
-        <span class="toggle-description">
-          The visual treatment for every project's status line: a row of labeled tiles, small rounded
-          chips, or plain inline text with a tinted background.
-        </span>
-      </span>
-      <select value={settingsState.current.status_bar_style} onchange={handleBarStyleChange} disabled={isSaving} aria-label="Bar style">
-        <option value="tiles">Tiles</option>
-        <option value="chips">Chips</option>
-        <option value="tint">Tint</option>
-      </select>
+      <div class="layout-row">
+        <select
+          value={settingsState.current.default_status_line_layout_id}
+          onchange={handleDefaultLayoutChange}
+          disabled={isSaving}
+          aria-label="Default layout"
+        >
+          {#each layouts as layout (layout.id)}
+            <option value={layout.id}>{layout.name}</option>
+          {/each}
+        </select>
+        <StatusLineLayoutEditor
+          currentLayoutId={settingsState.current.default_status_line_layout_id}
+          weekStartsOn={displayState.weekStartsOn}
+          onPickLayout={handlePickDefaultLayout}
+        />
+      </div>
     </label>
 
     <label class="number-row">
@@ -216,6 +231,28 @@
     font-size: var(--text-sm);
   }
 
+  .toggle-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-md);
+    margin-top: var(--space-sm);
+    padding: var(--space-sm) var(--space-md);
+    border-radius: var(--radius-md);
+    border: 1px solid var(--color-border);
+    background: var(--color-surface);
+    cursor: pointer;
+  }
+
+  .toggle-row input[type="checkbox"] {
+    flex-shrink: 0;
+    width: 1.1rem;
+    height: 1.1rem;
+    accent-color: var(--color-accent);
+    cursor: pointer;
+    margin-top: var(--space-3xs);
+  }
+
   .number-row {
     display: flex;
     align-items: flex-start;
@@ -257,6 +294,13 @@
     border-color: var(--color-accent);
     box-shadow: 0 0 0 3px var(--color-accent-soft);
     outline: none;
+  }
+
+  .layout-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+    flex-shrink: 0;
   }
 
   .toggle-text {

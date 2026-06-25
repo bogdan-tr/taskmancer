@@ -72,16 +72,12 @@ fn default_card_tracked_time_display() -> String {
     "total".to_string()
 }
 
-/// The fixed set of values accepted by `Settings.status_bar_style` — see the
-/// project-status-line spec's "Bar visual style is itself a customization
-/// point" clarification. `"tiles"`: a header row plus a row of label/value
-/// tiles, one per active stat (the seeded default). `"chips"`: each stat in
-/// its own small rounded badge, thin separators between them. `"tint"`:
-/// plain inline text values, no per-stat boxes, with the whole bar's
-/// background carrying a soft color wash that shifts with the current status
-/// tier. Global-only, like the light/dark/dark-blue theme picker — no
-/// per-project override.
-pub const STATUS_BAR_STYLES: &[&str] = &["tiles", "chips", "tint"];
+/// The only accepted value for `Settings.status_bar_style`. Chips and tint
+/// were removed after the initial implementation in favor of a per-bar tint
+/// toggle (`Settings.status_bar_tile_tint`). Legacy settings files that still
+/// carry `"chips"` or `"tint"` are migrated to `"tiles"` by
+/// [`Settings::normalize`] on load.
+pub const STATUS_BAR_STYLES: &[&str] = &["tiles"];
 
 /// Default `Settings.status_bar_style`: the spec's seeded default.
 fn default_status_bar_style() -> String {
@@ -93,6 +89,11 @@ fn default_status_bar_style() -> String {
 /// project-status-line spec's stat catalog entry.
 fn default_avg_time_per_week_window() -> u32 {
     4
+}
+
+/// Default `Settings.status_bar_enabled`: the status bar is shown by default.
+fn default_status_bar_enabled() -> bool {
+    true
 }
 
 /// A user-defined priority level: an id stored in `Task.priority`, a display
@@ -297,9 +298,21 @@ pub struct TaskDefaults {
 /// real default layout exists and sets this to its id — mirrors
 /// `default_project_id`/`commands::ensure_default_project` exactly.
 ///
-/// `status_bar_style` is one of [`STATUS_BAR_STYLES`] — see that constant's
-/// own doc comment for what each value means. Global-only; no per-project
-/// override.
+/// `status_bar_enabled` — when `false`, the project status bar is hidden on
+/// every project board. Per-project boards can override this with
+/// `ProjectBoard.status_bar_enabled_override` (`None` = inherit, `Some(true)`
+/// = force on, `Some(false)` = force off). Defaults to `true`.
+///
+/// `status_bar_tile_tint` — when `true`, the tiles-style bar's background
+/// carries a soft color wash that shifts with the current status tier (the
+/// visual effect formerly provided by the removed `"tint"` bar style, now
+/// available as an opt-in toggle on the only remaining style). Defaults to
+/// `false`.
+///
+/// `status_bar_style` is one of [`STATUS_BAR_STYLES`] (always `"tiles"` after
+/// the chips/tint styles were removed — kept in the struct for legacy
+/// round-trip compatibility and migrated to `"tiles"` on load by
+/// [`Settings::normalize`]).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Settings {
     #[serde(default)]
@@ -342,6 +355,10 @@ pub struct Settings {
     pub default_status_line_layout_id: String,
     #[serde(default = "default_status_bar_style")]
     pub status_bar_style: String,
+    #[serde(default = "default_status_bar_enabled")]
+    pub status_bar_enabled: bool,
+    #[serde(default)]
+    pub status_bar_tile_tint: bool,
 }
 
 impl Default for Settings {
@@ -430,6 +447,8 @@ impl Default for Settings {
             avg_time_per_week_window: default_avg_time_per_week_window(),
             default_status_line_layout_id: String::new(),
             status_bar_style: default_status_bar_style(),
+            status_bar_enabled: default_status_bar_enabled(),
+            status_bar_tile_tint: false,
         }
     }
 }
@@ -483,6 +502,11 @@ impl Settings {
         }
         if self.defaults.due.is_none() {
             self.defaults.due = Some("none".to_string());
+        }
+
+        // Migrate removed bar styles to the only remaining style "tiles".
+        if !STATUS_BAR_STYLES.contains(&self.status_bar_style.as_str()) {
+            self.status_bar_style = default_status_bar_style();
         }
 
         self
@@ -1627,16 +1651,39 @@ mod tests {
     }
 
     #[test]
-    fn status_bar_style_round_trips_when_set_to_chips() {
+    fn normalize_migrates_removed_chips_style_to_tiles() {
         let settings = Settings {
             status_bar_style: "chips".to_string(),
             ..Settings::default()
         };
+        let normalized = settings.normalize();
+        assert_eq!(normalized.status_bar_style, "tiles");
+    }
 
-        let json = serde_json::to_string(&settings).expect("serialization should succeed");
-        let parsed: Settings = serde_json::from_str(&json).expect("parsing should succeed");
+    #[test]
+    fn normalize_migrates_removed_tint_style_to_tiles() {
+        let settings = Settings {
+            status_bar_style: "tint".to_string(),
+            ..Settings::default()
+        };
+        let normalized = settings.normalize();
+        assert_eq!(normalized.status_bar_style, "tiles");
+    }
 
-        assert_eq!(parsed.status_bar_style, "chips");
+    #[test]
+    fn default_settings_have_status_bar_enabled_true() {
+        assert!(Settings::default().status_bar_enabled);
+    }
+
+    #[test]
+    fn default_settings_have_status_bar_tile_tint_false() {
+        assert!(!Settings::default().status_bar_tile_tint);
+    }
+
+    #[test]
+    fn deserializing_settings_without_status_bar_enabled_defaults_to_true() {
+        let settings: Settings = serde_json::from_str("{}").unwrap();
+        assert!(settings.status_bar_enabled);
     }
 
     #[test]

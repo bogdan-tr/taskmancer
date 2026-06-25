@@ -1,9 +1,11 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { listStatusLayouts, updateProject } from "$lib/api";
+  import { displayState } from "$lib/displaySettings.svelte";
   import { getErrorMessage } from "$lib/errors";
   import { FALLBACK_PRIORITIES } from "$lib/priorities.svelte";
   import { refreshProjects } from "$lib/projects.svelte";
+  import { refreshProjectStatusStats } from "$lib/statusLine.svelte";
   import { settingsState } from "$lib/settings.svelte";
   import {
     buildStatusTierRuleOverrides,
@@ -12,6 +14,7 @@
     TIER_LABELS,
   } from "$lib/statusTierRuleOverrides";
   import type { Project, StatLayout, StatusTierRule } from "$lib/types";
+  import StatusLineLayoutEditor from "./StatusLineLayoutEditor.svelte";
   import StatusTierRuleFields from "./StatusTierRuleFields.svelte";
 
   interface Props {
@@ -38,6 +41,7 @@
   let globalTierRules = $derived(settingsState.current?.default_status_tier_rules);
 
   let baselineLayoutId = $derived(project.board.status_line_layout_id ?? "");
+  let baselineEnabledOverride = $derived(project.board.status_bar_enabled_override);
   let baselineOverridden = $derived(overriddenTierSlots(project.board.status_tier_rule_overrides));
   /** Seeded once from the project's own saved per-slot rule when overridden, or from the matching global tier otherwise — see the `$effect` below for why this only matters at seed time, not on every render. */
   let baselineRules = $derived(
@@ -49,6 +53,7 @@
   );
 
   let draftLayoutId = $state("");
+  let draftEnabledOverride = $state<boolean | undefined>(undefined);
   let draftOverridden = $state<boolean[]>([false, false, false, false]);
   let draftRules = $state<StatusTierRule[]>([{}, {}, {}, {}]);
 
@@ -56,6 +61,7 @@
   $effect(() => {
     if (settingsState.current && !initialized) {
       draftLayoutId = baselineLayoutId;
+      draftEnabledOverride = baselineEnabledOverride;
       draftOverridden = [...baselineOverridden];
       draftRules = baselineRules.map((rule) => ({ ...rule }));
       initialized = true;
@@ -64,6 +70,7 @@
 
   let isDirty = $derived(
     draftLayoutId !== baselineLayoutId ||
+      draftEnabledOverride !== baselineEnabledOverride ||
       draftOverridden.some((value, index) => value !== baselineOverridden[index]) ||
       draftRules.some((rule, index) => draftOverridden[index] && !rulesEqual(rule, baselineRules[index])),
   );
@@ -92,8 +99,21 @@
     draftRules = draftRules.map((existing, i) => (i === index ? rule : existing));
   }
 
+  function enabledOverrideSelectValue(v: boolean | undefined): string {
+    if (v === true) return "on";
+    if (v === false) return "off";
+    return "";
+  }
+
+  function enabledOverrideFromSelect(v: string): boolean | undefined {
+    if (v === "on") return true;
+    if (v === "off") return false;
+    return undefined;
+  }
+
   function discardChanges() {
     draftLayoutId = baselineLayoutId;
+    draftEnabledOverride = baselineEnabledOverride;
     draftOverridden = [...baselineOverridden];
     draftRules = baselineRules.map((rule) => ({ ...rule }));
     errorMessage = "";
@@ -107,10 +127,12 @@
         board: {
           ...project.board,
           status_line_layout_id: selectValueToOptional(draftLayoutId),
+          status_bar_enabled_override: draftEnabledOverride,
           status_tier_rule_overrides: buildStatusTierRuleOverrides(draftOverridden, draftRules),
         },
       });
       await refreshProjects();
+      await refreshProjectStatusStats(project.id, displayState.weekStartsOn);
       errorMessage = "";
     } catch (error) {
       errorMessage = getErrorMessage(error, "Failed to save status line settings");
@@ -130,13 +152,35 @@
   </p>
 
   <div class="field">
-    <label for="project-status-line-layout">Layout</label>
-    <select id="project-status-line-layout" value={draftLayoutId} onchange={handleLayoutChange}>
-      <option value="">Use global default</option>
-      {#each layouts as layout (layout.id)}
-        <option value={layout.id}>{layout.name}</option>
-      {/each}
+    <label for="project-status-bar-enabled">Status bar</label>
+    <select
+      id="project-status-bar-enabled"
+      value={enabledOverrideSelectValue(draftEnabledOverride)}
+      onchange={(event) => {
+        draftEnabledOverride = enabledOverrideFromSelect((event.currentTarget as HTMLSelectElement).value);
+      }}
+    >
+      <option value="">Inherit global setting</option>
+      <option value="on">Always show</option>
+      <option value="off">Always hide</option>
     </select>
+  </div>
+
+  <div class="field">
+    <label for="project-status-line-layout">Layout</label>
+    <div class="layout-row">
+      <select id="project-status-line-layout" value={draftLayoutId} onchange={handleLayoutChange}>
+        <option value="">Use global default</option>
+        {#each layouts as layout (layout.id)}
+          <option value={layout.id}>{layout.name}</option>
+        {/each}
+      </select>
+      <StatusLineLayoutEditor
+        projectId={project.id}
+        currentLayoutId={draftLayoutId || settingsState.current?.default_status_line_layout_id}
+        weekStartsOn={displayState.weekStartsOn}
+      />
+    </div>
   </div>
 
   <h3>Health badge thresholds</h3>
@@ -242,6 +286,12 @@
     border-color: var(--color-accent);
     box-shadow: 0 0 0 3px var(--color-accent-soft);
     outline: none;
+  }
+
+  .layout-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
   }
 
   .tier-list {

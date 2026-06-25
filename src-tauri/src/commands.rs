@@ -2761,6 +2761,11 @@ pub struct ProjectStatusStats {
     pub avg_time_per_week: f64,
     pub completion_pct: Option<f64>,
     pub weighted_completion_pct: Option<f64>,
+    /// `active_completion_pct`: same calculation as `completion_pct` but
+    /// restricted to the non-archived (active) task population — "what
+    /// fraction of tasks currently on the kanban board are done?" rather than
+    /// "what fraction of all tasks ever created for this project are done?".
+    pub active_completion_pct: Option<f64>,
     pub effective_layout_id: String,
 }
 
@@ -2784,6 +2789,7 @@ fn build_project_status_stats(
     conn: &rusqlite::Connection,
     project_id: &str,
     projects: &[Project],
+    active_tasks: &[Task],
     all_tasks: &[Task],
     settings: &Settings,
     week_start: &str,
@@ -2848,6 +2854,13 @@ fn build_project_status_stats(
         include_subprojects,
         settings,
     );
+    let active_completion_pct = status_stats::active_completion_pct(
+        project_id,
+        projects,
+        active_tasks,
+        include_subprojects,
+        settings,
+    );
 
     let effective_layout_id = resolve_status_line_layout_id(project, settings);
 
@@ -2858,6 +2871,7 @@ fn build_project_status_stats(
         avg_time_per_week,
         completion_pct,
         weighted_completion_pct,
+        active_completion_pct,
         effective_layout_id,
     })
 }
@@ -2885,9 +2899,10 @@ pub fn get_project_status_stats(
     let projects =
         project_storage::list_projects(&state.projects_file).map_err(|e| e.to_string())?;
 
-    let mut all_tasks = storage::list_tasks(&state.tasks_dir).map_err(|e| e.to_string())?;
-    let mut archived_tasks = storage::list_tasks(&state.archive_dir).map_err(|e| e.to_string())?;
-    all_tasks.append(&mut archived_tasks);
+    let active_tasks = storage::list_tasks(&state.tasks_dir).map_err(|e| e.to_string())?;
+    let archived_tasks = storage::list_tasks(&state.archive_dir).map_err(|e| e.to_string())?;
+    let mut all_tasks = active_tasks.clone();
+    all_tasks.extend(archived_tasks);
 
     let conn = state.time_db.lock().map_err(|e| e.to_string())?;
     let today = chrono::Local::now().date_naive();
@@ -2897,12 +2912,126 @@ pub fn get_project_status_stats(
         &conn,
         &project_id,
         &projects,
+        &active_tasks,
         &all_tasks,
         &settings,
         &week_starts_on,
         today,
         now,
     )
+}
+
+/// Global stats for the "All tasks" status bar: task counts grouped by status
+/// (active non-hidden tasks only, matching what's visible on the kanban board),
+/// total project count, and total tracked time today and this week (across all
+/// tasks in the time database, not filtered by project). Times are in minutes.
+/// `tasks_by_status` is ordered by the global `Settings.statuses` order — only
+/// statuses that have at least one visible task are included.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct GlobalStatusStats {
+    pub tasks_by_status: Vec<(String, usize)>,
+    pub total_projects: usize,
+    pub time_tracked_today_minutes: u32,
+    pub time_tracked_this_week_minutes: u32,
+}
+
+/// Returns global stats for the "All tasks" status bar. `week_starts_on` must
+/// be `"monday"` or `"sunday"` and is used to determine where the current week
+/// begins. Task counts cover non-hidden active (non-archived) tasks, matching
+/// the kanban board's visible population.
+#[tauri::command]
+pub fn get_global_status_stats(
+    state: State<AppState>,
+    week_starts_on: String,
+) -> Result<GlobalStatusStats, String> {
+    let settings =
+        settings_storage::load_settings(&state.settings_file).map_err(|e| e.to_string())?;
+    let projects =
+        project_storage::list_projects(&state.projects_file).map_err(|e| e.to_string())?;
+    let active_tasks = storage::list_tasks(&state.tasks_dir).map_err(|e| e.to_string())?;
+
+    let today = chrono::Local::now().date_naive();
+    let now = chrono::Utc::now();
+
+    // Task counts by status — non-hidden active tasks only.
+    let visible_tasks: Vec<&Task> = active_tasks.iter().filter(|t| !t.hidden).collect();
+
+    let mut tasks_by_status: Vec<(String, usize)> = settings
+        .statuses
+        .iter()
+        .filter_map(|status_def| {
+            let count = visible_tasks
+                .iter()
+                .filter(|t| t.status == status_def.id)
+                .count();
+            if count > 0 {
+                Some((status_def.id.clone(), count))
+            } else {
+                None
+            }
+        })
+        .collect();
+    // Include any tasks whose status isn't in the settings list (shouldn't happen,
+    // but degrade gracefully rather than losing counts).
+    let known_status_ids: std::collections::HashSet<&str> =
+        settings.statuses.iter().map(|s| s.id.as_str()).collect();
+    let mut unknown_counts: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    for task in &visible_tasks {
+        if !known_status_ids.contains(task.status.as_str()) {
+            *unknown_counts.entry(task.status.clone()).or_insert(0) += 1;
+        }
+    }
+    tasks_by_status.extend(unknown_counts.into_iter());
+
+    let total_projects = projects.len();
+
+    let conn = state.time_db.lock().map_err(|e| e.to_string())?;
+
+    let today_start = today
+        .and_hms_opt(0, 0, 0)
+        .expect("midnight is valid")
+        .and_utc();
+    let tomorrow_start = today_start + chrono::Duration::days(1);
+
+    let time_tracked_today_seconds = time_storage::total_tracked_seconds_all_tasks_in_range(
+        &conn,
+        today_start,
+        tomorrow_start,
+        now,
+    )
+    .map_err(|e| e.to_string())?;
+
+    // Week start: same logic as status_stats::start_of_week.
+    use chrono::Datelike;
+    let week_start_day = if week_starts_on == "monday" {
+        chrono::Weekday::Mon
+    } else {
+        chrono::Weekday::Sun
+    };
+    let days_since_start = (today.weekday().num_days_from_monday() as i64
+        - week_start_day.num_days_from_monday() as i64)
+        .rem_euclid(7);
+    let week_start_date = today - chrono::Duration::days(days_since_start);
+    let week_start = week_start_date
+        .and_hms_opt(0, 0, 0)
+        .expect("midnight is valid")
+        .and_utc();
+
+    let time_tracked_this_week_seconds = time_storage::total_tracked_seconds_all_tasks_in_range(
+        &conn,
+        week_start,
+        now,
+        now,
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(GlobalStatusStats {
+        tasks_by_status,
+        total_projects,
+        time_tracked_today_minutes: (time_tracked_today_seconds / 60).max(0) as u32,
+        time_tracked_this_week_minutes: (time_tracked_this_week_seconds / 60).max(0) as u32,
+    })
 }
 
 /// Returns every saved `StatLayout`, in storage order (insertion order — no
@@ -6427,6 +6556,7 @@ mod tests {
                 "does-not-exist",
                 &[],
                 &[],
+                &[],
                 &settings,
                 "monday",
                 today(),
@@ -6447,6 +6577,7 @@ mod tests {
                 &conn,
                 "p1",
                 &[project],
+                &[],
                 &[],
                 &settings,
                 "monday",
@@ -6472,11 +6603,13 @@ mod tests {
             overdue_task.due = Some("2026-06-20".to_string());
             let settings = settings_with_done("done");
 
+            let tasks = vec![overdue_task];
             let result = build_project_status_stats(
                 &conn,
                 "p1",
                 &[project],
-                &[overdue_task],
+                &tasks,
+                &tasks,
                 &settings,
                 "monday",
                 today(),
@@ -6499,11 +6632,13 @@ mod tests {
             let conn = setup_conn();
             let settings = settings_with_done("done");
 
+            let tasks = vec![child_overdue];
             let result = build_project_status_stats(
                 &conn,
                 "parent",
                 &[parent, child],
-                &[child_overdue],
+                &tasks,
+                &tasks,
                 &settings,
                 "monday",
                 today(),
@@ -6538,11 +6673,13 @@ mod tests {
             due_soon.due = Some("2026-06-26".to_string());
             let settings = settings_with_done("done");
 
+            let tasks = vec![due_soon];
             let result = build_project_status_stats(
                 &conn,
                 "p1",
                 &[project],
-                &[due_soon],
+                &tasks,
+                &tasks,
                 &settings,
                 "monday",
                 today(),
@@ -6565,11 +6702,13 @@ mod tests {
             let conn = setup_conn();
             let settings = settings_with_done("done");
 
+            let tasks = vec![child_task];
             let result = build_project_status_stats(
                 &conn,
                 "parent",
                 &[parent, child],
-                &[child_task],
+                &tasks,
+                &tasks,
                 &settings,
                 "monday",
                 today(),
@@ -6591,11 +6730,13 @@ mod tests {
             let conn = setup_conn();
             let settings = settings_with_done("done");
 
+            let tasks = vec![child_task];
             let result = build_project_status_stats(
                 &conn,
                 "parent",
                 &[parent, child],
-                &[child_task],
+                &tasks,
+                &tasks,
                 &settings,
                 "monday",
                 today(),
@@ -6617,11 +6758,13 @@ mod tests {
             not_done_task.project_id = Some("p1".to_string());
             let settings = settings_with_done("done");
 
+            let tasks = vec![done_task, not_done_task];
             let result = build_project_status_stats(
                 &conn,
                 "p1",
                 &[project],
-                &[done_task, not_done_task],
+                &tasks,
+                &tasks,
                 &settings,
                 "monday",
                 today(),
@@ -6645,11 +6788,13 @@ mod tests {
             not_done_task.estimated_minutes = Some(90);
             let settings = settings_with_done("done");
 
+            let tasks = vec![done_task, not_done_task];
             let result = build_project_status_stats(
                 &conn,
                 "p1",
                 &[project],
-                &[done_task, not_done_task],
+                &tasks,
+                &tasks,
                 &settings,
                 "monday",
                 today(),
@@ -6671,11 +6816,13 @@ mod tests {
             task.tracked_minutes = 30;
             let settings = settings_with_done("done");
 
+            let tasks = vec![task];
             let result = build_project_status_stats(
                 &conn,
                 "p1",
                 &[project],
-                &[task],
+                &tasks,
+                &tasks,
                 &settings,
                 "monday",
                 today(),
@@ -6705,11 +6852,13 @@ mod tests {
             .unwrap();
             let settings = settings_with_done("done");
 
+            let tasks = vec![task];
             let result = build_project_status_stats(
                 &conn,
                 "p1",
                 &[project],
-                &[task],
+                &tasks,
+                &tasks,
                 &settings,
                 "monday",
                 today(),
@@ -6737,6 +6886,7 @@ mod tests {
                 "p1",
                 &[project],
                 &[],
+                &[],
                 &settings,
                 "monday",
                 today(),
@@ -6760,6 +6910,7 @@ mod tests {
                 &conn,
                 "p1",
                 &[project],
+                &[],
                 &[],
                 &settings,
                 "monday",

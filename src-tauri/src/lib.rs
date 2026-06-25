@@ -107,6 +107,7 @@ pub fn run() {
             commands::start_project_tracking,
             commands::stop_project_tracking,
             commands::get_project_status_stats,
+            commands::get_global_status_stats,
             commands::list_status_layouts,
             commands::create_status_layout,
             commands::update_status_layout,

@@ -31,6 +31,8 @@ const sampleSettings: Settings = {
   avg_time_per_week_window: 4,
   default_status_line_layout_id: "layout-1",
   status_bar_style: "tiles",
+  status_bar_enabled: true,
+  status_bar_tile_tint: false,
 };
 
 vi.mock("./api", () => ({

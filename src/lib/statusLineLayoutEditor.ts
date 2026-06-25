@@ -8,6 +8,7 @@ export const ALL_STATUS_LINE_STAT_IDS: StatusLineStatId[] = [
   "avg_time_per_week",
   "completion_pct",
   "weighted_completion_pct",
+  "active_completion_pct",
 ];
 
 /**

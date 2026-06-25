@@ -48,6 +48,11 @@ pub const DEFAULT_PROJECT_COLOR: &str = "#3b82f6";
 /// `status_line_layout_id` overrides `Settings::default_status_line_layout_id`
 /// for which `StatLayout` (see `crate::layout`) this project's status line
 /// renders when set; `None` inherits the global default.
+///
+/// `status_bar_enabled_override` overrides `Settings::status_bar_enabled` for
+/// this project's board when set: `None` inherits the global default;
+/// `Some(true)` forces the bar on even when the global default is off;
+/// `Some(false)` forces it off even when the global default is on.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct ProjectBoard {
     #[serde(default)]
@@ -68,6 +73,8 @@ pub struct ProjectBoard {
     pub status_tier_rule_overrides: Option<Vec<Option<StatusTierRule>>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status_line_layout_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_bar_enabled_override: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

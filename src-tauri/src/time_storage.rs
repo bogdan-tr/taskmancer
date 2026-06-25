@@ -411,6 +411,47 @@ pub fn tracked_seconds_per_day(
     Ok(buckets)
 }
 
+/// Total tracked seconds across **all** tasks within `[range_start, range_end)`,
+/// clipping still-running entries against `now`. Used for the global status
+/// bar's "time tracked today/this week" stats, where filtering by a set of
+/// task ids would require loading every task first.
+pub fn total_tracked_seconds_all_tasks_in_range(
+    conn: &Connection,
+    range_start: DateTime<Utc>,
+    range_end: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> Result<i64, TimeStorageError> {
+    if range_start >= range_end {
+        return Ok(0);
+    }
+
+    let mut stmt = conn.prepare(
+        "SELECT started_at, ended_at FROM time_entries",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        let started_at: String = row.get(0)?;
+        let ended_at: Option<String> = row.get(1)?;
+        Ok((started_at, ended_at))
+    })?;
+
+    let mut total: i64 = 0;
+    for row in rows {
+        let (started_at, ended_at) = row?;
+        let started = parse_rfc3339(&started_at)?;
+        let ended = match ended_at {
+            Some(v) => parse_rfc3339(&v)?,
+            None => now,
+        };
+        let clipped_start = started.max(range_start);
+        let clipped_end = ended.min(range_end);
+        if clipped_end > clipped_start {
+            total += (clipped_end - clipped_start).num_seconds();
+        }
+    }
+
+    Ok(total)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

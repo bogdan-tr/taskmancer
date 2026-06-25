@@ -68,6 +68,7 @@ pub fn estimated_time_left(project_id: &str, tasks: &[Task], settings: &Settings
         .filter(|task| {
             belongs_to_project(task, project_id)
                 && !task.hidden
+                && task.series_id.is_none()
                 && is_incomplete(task, settings)
                 && task.scheduled.is_some()
         })
@@ -257,6 +258,22 @@ pub fn weighted_completion_pct(
     }
 
     Some(numerator as f64 / denominator as f64)
+}
+
+/// `active_completion_pct`: the same population and numerator rule as
+/// [`completion_pct`], but restricted to `active_tasks` only — no archived
+/// tasks are included. "What fraction of tasks currently on the board are
+/// done?" rather than "what fraction of all tasks ever created are done?".
+/// `None` when the surviving population (after dropping hidden/recurring/
+/// cancelled tasks from `active_tasks`) is empty.
+pub fn active_completion_pct(
+    project_id: &str,
+    projects: &[Project],
+    active_tasks: &[Task],
+    include_subprojects: bool,
+    settings: &Settings,
+) -> Option<f64> {
+    completion_pct(project_id, projects, active_tasks, include_subprojects, settings)
 }
 
 /// Returns the set of task ids `avg_time_per_week` aggregates tracked time
@@ -536,6 +553,19 @@ mod tests {
             let settings = Settings::default();
 
             let result = estimated_time_left("p1", &[], &settings);
+
+            assert_eq!(result, 0);
+        }
+
+        #[test]
+        fn excludes_recurring_tasks_even_when_scheduled_and_estimated() {
+            let mut t = task_in_project("p1");
+            t.scheduled = Some("2026-06-24".to_string());
+            t.estimated_minutes = Some(60);
+            t.series_id = Some("series-1".to_string());
+            let settings = Settings::default();
+
+            let result = estimated_time_left("p1", &[t], &settings);
 
             assert_eq!(result, 0);
         }

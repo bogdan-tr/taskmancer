@@ -11,6 +11,7 @@ describe("statusLineLayoutEditor", () => {
         "avg_time_per_week",
         "completion_pct",
         "weighted_completion_pct",
+        "active_completion_pct",
       ]);
       expect(new Set(ALL_STATUS_LINE_STAT_IDS).size).toBe(ALL_STATUS_LINE_STAT_IDS.length);
     });

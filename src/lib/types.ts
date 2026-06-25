@@ -78,6 +78,12 @@ export interface ProjectBoard {
   status_tier_rule_overrides?: (StatusTierRule | null)[];
   /** Overrides `Settings.default_status_line_layout_id` for which `StatLayout` this project's status line renders. `undefined` inherits the global default. */
   status_line_layout_id?: string;
+  /**
+   * 3-state status-bar override for this project: `undefined` inherits the
+   * global `Settings.status_bar_enabled` value; `true` forces the bar on even
+   * when the global default is off; `false` forces it off.
+   */
+  status_bar_enabled_override?: boolean;
 }
 
 /**
@@ -278,15 +284,12 @@ export interface Settings {
   avg_time_per_week_window: number;
   /** The `StatLayout.id` the status line renders when a project hasn't set `ProjectBoard.status_line_layout_id`. */
   default_status_line_layout_id: string;
-  /**
-   * Which of the 3 status-line visual treatments to render — `"tiles"` (a
-   * header row plus a row of label/value tiles, the seeded default),
-   * `"chips"` (each stat in its own small rounded badge), or `"tint"` (plain
-   * inline text, with the bar's background carrying a soft color wash keyed
-   * to the current status tier). Global-only, like the theme picker — no
-   * per-project override.
-   */
-  status_bar_style: "tiles" | "chips" | "tint";
+  /** Only `"tiles"` remains after "chips" and "tint" were removed. Kept as a field for future extension but effectively always `"tiles"`. */
+  status_bar_style: "tiles";
+  /** Global on/off switch for the project status bar. `true` by default. Per-project override via `ProjectBoard.status_bar_enabled_override`. */
+  status_bar_enabled: boolean;
+  /** When `true`, status-line tiles show a tinted background keyed to the project's current `StatusTier` color. `false` by default. */
+  status_bar_tile_tint: boolean;
 }
 
 /**
@@ -347,5 +350,22 @@ export interface ProjectStatusStats {
   avg_time_per_week: number;
   completion_pct?: number;
   weighted_completion_pct?: number;
+  /** Same calculation as `completion_pct` but restricted to active (non-archived) tasks — "what fraction of tasks on the kanban board are done?". */
+  active_completion_pct?: number;
   effective_layout_id: string;
+}
+
+/**
+ * Global stats for the "All tasks" status bar, mirroring `GlobalStatusStats`
+ * in `src-tauri/src/commands.rs` exactly. `tasks_by_status` contains only
+ * statuses that have at least one visible (non-hidden, active) task.
+ * `time_tracked_today_minutes` and `time_tracked_this_week_minutes` are in
+ * **minutes** and cover all tasks in the time database, not filtered by
+ * project.
+ */
+export interface GlobalStatusStats {
+  tasks_by_status: [string, number][];
+  total_projects: number;
+  time_tracked_today_minutes: number;
+  time_tracked_this_week_minutes: number;
 }

@@ -15,7 +15,8 @@ export type StatusLineStatId =
   | "total_time_tracked"
   | "avg_time_per_week"
   | "completion_pct"
-  | "weighted_completion_pct";
+  | "weighted_completion_pct"
+  | "active_completion_pct";
 
 /** Short display labels for every stat *other than* `"status_badge"` (which has no tile/chip/text of its own — see `StatusLineStatId`'s doc comment). */
 const STAT_LABELS: Record<Exclude<StatusLineStatId, "status_badge">, string> = {
@@ -24,6 +25,7 @@ const STAT_LABELS: Record<Exclude<StatusLineStatId, "status_badge">, string> = {
   avg_time_per_week: "Avg/week",
   completion_pct: "Complete",
   weighted_completion_pct: "Complete (weighted)",
+  active_completion_pct: "Active complete",
 };
 
 /** `true` if `id` is a recognized status-line stat id — guards against a layout referencing a since-removed/unknown id (e.g. a future Phase 3 dashboard-only stat) so rendering can skip it instead of crashing. */
@@ -75,6 +77,8 @@ export function formattedStatValue(statId: string, stats: ProjectStatusStats): s
       return formatCompletionPct(stats.completion_pct);
     case "weighted_completion_pct":
       return formatCompletionPct(stats.weighted_completion_pct);
+    case "active_completion_pct":
+      return formatCompletionPct(stats.active_completion_pct);
     default:
       return undefined;
   }

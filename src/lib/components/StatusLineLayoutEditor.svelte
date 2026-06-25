@@ -2,6 +2,7 @@
   import { dndzone, type DndEvent } from "svelte-dnd-action";
   import {
     createStatusLayout,
+    deleteStatusLayout,
     duplicateStatusLayout,
     listProjects,
     listStatusLayouts,
@@ -19,14 +20,24 @@
   const FLIP_DURATION_MS = 150;
 
   interface Props {
-    /** The project whose status line this editor customizes — the picked/duplicated/forked layout always becomes *this* project's own `board.status_line_layout_id` override, never the global default (see this component's own module doc). */
-    projectId: string;
-    /** The layout id currently rendered by this project's bar (`stats.effective_layout_id`), so the popover can seed its draft and distinguish "pick a different existing layout" from "edit the one already applied." */
+    /**
+     * The project whose status line this editor customizes — the picked/duplicated/forked layout
+     * always becomes *this* project's own `board.status_line_layout_id` override when set.
+     * Omit when opened from the global settings page; in that case, provide `onPickLayout` instead.
+     */
+    projectId?: string;
+    /** The layout id currently rendered (`stats.effective_layout_id` for per-project; `settings.default_status_line_layout_id` for global). */
     currentLayoutId: string | undefined;
     weekStartsOn: WeekStartsOn;
+    /**
+     * Called when the user picks or creates a layout that should become "active". Overrides the
+     * default per-project `board.status_line_layout_id` update — supply this from the global
+     * settings page to update the global default instead.
+     */
+    onPickLayout?: (layoutId: string) => Promise<void>;
   }
 
-  let { projectId, currentLayoutId, weekStartsOn }: Props = $props();
+  let { projectId, currentLayoutId, weekStartsOn, onPickLayout }: Props = $props();
 
   let open = $state(false);
   let dialogEl: HTMLDialogElement | undefined = $state();
@@ -40,6 +51,7 @@
   let newLayoutNameDraft = $state("");
   let showSaveAsNewInput = $state(false);
   let showDuplicateInput = $state(false);
+  let showDeleteConfirm = $state(false);
 
   let currentLayout = $derived(layouts.find((l) => l.id === currentLayoutId));
 
@@ -49,6 +61,7 @@
     errorMessage = "";
     showSaveAsNewInput = false;
     showDuplicateInput = false;
+    showDeleteConfirm = false;
     newLayoutNameDraft = "";
     try {
       layouts = await listStatusLayouts();
@@ -89,15 +102,15 @@
   }
 
   async function refreshStats() {
-    await refreshProjectStatusStats(projectId, weekStartsOn);
+    if (projectId) await refreshProjectStatusStats(projectId, weekStartsOn);
   }
 
-  /** Applies an existing saved layout as this project's own override — a fast path to the same `status_line_layout_id` override mechanic the per-project settings panel also exposes (see that panel's `save()`), not a change to the global default. */
+  /** Applies an existing saved layout — if `onPickLayout` is provided (global settings context), delegates to it; otherwise sets the project's own `board.status_line_layout_id` override. */
   async function applyExistingLayout(layoutId: string) {
     isSaving = true;
     errorMessage = "";
     try {
-      await updateProjectLayoutOverride(layoutId);
+      await pickLayout(layoutId);
       await refreshStats();
       open = false;
     } catch (error) {
@@ -105,6 +118,15 @@
     } finally {
       isSaving = false;
     }
+  }
+
+  /** Picks `layoutId` as the active layout, delegating to `onPickLayout` if provided or falling back to the per-project `board.status_line_layout_id` update. */
+  async function pickLayout(layoutId: string) {
+    if (onPickLayout) {
+      await onPickLayout(layoutId);
+      return;
+    }
+    await updateProjectLayoutOverride(layoutId);
   }
 
   /**
@@ -116,6 +138,7 @@
    * this one write.
    */
   async function updateProjectLayoutOverride(layoutId: string) {
+    if (!projectId) throw new Error("No project in scope");
     const projects = await listProjects();
     const project = projects.find((p) => p.id === projectId);
     if (!project) throw new Error("Project not found");
@@ -165,7 +188,7 @@
     errorMessage = "";
     try {
       const forked = await duplicateStatusLayout(currentLayout.id, newLayoutNameDraft.trim());
-      await updateProjectLayoutOverride(forked.id);
+      await pickLayout(forked.id);
       await refreshStats();
       open = false;
     } catch (error) {
@@ -182,11 +205,27 @@
     errorMessage = "";
     try {
       const created = await createStatusLayout(newLayoutNameDraft.trim(), reorderStatIds(draftStatIds));
-      await updateProjectLayoutOverride(created.id);
+      await pickLayout(created.id);
       await refreshStats();
       open = false;
     } catch (error) {
       errorMessage = getErrorMessage(error, "Failed to save new layout");
+    } finally {
+      isSaving = false;
+    }
+  }
+
+  /** Permanently deletes the currently-applied layout. The backend rejects if any project or the global default still references it. */
+  async function confirmDelete() {
+    if (!currentLayout) return;
+    isSaving = true;
+    errorMessage = "";
+    try {
+      await deleteStatusLayout(currentLayout.id);
+      open = false;
+    } catch (error) {
+      errorMessage = getErrorMessage(error, "Failed to delete layout");
+      showDeleteConfirm = false;
     } finally {
       isSaving = false;
     }
@@ -294,7 +333,21 @@
         <button type="button" disabled={isSaving || newLayoutNameDraft.trim() === ""} onclick={confirmSaveAsNew}>
           Confirm save as new
         </button>
+      {:else if showDeleteConfirm}
+        <span class="delete-confirm-text">Delete "{currentLayout?.name}"? This cannot be undone.</span>
+        <button type="button" class="secondary" onclick={() => (showDeleteConfirm = false)}>Cancel</button>
+        <button type="button" class="danger" disabled={isSaving} onclick={confirmDelete}>
+          {isSaving ? "Deleting…" : "Confirm delete"}
+        </button>
       {:else}
+        <button
+          type="button"
+          class="secondary danger-hover"
+          disabled={isSaving || !currentLayout}
+          onclick={() => (showDeleteConfirm = true)}
+        >
+          Delete
+        </button>
         <button
           type="button"
           class="secondary"
@@ -536,5 +589,28 @@
 
   .actions button.secondary:disabled {
     opacity: 0.5;
+  }
+
+  .actions button.danger {
+    background: var(--color-danger, oklch(55% 0.19 25));
+    color: white;
+  }
+
+  .actions button.danger:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .actions button.danger-hover:hover:not(:disabled) {
+    background: var(--color-danger-soft, oklch(95% 0.04 25));
+    color: var(--color-danger, oklch(55% 0.19 25));
+    border-color: var(--color-danger, oklch(55% 0.19 25));
+  }
+
+  .delete-confirm-text {
+    flex: 1;
+    font-size: var(--text-sm);
+    color: var(--color-danger, oklch(55% 0.19 25));
+    font-weight: 600;
   }
 </style>
