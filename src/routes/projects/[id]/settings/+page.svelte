@@ -4,6 +4,7 @@
   import ProjectBoardSettings from "$lib/components/ProjectBoardSettings.svelte";
   import ProjectDefaultsSettings from "$lib/components/ProjectDefaultsSettings.svelte";
   import ProjectDetailsSettings from "$lib/components/ProjectDetailsSettings.svelte";
+  import ProjectStatusLineBoardSettings from "$lib/components/ProjectStatusLineBoardSettings.svelte";
   import { projectsState } from "$lib/projects.svelte";
 
   let project = $derived(projectsState.items.find((p) => p.id === page.params.id));
@@ -20,6 +21,7 @@
       <ProjectDetailsSettings {project} />
       <ProjectBoardSettings {project} />
       <ProjectDefaultsSettings {project} />
+      <ProjectStatusLineBoardSettings {project} />
       <DeleteProjectSection {project} />
     </main>
   {/key}

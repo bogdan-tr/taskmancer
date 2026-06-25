@@ -4,6 +4,7 @@
   import DisplaySettings from "$lib/components/DisplaySettings.svelte";
   import GeneralSettings from "$lib/components/GeneralSettings.svelte";
   import PrioritySettings from "$lib/components/PrioritySettings.svelte";
+  import ProjectStatusLineSettings from "$lib/components/ProjectStatusLineSettings.svelte";
   import StatusSettings from "$lib/components/StatusSettings.svelte";
   import SubtasksSettings from "$lib/components/SubtasksSettings.svelte";
   import TrackingSettings from "$lib/components/TrackingSettings.svelte";
@@ -66,6 +67,7 @@
   <PrioritySettings />
   <StatusSettings />
   <DefaultsSettings />
+  <ProjectStatusLineSettings />
 </main>
 
 <style>

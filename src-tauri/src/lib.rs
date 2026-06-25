@@ -1,4 +1,6 @@
 mod commands;
+mod layout;
+mod layout_storage;
 mod project;
 mod project_storage;
 mod project_tree;
@@ -7,6 +9,8 @@ mod series;
 mod series_storage;
 mod settings;
 mod settings_storage;
+mod status_stats;
+mod status_tier;
 mod storage;
 mod task;
 mod time_storage;
@@ -25,6 +29,7 @@ pub fn run() {
             let projects_file = app_data_dir.join("projects.json");
             let settings_file = app_data_dir.join("settings.json");
             let series_file = app_data_dir.join("series.json");
+            let layouts_file = app_data_dir.join("layouts.json");
             let time_db_file = app_data_dir.join("time_tracking.sqlite");
             storage::migrate_scheduled_dates(&tasks_dir)?;
 
@@ -34,15 +39,24 @@ pub fn run() {
 
             let projects = project_storage::list_projects(&projects_file)?;
             let settings = settings_storage::load_settings(&settings_file)?;
-            let projects = match commands::ensure_default_project(projects.clone(), settings) {
-                Some((projects, settings)) => {
-                    project_storage::save_projects(&projects_file, &projects)?;
-                    settings_storage::save_settings(&settings_file, &settings)?;
-                    projects
-                }
-                None => projects,
-            };
+            let (projects, settings) =
+                match commands::ensure_default_project(projects.clone(), settings.clone()) {
+                    Some((projects, settings)) => {
+                        project_storage::save_projects(&projects_file, &projects)?;
+                        settings_storage::save_settings(&settings_file, &settings)?;
+                        (projects, settings)
+                    }
+                    None => (projects, settings),
+                };
             storage::migrate_task_project_names_to_ids(&tasks_dir, &projects)?;
+
+            let layouts = layout_storage::list_layouts(&layouts_file)?;
+            if let Some((layouts, settings)) =
+                layout::ensure_default_status_line_layout(layouts, settings)
+            {
+                layout_storage::save_layouts(&layouts_file, &layouts)?;
+                settings_storage::save_settings(&settings_file, &settings)?;
+            }
 
             app.manage(commands::AppState {
                 tasks_dir,
@@ -50,6 +64,7 @@ pub fn run() {
                 projects_file,
                 settings_file,
                 series_file,
+                layouts_file,
                 projects_lock: std::sync::Mutex::new(()),
                 series_lock: std::sync::Mutex::new(()),
                 time_db: std::sync::Mutex::new(time_db),
@@ -90,7 +105,13 @@ pub fn run() {
             commands::delete_time_entry,
             commands::list_time_entries,
             commands::start_project_tracking,
-            commands::stop_project_tracking
+            commands::stop_project_tracking,
+            commands::get_project_status_stats,
+            commands::list_status_layouts,
+            commands::create_status_layout,
+            commands::update_status_layout,
+            commands::duplicate_status_layout,
+            commands::delete_status_layout
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

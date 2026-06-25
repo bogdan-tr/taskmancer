@@ -2,7 +2,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::settings::TaskDefaults;
+use crate::settings::{StatusTierRule, TaskDefaults};
 
 /// Accent color assigned to newly created or backfilled projects that don't
 /// specify their own. Matches `--color-accent` in `tokens.css`.
@@ -34,6 +34,20 @@ pub const DEFAULT_PROJECT_COLOR: &str = "#3b82f6";
 /// descendant subprojects' tasks too; `None` inherits the global default
 /// (itself defaulting to `false` — rollup is opt-in, not automatic, per the
 /// Subtasks-feedback round that introduced this field).
+///
+/// `status_tier_rule_overrides` overrides individual slots of
+/// `Settings::default_status_tier_rules` for this project's status-line
+/// health badge (see `crate::status_tier`) when set. When `Some`, it always
+/// has exactly 4 entries aligned to the same `[severe, critical,
+/// needs_attention, on_track]` order as the global list — but each slot is
+/// independently `Option<StatusTierRule>`: a `None` slot inherits *that one*
+/// tier from the global default rather than requiring the whole override
+/// list to be all-or-nothing. `None` (the whole field, not a slot) inherits
+/// every tier from the global default.
+///
+/// `status_line_layout_id` overrides `Settings::default_status_line_layout_id`
+/// for which `StatLayout` (see `crate::layout`) this project's status line
+/// renders when set; `None` inherits the global default.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct ProjectBoard {
     #[serde(default)]
@@ -50,6 +64,10 @@ pub struct ProjectBoard {
     pub ink_mode: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub show_subproject_tasks: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_tier_rule_overrides: Option<Vec<Option<StatusTierRule>>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_line_layout_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -229,6 +247,65 @@ mod tests {
         assert_eq!(
             parsed.tracking_task_id,
             Some("tracker-task-123".to_string())
+        );
+    }
+
+    #[test]
+    fn new_project_has_no_status_tier_rule_overrides_or_layout_override() {
+        let project = Project::new("Homework".to_string(), "#ff0000".to_string(), 1);
+
+        assert_eq!(project.board.status_tier_rule_overrides, None);
+        assert_eq!(project.board.status_line_layout_id, None);
+    }
+
+    #[test]
+    fn status_tier_rule_overrides_is_none_when_absent_from_json() {
+        let json = r##"{"id":"abc","name":"Inbox","color":"#000000","created":"2026-06-11T10:00:00+00:00"}"##;
+
+        let project: Project = serde_json::from_str(json).expect("parsing should succeed");
+
+        assert_eq!(project.board.status_tier_rule_overrides, None);
+        assert_eq!(project.board.status_line_layout_id, None);
+    }
+
+    #[test]
+    fn status_tier_rule_overrides_round_trips_with_a_mix_of_set_and_inherited_slots() {
+        let mut project = Project::new("Homework".to_string(), "#ff0000".to_string(), 1);
+        project.board.status_tier_rule_overrides = Some(vec![
+            Some(StatusTierRule {
+                due_within_days: Some(0),
+                min_priority: None,
+                estimated_time_left_exceeds_minutes: None,
+            }),
+            None,
+            None,
+            Some(StatusTierRule {
+                due_within_days: Some(14),
+                min_priority: None,
+                estimated_time_left_exceeds_minutes: None,
+            }),
+        ]);
+
+        let json = serde_json::to_string(&project).expect("serialization should succeed");
+        let parsed: Project = serde_json::from_str(&json).expect("parsing should succeed");
+
+        assert_eq!(
+            parsed.board.status_tier_rule_overrides,
+            project.board.status_tier_rule_overrides
+        );
+    }
+
+    #[test]
+    fn status_line_layout_id_round_trips_when_set() {
+        let mut project = Project::new("Homework".to_string(), "#ff0000".to_string(), 1);
+        project.board.status_line_layout_id = Some("layout-123".to_string());
+
+        let json = serde_json::to_string(&project).expect("serialization should succeed");
+        let parsed: Project = serde_json::from_str(&json).expect("parsing should succeed");
+
+        assert_eq!(
+            parsed.board.status_line_layout_id,
+            Some("layout-123".to_string())
         );
     }
 }

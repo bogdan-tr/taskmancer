@@ -1,9 +1,12 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
+use crate::layout::{self, StatLayout};
+use crate::layout_storage;
 use crate::project::{Project, DEFAULT_PROJECT_COLOR};
 use crate::project_storage;
 use crate::project_tree::{self, would_create_cycle};
@@ -17,6 +20,8 @@ use crate::settings::{
     TaskDefaults,
 };
 use crate::settings_storage;
+use crate::status_stats;
+use crate::status_tier::{self, StatusTier};
 use crate::storage;
 use crate::task::Task;
 use crate::time_storage;
@@ -30,8 +35,9 @@ const RECURRENCE_BASELINE_LOOKAHEAD_DAYS: i64 = 60;
 /// Shared application state holding the directory where task markdown
 /// files are stored, the directory where archived task markdown files are
 /// moved (see [`finish_day`] and [`delete_project`]), the file where project
-/// metadata is stored, the file where global settings are stored, and the
-/// file where recurrence series are stored.
+/// metadata is stored, the file where global settings are stored, the file
+/// where recurrence series are stored, and the file where status-line/
+/// dashboard `StatLayout`s are stored (see `crate::layout`).
 ///
 /// `projects_lock` serializes the read-modify-write cycles in
 /// [`list_projects`] (which may backfill), [`create_project`],
@@ -51,6 +57,7 @@ pub struct AppState {
     pub projects_file: PathBuf,
     pub settings_file: PathBuf,
     pub series_file: PathBuf,
+    pub layouts_file: PathBuf,
     pub projects_lock: Mutex<()>,
     pub series_lock: Mutex<()>,
     pub time_db: Mutex<rusqlite::Connection>,
@@ -155,7 +162,10 @@ fn effective_default_tags(global: &TaskDefaults, project_chain: &[&Project]) -> 
 /// doesn't specify its own estimate: the nearest project in `project_chain`
 /// (the task's own project, then its ancestors nearest-first) with an
 /// override, otherwise the global default, otherwise `None` (no estimate).
-fn effective_default_estimated_minutes(
+///
+/// `pub(crate)`: also reused by [`crate::status_stats::weighted_completion_pct`]
+/// for its estimate-fallback chain — see that function's doc comment.
+pub(crate) fn effective_default_estimated_minutes(
     global: &TaskDefaults,
     project_chain: &[&Project],
 ) -> Option<u32> {
@@ -1787,9 +1797,12 @@ pub fn ensure_subtask_container(
 /// `update.board.card_lightness`/`.bar_lightness`, if set, are valid OKLCH
 /// lightness values (see [`validate_lightness`]), and that
 /// `update.board.ink_mode`, if set, is a recognized ink mode (see
-/// [`validate_ink_mode`]). If `update.color` differs from the project's
-/// current color, it must be a 6-digit hex color (see [`validate_hex_color`]);
-/// an unchanged color is left as-is even if it predates that requirement.
+/// [`validate_ink_mode`]), and that `update.board.status_tier_rule_overrides`,
+/// if set, has exactly 4 entries (see
+/// [`status_tier::validate_status_tier_rule_overrides`]). If `update.color`
+/// differs from the project's current color, it must be a 6-digit hex color
+/// (see [`validate_hex_color`]); an unchanged color is left as-is even if it
+/// predates that requirement.
 fn apply_project_update(
     projects: &mut [Project],
     index: usize,
@@ -1834,6 +1847,9 @@ fn apply_project_update(
     }
     if let Some(ink_mode) = &update.board.ink_mode {
         validate_ink_mode(ink_mode)?;
+    }
+    if let Some(overrides) = &update.board.status_tier_rule_overrides {
+        status_tier::validate_status_tier_rule_overrides(overrides)?;
     }
 
     let existing_color = projects[index].color.clone();
@@ -2681,11 +2697,357 @@ pub fn stop_project_tracking(state: State<AppState>, project_id: String) -> Resu
         .map_err(|e| e.to_string())
 }
 
+/// Resolves whether `project_id`'s board/week/calendar views (and, by
+/// extension, the status-line stats that share that same rollup toggle —
+/// see `crate::status_stats`) should include descendant subprojects' tasks:
+/// the nearest `board.show_subproject_tasks` override walking `project_id`
+/// and its ancestors nearest-first (see
+/// [`project_tree::self_and_ancestors`]), falling back to
+/// `settings.show_subproject_tasks_default` if no project in the chain has
+/// set one. Mirrors the frontend's own resolution in `KanbanBoard.svelte`
+/// exactly (`projectChain.find(...).board.show_subproject_tasks ?? ...
+/// show_subproject_tasks_default`) — this is the one status-line setting
+/// that resolves via an ancestor walk rather than single-level, unlike
+/// `status_tier_rule_overrides`/`status_line_layout_id` below.
+fn resolve_show_subproject_tasks(
+    projects: &[Project],
+    project_id: &str,
+    settings: &Settings,
+) -> bool {
+    project_tree::self_and_ancestors(projects, project_id)
+        .iter()
+        .find_map(|p| p.board.show_subproject_tasks)
+        .unwrap_or(settings.show_subproject_tasks_default)
+}
+
+/// Resolves which `StatLayout` id `project_id`'s status line renders:
+/// `project.board.status_line_layout_id` if set, otherwise
+/// `settings.default_status_line_layout_id`. Single-level only — no
+/// ancestor-chain walk, unlike [`resolve_show_subproject_tasks`] — since a
+/// project's status line is its own concern, not something a parent project
+/// should be able to impose on it by proxy.
+fn resolve_status_line_layout_id(project: &Project, settings: &Settings) -> String {
+    project
+        .board
+        .status_line_layout_id
+        .clone()
+        .unwrap_or_else(|| settings.default_status_line_layout_id.clone())
+}
+
+/// All 6 project-status-line stats for one project — see
+/// `docs/features/project-status-line.md`'s "Stat catalog". `status_tier` is
+/// the computed health badge, serialized as a stable snake_case string id
+/// (`"needs_attention"`, etc. — see [`StatusTier`]'s `Serialize` impl).
+/// `estimated_time_left`/`total_time_tracked` are both in minutes;
+/// `avg_time_per_week` is in **seconds**, matching
+/// `status_stats::avg_time_per_week`'s/`time_storage::tracked_seconds_per_day`'s
+/// native unit rather than being converted here — the frontend already has
+/// to do minutes/seconds formatting work for other tracked-time displays, so
+/// converting in exactly one of the three time stats here while the other
+/// two stay in minutes would be a worse inconsistency than documenting the
+/// one stat that's natively seconds and leaving all unit conversion to the
+/// frontend. `completion_pct`/`weighted_completion_pct` are fractions in
+/// `0.0..=1.0` (not pre-multiplied by 100), `None` when there's no
+/// meaningful population to divide by — see `status_stats`'s own doc
+/// comments for exactly when that happens. `effective_layout_id` is the
+/// resolved `StatLayout` id this project's status line should render (see
+/// [`resolve_status_line_layout_id`]) — included so the frontend doesn't
+/// have to re-derive the same single-level inheritance rule itself.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ProjectStatusStats {
+    pub status_tier: StatusTier,
+    pub estimated_time_left: u32,
+    pub total_time_tracked: u32,
+    pub avg_time_per_week: f64,
+    pub completion_pct: Option<f64>,
+    pub weighted_completion_pct: Option<f64>,
+    pub effective_layout_id: String,
+}
+
+/// The pure computation behind [`get_project_status_stats`]: given the
+/// already-loaded settings/projects/merged-task-list/time-tracking
+/// connection, resolves every setting this stat catalog depends on and
+/// assembles the final [`ProjectStatusStats`]. Split out from the
+/// `#[tauri::command]` wrapper so it can be exercised directly in tests
+/// without a live `State<AppState>`, mirroring this module's existing
+/// `apply_project_update`/`#[tauri::command]` split.
+///
+/// `estimated_time_left` and the status-tier evaluator's task scan are
+/// always computed over `project_id`'s own (never rolled up, regardless of
+/// `show_subproject_tasks`) non-hidden, incomplete tasks — per the
+/// project-status-line spec's resolved rollup-scope decision, a busy
+/// subproject can never flip its parent's badge. `total_time_tracked`,
+/// `avg_time_per_week`, `completion_pct`, and `weighted_completion_pct` all
+/// respect [`resolve_show_subproject_tasks`].
+#[allow(clippy::too_many_arguments)]
+fn build_project_status_stats(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    projects: &[Project],
+    all_tasks: &[Task],
+    settings: &Settings,
+    week_start: &str,
+    today: NaiveDate,
+    now: DateTime<Utc>,
+) -> Result<ProjectStatusStats, String> {
+    let project = projects
+        .iter()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| format!("project '{project_id}' not found"))?;
+
+    let include_subprojects = resolve_show_subproject_tasks(projects, project_id, settings);
+
+    let own_incomplete_tasks: Vec<&Task> = all_tasks
+        .iter()
+        .filter(|task| {
+            task.project_id.as_deref() == Some(project_id)
+                && !task.hidden
+                && status_stats::is_incomplete(task, settings)
+        })
+        .collect();
+
+    let estimated_time_left = status_stats::estimated_time_left(project_id, all_tasks, settings);
+
+    let effective_rules = status_tier::effective_status_tier_rules(
+        &settings.default_status_tier_rules,
+        project.board.status_tier_rule_overrides.as_deref(),
+    );
+    let status_tier = status_tier::evaluate_status_tier(
+        &effective_rules,
+        &own_incomplete_tasks,
+        settings,
+        estimated_time_left,
+        today,
+    );
+
+    let total_time_tracked =
+        status_stats::total_time_tracked(project_id, projects, all_tasks, include_subprojects);
+    let avg_time_per_week = status_stats::avg_time_per_week(
+        conn,
+        project_id,
+        projects,
+        all_tasks,
+        include_subprojects,
+        settings,
+        week_start,
+        today,
+        now,
+    )
+    .map_err(|e| e.to_string())?;
+    let completion_pct = status_stats::completion_pct(
+        project_id,
+        projects,
+        all_tasks,
+        include_subprojects,
+        settings,
+    );
+    let weighted_completion_pct = status_stats::weighted_completion_pct(
+        project_id,
+        projects,
+        all_tasks,
+        include_subprojects,
+        settings,
+    );
+
+    let effective_layout_id = resolve_status_line_layout_id(project, settings);
+
+    Ok(ProjectStatusStats {
+        status_tier,
+        estimated_time_left,
+        total_time_tracked,
+        avg_time_per_week,
+        completion_pct,
+        weighted_completion_pct,
+        effective_layout_id,
+    })
+}
+
+/// Returns every status-line stat (see [`ProjectStatusStats`]) for
+/// `project_id`, computed over the combined `tasks_dir` + `archive_dir` task
+/// population (so `completion_pct`/`weighted_completion_pct` correctly
+/// include already-archived completed work) and the time-tracking
+/// database's recorded sessions. `week_starts_on` must be `"monday"` or
+/// `"sunday"` (any other value degrades to `"sunday"` — see
+/// `status_stats::start_of_week`); the frontend passes its own Week-view
+/// display setting, since this backend has no persisted notion of that
+/// setting itself. "Today" is computed server-side
+/// (`chrono::Local::now().date_naive()`), matching every other date-sensitive
+/// command in this codebase. Returns an error if `project_id` doesn't name a
+/// real project.
+#[tauri::command]
+pub fn get_project_status_stats(
+    state: State<AppState>,
+    project_id: String,
+    week_starts_on: String,
+) -> Result<ProjectStatusStats, String> {
+    let settings =
+        settings_storage::load_settings(&state.settings_file).map_err(|e| e.to_string())?;
+    let projects =
+        project_storage::list_projects(&state.projects_file).map_err(|e| e.to_string())?;
+
+    let mut all_tasks = storage::list_tasks(&state.tasks_dir).map_err(|e| e.to_string())?;
+    let mut archived_tasks = storage::list_tasks(&state.archive_dir).map_err(|e| e.to_string())?;
+    all_tasks.append(&mut archived_tasks);
+
+    let conn = state.time_db.lock().map_err(|e| e.to_string())?;
+    let today = chrono::Local::now().date_naive();
+    let now = chrono::Utc::now();
+
+    build_project_status_stats(
+        &conn,
+        &project_id,
+        &projects,
+        &all_tasks,
+        &settings,
+        &week_starts_on,
+        today,
+        now,
+    )
+}
+
+/// Returns every saved `StatLayout`, in storage order (insertion order — no
+/// sort is applied, since layouts have no analog of `Project.order`/
+/// `Task.order` to sort by).
+#[tauri::command]
+pub fn list_status_layouts(state: State<AppState>) -> Result<Vec<StatLayout>, String> {
+    layout_storage::list_layouts(&state.layouts_file).map_err(|e| e.to_string())
+}
+
+/// Creates a new status-line `StatLayout` named `name` with `stat_ids`,
+/// validates it (see [`layout::validate_status_layout`]), appends it to the
+/// saved list, and returns it.
+#[tauri::command]
+pub fn create_status_layout(
+    state: State<AppState>,
+    name: String,
+    stat_ids: Vec<String>,
+) -> Result<StatLayout, String> {
+    let new_layout = StatLayout::new_status_line(name, stat_ids);
+    layout::validate_status_layout(&new_layout)?;
+
+    let mut layouts =
+        layout_storage::list_layouts(&state.layouts_file).map_err(|e| e.to_string())?;
+    layouts.push(new_layout.clone());
+    layout_storage::save_layouts(&state.layouts_file, &layouts).map_err(|e| e.to_string())?;
+
+    Ok(new_layout)
+}
+
+/// Updates an existing `StatLayout` in place — every project (or the global
+/// default) currently pointing at `layout.id` sees the change immediately,
+/// per the project-status-line spec's "named presets, shared on edit"
+/// decision. Validates `layout` (see [`layout::validate_status_layout`])
+/// before saving. Returns an error if `layout.id` doesn't match any saved
+/// layout.
+#[tauri::command]
+pub fn update_status_layout(
+    state: State<AppState>,
+    layout: StatLayout,
+) -> Result<StatLayout, String> {
+    layout::validate_status_layout(&layout)?;
+
+    let mut layouts =
+        layout_storage::list_layouts(&state.layouts_file).map_err(|e| e.to_string())?;
+    let index = layouts
+        .iter()
+        .position(|l| l.id == layout.id)
+        .ok_or_else(|| format!("layout '{}' not found", layout.id))?;
+
+    layouts[index] = layout.clone();
+    layout_storage::save_layouts(&state.layouts_file, &layouts).map_err(|e| e.to_string())?;
+
+    Ok(layout)
+}
+
+/// Forks `layout_id` into a brand-new `StatLayout` named `new_name`, with a
+/// freshly generated id and the same `stat_ids` — the "Duplicate" action the
+/// project-status-line spec distinguishes from "Save as new layout" (which
+/// commits in-progress edits to a currently-applied layout instead; this
+/// command forks immediately, before any edits). Returns an error if
+/// `layout_id` doesn't match any saved layout.
+#[tauri::command]
+pub fn duplicate_status_layout(
+    state: State<AppState>,
+    layout_id: String,
+    new_name: String,
+) -> Result<StatLayout, String> {
+    let mut layouts =
+        layout_storage::list_layouts(&state.layouts_file).map_err(|e| e.to_string())?;
+    let source = layouts
+        .iter()
+        .find(|l| l.id == layout_id)
+        .ok_or_else(|| format!("layout '{layout_id}' not found"))?;
+
+    let duplicate = StatLayout::new_status_line(new_name, source.stat_ids.clone());
+    layouts.push(duplicate.clone());
+    layout_storage::save_layouts(&state.layouts_file, &layouts).map_err(|e| e.to_string())?;
+
+    Ok(duplicate)
+}
+
+/// Returns `Ok(())` if no project's `board.status_line_layout_id` and
+/// `settings.default_status_line_layout_id` reference `layout_id`, or an
+/// error naming how many places still reference it otherwise (the global
+/// default counts as exactly one of those places, distinct from any
+/// project). Used to refuse deleting a layout still in use, per the
+/// project-status-line spec's resolved "nothing is silently reassigned"
+/// decision — the user must switch every referencer to a different layout
+/// first.
+fn ensure_layout_not_in_use(
+    layout_id: &str,
+    projects: &[Project],
+    settings: &Settings,
+) -> Result<(), String> {
+    let referencing_projects = projects
+        .iter()
+        .filter(|p| p.board.status_line_layout_id.as_deref() == Some(layout_id))
+        .count();
+    let is_global_default = settings.default_status_line_layout_id == layout_id;
+
+    if referencing_projects == 0 && !is_global_default {
+        return Ok(());
+    }
+
+    let global_default_note = if is_global_default {
+        " and the global default"
+    } else {
+        ""
+    };
+    Err(format!(
+        "layout still in use by {referencing_projects} project(s){global_default_note}"
+    ))
+}
+
+/// Permanently deletes `layout_id`. Refused (see
+/// [`ensure_layout_not_in_use`]) while any project or the global default
+/// still references it — nothing is silently reassigned. Returns a distinct
+/// error if `layout_id` doesn't match any saved layout at all (checked
+/// before the in-use check, so a typo'd id is never mistakenly reported as
+/// "in use").
+#[tauri::command]
+pub fn delete_status_layout(state: State<AppState>, layout_id: String) -> Result<(), String> {
+    let settings =
+        settings_storage::load_settings(&state.settings_file).map_err(|e| e.to_string())?;
+    let projects =
+        project_storage::list_projects(&state.projects_file).map_err(|e| e.to_string())?;
+    let mut layouts =
+        layout_storage::list_layouts(&state.layouts_file).map_err(|e| e.to_string())?;
+
+    if !layouts.iter().any(|l| l.id == layout_id) {
+        return Err(format!("layout '{layout_id}' not found"));
+    }
+
+    ensure_layout_not_in_use(&layout_id, &projects, &settings)?;
+
+    layouts.retain(|l| l.id != layout_id);
+    layout_storage::save_layouts(&state.layouts_file, &layouts).map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::project::ProjectBoard;
-    use crate::settings::{PriorityLevel, StatusDefinition, TaskDefaults};
+    use crate::settings::{PriorityLevel, StatusDefinition, StatusTierRule, TaskDefaults};
     use tempfile::tempdir;
 
     #[test]
@@ -3821,6 +4183,65 @@ mod tests {
 
         assert_eq!(updated.board.card_lightness, None);
         assert_eq!(updated.board.bar_lightness, None);
+    }
+
+    #[test]
+    fn apply_project_update_rejects_a_status_tier_rule_overrides_list_with_the_wrong_length() {
+        let mut projects = vec![Project::new("Inbox".to_string(), "#abcdef".to_string(), 1)];
+        let mut update = projects[0].clone();
+        update.board = ProjectBoard {
+            status_tier_rule_overrides: Some(vec![None, None, None]),
+            ..Default::default()
+        };
+
+        let result = apply_project_update(&mut projects, 0, update, &Settings::default());
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("4 entries"));
+    }
+
+    #[test]
+    fn apply_project_update_accepts_a_valid_four_entry_status_tier_rule_overrides_list() {
+        let mut projects = vec![Project::new("Inbox".to_string(), "#abcdef".to_string(), 1)];
+        let mut update = projects[0].clone();
+        update.board = ProjectBoard {
+            status_tier_rule_overrides: Some(vec![
+                None,
+                Some(StatusTierRule {
+                    due_within_days: Some(2),
+                    ..Default::default()
+                }),
+                None,
+                None,
+            ]),
+            ..Default::default()
+        };
+
+        let updated = apply_project_update(&mut projects, 0, update, &Settings::default()).unwrap();
+
+        assert_eq!(
+            updated.board.status_tier_rule_overrides,
+            Some(vec![
+                None,
+                Some(StatusTierRule {
+                    due_within_days: Some(2),
+                    ..Default::default()
+                }),
+                None,
+                None
+            ])
+        );
+    }
+
+    #[test]
+    fn apply_project_update_allows_unset_status_tier_rule_overrides_to_inherit_the_global_default()
+    {
+        let mut projects = vec![Project::new("Inbox".to_string(), "#abcdef".to_string(), 1)];
+        let update = projects[0].clone();
+
+        let updated = apply_project_update(&mut projects, 0, update, &Settings::default()).unwrap();
+
+        assert_eq!(updated.board.status_tier_rule_overrides, None);
     }
 
     #[test]
@@ -5831,6 +6252,648 @@ mod tests {
 
             let reloaded = storage::load_task(tasks_dir.path(), &task.id).unwrap();
             assert_eq!(reloaded.tracked_minutes, 0);
+        }
+    }
+
+    mod resolve_show_subproject_tasks_tests {
+        use super::*;
+
+        fn project_with_id(id: &str) -> Project {
+            let mut p = Project::new(id.to_string(), "#111111".to_string(), 1);
+            p.id = id.to_string();
+            p
+        }
+
+        #[test]
+        fn falls_back_to_the_global_default_when_no_project_in_the_chain_has_set_one() {
+            let project = project_with_id("p1");
+            let settings = Settings {
+                show_subproject_tasks_default: true,
+                ..Settings::default()
+            };
+
+            let result = resolve_show_subproject_tasks(&[project], "p1", &settings);
+
+            assert!(result);
+        }
+
+        #[test]
+        fn uses_the_projects_own_override_when_set() {
+            let mut project = project_with_id("p1");
+            project.board.show_subproject_tasks = Some(true);
+            let settings = Settings {
+                show_subproject_tasks_default: false,
+                ..Settings::default()
+            };
+
+            let result = resolve_show_subproject_tasks(&[project], "p1", &settings);
+
+            assert!(result);
+        }
+
+        #[test]
+        fn walks_up_to_the_nearest_ancestor_with_an_override_when_self_has_none() {
+            let mut parent = project_with_id("parent");
+            parent.board.show_subproject_tasks = Some(true);
+            let mut child = project_with_id("child");
+            child.parent_id = Some("parent".to_string());
+            let settings = Settings {
+                show_subproject_tasks_default: false,
+                ..Settings::default()
+            };
+
+            let result = resolve_show_subproject_tasks(&[parent, child], "child", &settings);
+
+            assert!(result);
+        }
+
+        #[test]
+        fn nearest_override_wins_over_a_more_distant_ancestors_override() {
+            let mut grandparent = project_with_id("grandparent");
+            grandparent.board.show_subproject_tasks = Some(true);
+            let mut parent = project_with_id("parent");
+            parent.parent_id = Some("grandparent".to_string());
+            parent.board.show_subproject_tasks = Some(false);
+            let mut child = project_with_id("child");
+            child.parent_id = Some("parent".to_string());
+            let settings = Settings::default();
+
+            let result =
+                resolve_show_subproject_tasks(&[grandparent, parent, child], "child", &settings);
+
+            assert!(!result);
+        }
+
+        #[test]
+        fn missing_project_id_falls_back_to_the_global_default() {
+            let settings = Settings {
+                show_subproject_tasks_default: true,
+                ..Settings::default()
+            };
+
+            let result = resolve_show_subproject_tasks(&[], "does-not-exist", &settings);
+
+            assert!(result);
+        }
+    }
+
+    mod resolve_status_line_layout_id_tests {
+        use super::*;
+
+        #[test]
+        fn uses_the_projects_own_override_when_set() {
+            let mut project = Project::new("Homework".to_string(), "#ff0000".to_string(), 1);
+            project.board.status_line_layout_id = Some("layout-override".to_string());
+            let settings = Settings {
+                default_status_line_layout_id: "layout-default".to_string(),
+                ..Settings::default()
+            };
+
+            let result = resolve_status_line_layout_id(&project, &settings);
+
+            assert_eq!(result, "layout-override");
+        }
+
+        #[test]
+        fn falls_back_to_the_global_default_when_unset() {
+            let project = Project::new("Homework".to_string(), "#ff0000".to_string(), 1);
+            let settings = Settings {
+                default_status_line_layout_id: "layout-default".to_string(),
+                ..Settings::default()
+            };
+
+            let result = resolve_status_line_layout_id(&project, &settings);
+
+            assert_eq!(result, "layout-default");
+        }
+
+        #[test]
+        fn does_not_walk_ancestors_unlike_show_subproject_tasks() {
+            // A parent's override must never leak onto a child that has its
+            // own field unset — status_line_layout_id resolves single-level
+            // only, so this only has the global default to fall back to.
+            let project = Project::new("Homework".to_string(), "#ff0000".to_string(), 1);
+            let settings = Settings {
+                default_status_line_layout_id: "global-default".to_string(),
+                ..Settings::default()
+            };
+
+            let result = resolve_status_line_layout_id(&project, &settings);
+
+            assert_eq!(result, "global-default");
+        }
+    }
+
+    mod build_project_status_stats_tests {
+        use super::*;
+        use rusqlite::Connection;
+
+        fn setup_conn() -> Connection {
+            let conn = Connection::open_in_memory().unwrap();
+            time_storage::init_schema(&conn).unwrap();
+            conn
+        }
+
+        fn project_with_id(id: &str) -> Project {
+            let mut p = Project::new(id.to_string(), "#111111".to_string(), 1);
+            p.id = id.to_string();
+            p
+        }
+
+        fn today() -> NaiveDate {
+            NaiveDate::from_ymd_opt(2026, 6, 24).unwrap()
+        }
+
+        fn now() -> DateTime<Utc> {
+            DateTime::parse_from_rfc3339("2026-06-24T21:00:00+00:00")
+                .unwrap()
+                .with_timezone(&Utc)
+        }
+
+        fn settings_with_done(done: &str) -> Settings {
+            Settings {
+                done_status: done.to_string(),
+                ..Settings::default()
+            }
+        }
+
+        #[test]
+        fn errors_when_project_id_does_not_exist() {
+            let conn = setup_conn();
+            let settings = settings_with_done("done");
+
+            let result = build_project_status_stats(
+                &conn,
+                "does-not-exist",
+                &[],
+                &[],
+                &settings,
+                "monday",
+                today(),
+                now(),
+            );
+
+            let err = result.unwrap_err();
+            assert!(err.contains("does-not-exist"));
+        }
+
+        #[test]
+        fn an_empty_project_with_no_tasks_is_great_with_zeroed_stats() {
+            let conn = setup_conn();
+            let project = project_with_id("p1");
+            let settings = settings_with_done("done");
+
+            let result = build_project_status_stats(
+                &conn,
+                "p1",
+                &[project],
+                &[],
+                &settings,
+                "monday",
+                today(),
+                now(),
+            )
+            .unwrap();
+
+            assert_eq!(result.status_tier, StatusTier::Great);
+            assert_eq!(result.estimated_time_left, 0);
+            assert_eq!(result.total_time_tracked, 0);
+            assert_eq!(result.avg_time_per_week, 0.0);
+            assert_eq!(result.completion_pct, None);
+            assert_eq!(result.weighted_completion_pct, None);
+        }
+
+        #[test]
+        fn an_overdue_task_drives_the_status_tier_to_severe() {
+            let conn = setup_conn();
+            let project = project_with_id("p1");
+            let mut overdue_task = Task::new("Overdue".to_string());
+            overdue_task.project_id = Some("p1".to_string());
+            overdue_task.due = Some("2026-06-20".to_string());
+            let settings = settings_with_done("done");
+
+            let result = build_project_status_stats(
+                &conn,
+                "p1",
+                &[project],
+                &[overdue_task],
+                &settings,
+                "monday",
+                today(),
+                now(),
+            )
+            .unwrap();
+
+            assert_eq!(result.status_tier, StatusTier::Severe);
+        }
+
+        #[test]
+        fn status_tier_task_scan_never_rolls_up_into_subprojects_even_when_rollup_is_on() {
+            let mut parent = project_with_id("parent");
+            parent.board.show_subproject_tasks = Some(true);
+            let mut child = project_with_id("child");
+            child.parent_id = Some("parent".to_string());
+            let mut child_overdue = Task::new("Overdue in child".to_string());
+            child_overdue.project_id = Some("child".to_string());
+            child_overdue.due = Some("2020-01-01".to_string());
+            let conn = setup_conn();
+            let settings = settings_with_done("done");
+
+            let result = build_project_status_stats(
+                &conn,
+                "parent",
+                &[parent, child],
+                &[child_overdue],
+                &settings,
+                "monday",
+                today(),
+                now(),
+            )
+            .unwrap();
+
+            // A busy subproject can never flip its parent's badge, per the
+            // spec's resolved rollup-scope decision — even with rollup on.
+            assert_eq!(result.status_tier, StatusTier::Great);
+        }
+
+        #[test]
+        fn project_level_status_tier_rule_override_wins_over_the_global_rule() {
+            let conn = setup_conn();
+            let mut project = project_with_id("p1");
+            // Override the severe slot to a much tighter window than the
+            // 0-day global default, so a task due in 2 days wouldn't match
+            // the global rule but does match the override.
+            project.board.status_tier_rule_overrides = Some(vec![
+                Some(crate::settings::StatusTierRule {
+                    due_within_days: Some(2),
+                    min_priority: None,
+                    estimated_time_left_exceeds_minutes: None,
+                }),
+                None,
+                None,
+                None,
+            ]);
+            let mut due_soon = Task::new("Due soon".to_string());
+            due_soon.project_id = Some("p1".to_string());
+            due_soon.due = Some("2026-06-26".to_string());
+            let settings = settings_with_done("done");
+
+            let result = build_project_status_stats(
+                &conn,
+                "p1",
+                &[project],
+                &[due_soon],
+                &settings,
+                "monday",
+                today(),
+                now(),
+            )
+            .unwrap();
+
+            assert_eq!(result.status_tier, StatusTier::Severe);
+        }
+
+        #[test]
+        fn total_time_tracked_rolls_up_subprojects_when_show_subproject_tasks_is_on() {
+            let mut parent = project_with_id("parent");
+            parent.board.show_subproject_tasks = Some(true);
+            let mut child = project_with_id("child");
+            child.parent_id = Some("parent".to_string());
+            let mut child_task = Task::new("Child task".to_string());
+            child_task.project_id = Some("child".to_string());
+            child_task.tracked_minutes = 42;
+            let conn = setup_conn();
+            let settings = settings_with_done("done");
+
+            let result = build_project_status_stats(
+                &conn,
+                "parent",
+                &[parent, child],
+                &[child_task],
+                &settings,
+                "monday",
+                today(),
+                now(),
+            )
+            .unwrap();
+
+            assert_eq!(result.total_time_tracked, 42);
+        }
+
+        #[test]
+        fn total_time_tracked_excludes_subprojects_when_rollup_is_off() {
+            let parent = project_with_id("parent");
+            let mut child = project_with_id("child");
+            child.parent_id = Some("parent".to_string());
+            let mut child_task = Task::new("Child task".to_string());
+            child_task.project_id = Some("child".to_string());
+            child_task.tracked_minutes = 42;
+            let conn = setup_conn();
+            let settings = settings_with_done("done");
+
+            let result = build_project_status_stats(
+                &conn,
+                "parent",
+                &[parent, child],
+                &[child_task],
+                &settings,
+                "monday",
+                today(),
+                now(),
+            )
+            .unwrap();
+
+            assert_eq!(result.total_time_tracked, 0);
+        }
+
+        #[test]
+        fn completion_pct_reflects_done_vs_total_over_the_projects_own_tasks() {
+            let conn = setup_conn();
+            let project = project_with_id("p1");
+            let mut done_task = Task::new("Done".to_string());
+            done_task.project_id = Some("p1".to_string());
+            done_task.status = "done".to_string();
+            let mut not_done_task = Task::new("Not done".to_string());
+            not_done_task.project_id = Some("p1".to_string());
+            let settings = settings_with_done("done");
+
+            let result = build_project_status_stats(
+                &conn,
+                "p1",
+                &[project],
+                &[done_task, not_done_task],
+                &settings,
+                "monday",
+                today(),
+                now(),
+            )
+            .unwrap();
+
+            assert_eq!(result.completion_pct, Some(0.5));
+        }
+
+        #[test]
+        fn weighted_completion_pct_weights_by_estimated_minutes() {
+            let conn = setup_conn();
+            let project = project_with_id("p1");
+            let mut done_task = Task::new("Done".to_string());
+            done_task.project_id = Some("p1".to_string());
+            done_task.status = "done".to_string();
+            done_task.estimated_minutes = Some(30);
+            let mut not_done_task = Task::new("Not done".to_string());
+            not_done_task.project_id = Some("p1".to_string());
+            not_done_task.estimated_minutes = Some(90);
+            let settings = settings_with_done("done");
+
+            let result = build_project_status_stats(
+                &conn,
+                "p1",
+                &[project],
+                &[done_task, not_done_task],
+                &settings,
+                "monday",
+                today(),
+                now(),
+            )
+            .unwrap();
+
+            assert_eq!(result.weighted_completion_pct, Some(30.0 / 120.0));
+        }
+
+        #[test]
+        fn estimated_time_left_sums_scheduled_incomplete_tasks_estimate_minus_tracked() {
+            let conn = setup_conn();
+            let project = project_with_id("p1");
+            let mut task = Task::new("Has estimate".to_string());
+            task.project_id = Some("p1".to_string());
+            task.scheduled = Some("2026-06-24".to_string());
+            task.estimated_minutes = Some(100);
+            task.tracked_minutes = 30;
+            let settings = settings_with_done("done");
+
+            let result = build_project_status_stats(
+                &conn,
+                "p1",
+                &[project],
+                &[task],
+                &settings,
+                "monday",
+                today(),
+                now(),
+            )
+            .unwrap();
+
+            assert_eq!(result.estimated_time_left, 70);
+        }
+
+        #[test]
+        fn avg_time_per_week_is_in_seconds_not_minutes() {
+            let conn = setup_conn();
+            let project = project_with_id("p1");
+            let mut task = Task::new("Tracked".to_string());
+            task.project_id = Some("p1".to_string());
+            time_storage::insert_completed_entry(
+                &conn,
+                &task.id,
+                DateTime::parse_from_rfc3339("2026-06-16T08:00:00+00:00")
+                    .unwrap()
+                    .with_timezone(&Utc),
+                DateTime::parse_from_rfc3339("2026-06-16T09:00:00+00:00")
+                    .unwrap()
+                    .with_timezone(&Utc),
+            )
+            .unwrap();
+            let settings = settings_with_done("done");
+
+            let result = build_project_status_stats(
+                &conn,
+                "p1",
+                &[project],
+                &[task],
+                &settings,
+                "monday",
+                today(),
+                now(),
+            )
+            .unwrap();
+
+            // 1 tracked hour = 3600 seconds, not 60 minutes — confirms the
+            // stat stays in status_stats::avg_time_per_week's native unit.
+            assert_eq!(result.avg_time_per_week, 3600.0);
+        }
+
+        #[test]
+        fn effective_layout_id_uses_the_projects_own_override() {
+            let conn = setup_conn();
+            let mut project = project_with_id("p1");
+            project.board.status_line_layout_id = Some("project-layout".to_string());
+            let settings = Settings {
+                default_status_line_layout_id: "global-layout".to_string(),
+                ..settings_with_done("done")
+            };
+
+            let result = build_project_status_stats(
+                &conn,
+                "p1",
+                &[project],
+                &[],
+                &settings,
+                "monday",
+                today(),
+                now(),
+            )
+            .unwrap();
+
+            assert_eq!(result.effective_layout_id, "project-layout");
+        }
+
+        #[test]
+        fn effective_layout_id_falls_back_to_the_global_default() {
+            let conn = setup_conn();
+            let project = project_with_id("p1");
+            let settings = Settings {
+                default_status_line_layout_id: "global-layout".to_string(),
+                ..settings_with_done("done")
+            };
+
+            let result = build_project_status_stats(
+                &conn,
+                "p1",
+                &[project],
+                &[],
+                &settings,
+                "monday",
+                today(),
+                now(),
+            )
+            .unwrap();
+
+            assert_eq!(result.effective_layout_id, "global-layout");
+        }
+
+        #[test]
+        fn status_tier_serializes_to_a_stable_snake_case_string() {
+            assert_eq!(
+                serde_json::to_string(&StatusTier::Severe).unwrap(),
+                "\"severe\""
+            );
+            assert_eq!(
+                serde_json::to_string(&StatusTier::Critical).unwrap(),
+                "\"critical\""
+            );
+            assert_eq!(
+                serde_json::to_string(&StatusTier::NeedsAttention).unwrap(),
+                "\"needs_attention\""
+            );
+            assert_eq!(
+                serde_json::to_string(&StatusTier::OnTrack).unwrap(),
+                "\"on_track\""
+            );
+            assert_eq!(
+                serde_json::to_string(&StatusTier::Great).unwrap(),
+                "\"great\""
+            );
+        }
+    }
+
+    mod layout_command_helper_tests {
+        use super::*;
+
+        fn project_with_id(id: &str) -> Project {
+            let mut p = Project::new(id.to_string(), "#111111".to_string(), 1);
+            p.id = id.to_string();
+            p
+        }
+
+        // --- list_status_layouts / create_status_layout / update_status_layout
+        // / duplicate_status_layout: thin #[tauri::command] wrappers around
+        // already-tested layout/layout_storage functions, so the meaningful
+        // behavior to test directly is ensure_layout_not_in_use, the one
+        // piece of non-trivial logic introduced for delete_status_layout. ---
+
+        #[test]
+        fn ensure_layout_not_in_use_allows_deleting_an_unreferenced_layout() {
+            let settings = Settings {
+                default_status_line_layout_id: "other-layout".to_string(),
+                ..Settings::default()
+            };
+
+            let result = ensure_layout_not_in_use("layout-1", &[], &settings);
+
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn ensure_layout_not_in_use_refuses_when_it_is_the_global_default() {
+            let settings = Settings {
+                default_status_line_layout_id: "layout-1".to_string(),
+                ..Settings::default()
+            };
+
+            let err = ensure_layout_not_in_use("layout-1", &[], &settings).unwrap_err();
+
+            assert!(err.contains("global default"));
+        }
+
+        #[test]
+        fn ensure_layout_not_in_use_refuses_when_a_project_references_it() {
+            let mut project = project_with_id("p1");
+            project.board.status_line_layout_id = Some("layout-1".to_string());
+            let settings = Settings {
+                default_status_line_layout_id: "other-layout".to_string(),
+                ..Settings::default()
+            };
+
+            let err = ensure_layout_not_in_use("layout-1", &[project], &settings).unwrap_err();
+
+            assert!(err.contains('1'));
+            assert!(!err.contains("global default"));
+        }
+
+        #[test]
+        fn ensure_layout_not_in_use_counts_every_referencing_project() {
+            let mut p1 = project_with_id("p1");
+            p1.board.status_line_layout_id = Some("layout-1".to_string());
+            let mut p2 = project_with_id("p2");
+            p2.board.status_line_layout_id = Some("layout-1".to_string());
+            let p3 = project_with_id("p3"); // does not reference it
+            let settings = Settings {
+                default_status_line_layout_id: "other-layout".to_string(),
+                ..Settings::default()
+            };
+
+            let err = ensure_layout_not_in_use("layout-1", &[p1, p2, p3], &settings).unwrap_err();
+
+            assert!(err.contains('2'));
+        }
+
+        #[test]
+        fn ensure_layout_not_in_use_reports_both_a_project_and_the_global_default_together() {
+            let mut project = project_with_id("p1");
+            project.board.status_line_layout_id = Some("layout-1".to_string());
+            let settings = Settings {
+                default_status_line_layout_id: "layout-1".to_string(),
+                ..Settings::default()
+            };
+
+            let err = ensure_layout_not_in_use("layout-1", &[project], &settings).unwrap_err();
+
+            assert!(err.contains('1'));
+            assert!(err.contains("global default"));
+        }
+
+        #[test]
+        fn ensure_layout_not_in_use_ignores_a_project_referencing_a_different_layout() {
+            let mut project = project_with_id("p1");
+            project.board.status_line_layout_id = Some("some-other-layout".to_string());
+            let settings = Settings {
+                default_status_line_layout_id: "yet-another-layout".to_string(),
+                ..Settings::default()
+            };
+
+            let result = ensure_layout_not_in_use("layout-1", &[project], &settings);
+
+            assert!(result.is_ok());
         }
     }
 }

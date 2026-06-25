@@ -27,6 +27,10 @@ const sampleSettings: Settings = {
   max_visible_subtasks: 5,
   tracking_auto_transition_enabled: false,
   card_tracked_time_display: "total",
+  default_status_tier_rules: [],
+  avg_time_per_week_window: 4,
+  default_status_line_layout_id: "layout-1",
+  status_bar_style: "tiles",
 };
 
 vi.mock("./api", () => ({

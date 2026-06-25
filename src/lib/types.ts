@@ -67,6 +67,48 @@ export interface ProjectBoard {
   ink_mode?: InkMode;
   /** Overrides `Settings.show_subproject_tasks_default` for whether viewing this project's board/week/calendar rolls up its descendant subprojects' tasks too. `undefined` inherits the global default. */
   show_subproject_tasks?: boolean;
+  /**
+   * Per-slot override of `Settings.default_status_tier_rules` for this
+   * project's status-line health badge: always exactly 4 entries aligned to
+   * `[severe, critical, needs_attention, on_track]` when set, but each slot
+   * independently inherits the matching global tier when `null`. `undefined`
+   * (the whole field) inherits every tier from the global default. Read-only
+   * in Milestone 3 — editing this is Milestone 4's layout/tier-rule UI.
+   */
+  status_tier_rule_overrides?: (StatusTierRule | null)[];
+  /** Overrides `Settings.default_status_line_layout_id` for which `StatLayout` this project's status line renders. `undefined` inherits the global default. */
+  status_line_layout_id?: string;
+}
+
+/**
+ * One status-line health tier's condition set, mirroring `StatusTierRule` in
+ * `src-tauri/src/settings.rs` exactly. Every condition the tier has set must
+ * match for the tier to match (AND); an unset field is simply skipped for
+ * that tier. See `docs/features/project-status-line.md`'s "Status algorithm".
+ */
+export interface StatusTierRule {
+  /** Matches if any of the project's own qualifying tasks has a `due` date `<= today + due_within_days`. Zero or negative catches overdue/due-today. */
+  due_within_days?: number;
+  /** Matches if any qualifying task's priority has a `rank` at least as severe as (`<=`) this `PriorityLevel.id`'s rank. */
+  min_priority?: string;
+  /** Matches if the project's own already-computed `estimated_time_left` stat is strictly greater than this many minutes. */
+  estimated_time_left_exceeds_minutes?: number;
+}
+
+/**
+ * A shared layout entity (status lines today, dashboards in Phase 3),
+ * mirroring `StatLayout` in `src-tauri/src/layout.rs` exactly. Editing a
+ * layout mutates it in place — every project (or the global default)
+ * currently pointing at `id` sees the change immediately; `duplicateStatusLayout`
+ * forks a new one instead. `kind` is `"status_line"` for every layout this
+ * milestone reads/renders; `"dashboard"` is reserved for Phase 3.
+ */
+export interface StatLayout {
+  id: string;
+  name: string;
+  kind: "status_line" | "dashboard";
+  /** Ordered ids of the stats currently shown — see `ProjectStatusStats`' field names for the valid stat ids, plus `"status_badge"`. */
+  stat_ids: string[];
 }
 
 /**
@@ -230,6 +272,21 @@ export interface Settings {
    * shows the lifetime total either way. See `liveDisplaySecondsFor`.
    */
   card_tracked_time_display: CardTrackedTimeDisplay;
+  /** Global tier-rule thresholds for the status-line health badge, exactly 4 entries in `[severe, critical, needs_attention, on_track]` order. See `ProjectBoard.status_tier_rule_overrides` for the per-project per-slot override. */
+  default_status_tier_rules: StatusTierRule[];
+  /** How many trailing complete weeks the `avg_time_per_week` status-line stat averages over. No per-project override. */
+  avg_time_per_week_window: number;
+  /** The `StatLayout.id` the status line renders when a project hasn't set `ProjectBoard.status_line_layout_id`. */
+  default_status_line_layout_id: string;
+  /**
+   * Which of the 3 status-line visual treatments to render — `"tiles"` (a
+   * header row plus a row of label/value tiles, the seeded default),
+   * `"chips"` (each stat in its own small rounded badge), or `"tint"` (plain
+   * inline text, with the bar's background carrying a soft color wash keyed
+   * to the current status tier). Global-only, like the theme picker — no
+   * per-project override.
+   */
+  status_bar_style: "tiles" | "chips" | "tint";
 }
 
 /**
@@ -267,4 +324,28 @@ export interface TimeEntry {
   ended_at: string | null;
   last_heartbeat_at: string | null;
   created_at: string;
+}
+
+/** The 4 real status-line health tiers plus the implicit `"great"` fallback — see `docs/features/project-status-line.md`'s "Status algorithm". Most-severe-first. */
+export type StatusTier = "severe" | "critical" | "needs_attention" | "on_track" | "great";
+
+/**
+ * All 6 project-status-line stats for one project, mirroring
+ * `ProjectStatusStats` in `src-tauri/src/commands.rs` exactly.
+ * `estimated_time_left`/`total_time_tracked` are both in **minutes**;
+ * `avg_time_per_week` is in **seconds** (the backend's native unit — see its
+ * own Rust doc comment for why this one stat alone stays unconverted).
+ * `completion_pct`/`weighted_completion_pct` are fractions in `0.0..=1.0`,
+ * `undefined` when there's no meaningful population to divide by (distinct
+ * from `0`, which means "a real population, all incomplete"). `effective_layout_id`
+ * is the resolved `StatLayout.id` this project's status line should render.
+ */
+export interface ProjectStatusStats {
+  status_tier: StatusTier;
+  estimated_time_left: number;
+  total_time_tracked: number;
+  avg_time_per_week: number;
+  completion_pct?: number;
+  weighted_completion_pct?: number;
+  effective_layout_id: string;
 }

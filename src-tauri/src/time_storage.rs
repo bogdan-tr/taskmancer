@@ -302,6 +302,115 @@ fn parse_rfc3339(value: &str) -> Result<DateTime<Utc>, TimeStorageError> {
         })
 }
 
+/// Returns the start-of-day `DateTime<Utc>` for `date` — calendar-day
+/// boundaries are computed in UTC throughout this module, matching how every
+/// stored timestamp is already UTC RFC3339 (see [`init_schema`]'s column
+/// doc comment); there is no separate "local day" concept anywhere else in
+/// this codebase's time-tracking storage layer.
+#[allow(dead_code)]
+fn start_of_day_utc(date: chrono::NaiveDate) -> DateTime<Utc> {
+    date.and_hms_opt(0, 0, 0)
+        .expect("midnight is always a valid time")
+        .and_utc()
+}
+
+/// Clips `[started_at, ended_at)` against `[day_start, day_start + 1 day)`
+/// and returns the overlap in whole seconds (`0` if there's no overlap at
+/// all). Shared by [`tracked_seconds_per_day`]'s day-bucketing loop — the
+/// core of the "day-splitting" query-time clip described in the
+/// time-tracking-engine spec's Storage section.
+#[allow(dead_code)]
+fn overlap_seconds_with_day(
+    started_at: DateTime<Utc>,
+    ended_at: DateTime<Utc>,
+    day_start: DateTime<Utc>,
+) -> i64 {
+    let day_end = day_start + chrono::Duration::days(1);
+    let overlap_start = started_at.max(day_start);
+    let overlap_end = ended_at.min(day_end);
+    if overlap_end <= overlap_start {
+        return 0;
+    }
+    (overlap_end - overlap_start).num_seconds()
+}
+
+/// Returns, for every task id in `task_ids`, tracked seconds bucketed per
+/// calendar day (UTC) over the half-open window `[range_start, range_end)`
+/// — the day-clipping aggregation the project-status-line feature's
+/// `avg_time_per_week` stat is built on (see the time-tracking-engine spec's
+/// "Day-splitting" paragraph: rows are never physically split at midnight,
+/// so any day-bucketed report clips at query time instead). Days with zero
+/// tracked seconds are simply absent from the returned map rather than
+/// present with a `0` entry.
+///
+/// A still-running entry (`ended_at IS NULL`) has its open end clipped
+/// against `now` rather than treated as unbounded — mirrors how the
+/// frontend's live ticker already treats a running session (computed
+/// client-side from `started_at`, capped at "now"). An entry that starts
+/// before `range_start` or ends after `range_end` is clipped to the window;
+/// one that doesn't overlap `[range_start, range_end)` at all contributes
+/// nothing. `range_start >= range_end` (an empty or inverted window) always
+/// returns an empty map.
+#[allow(dead_code)]
+pub fn tracked_seconds_per_day(
+    conn: &Connection,
+    task_ids: &[String],
+    range_start: DateTime<Utc>,
+    range_end: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> Result<std::collections::HashMap<chrono::NaiveDate, i64>, TimeStorageError> {
+    let mut buckets: std::collections::HashMap<chrono::NaiveDate, i64> =
+        std::collections::HashMap::new();
+
+    if task_ids.is_empty() || range_start >= range_end {
+        return Ok(buckets);
+    }
+
+    let placeholders = task_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let sql =
+        format!("SELECT started_at, ended_at FROM time_entries WHERE task_id IN ({placeholders})");
+    let mut stmt = conn.prepare(&sql)?;
+    let params: Vec<&dyn rusqlite::ToSql> = task_ids
+        .iter()
+        .map(|id| id as &dyn rusqlite::ToSql)
+        .collect();
+    let rows = stmt.query_map(params.as_slice(), |row| {
+        let started_at: String = row.get(0)?;
+        let ended_at: Option<String> = row.get(1)?;
+        Ok((started_at, ended_at))
+    })?;
+
+    for row in rows {
+        let (started_at, ended_at) = row?;
+        let started = parse_rfc3339(&started_at)?;
+        let ended = match ended_at {
+            Some(value) => parse_rfc3339(&value)?,
+            None => now,
+        };
+
+        // Clip the whole entry to the query window first, then walk
+        // day-by-day within that already-clipped range.
+        let clipped_start = started.max(range_start);
+        let clipped_end = ended.min(range_end);
+        if clipped_end <= clipped_start {
+            continue;
+        }
+
+        let mut day = clipped_start.date_naive();
+        let last_day = (clipped_end - chrono::Duration::nanoseconds(1)).date_naive();
+        while day <= last_day {
+            let day_start = start_of_day_utc(day);
+            let seconds = overlap_seconds_with_day(clipped_start, clipped_end, day_start);
+            if seconds > 0 {
+                *buckets.entry(day).or_insert(0) += seconds;
+            }
+            day += chrono::Duration::days(1);
+        }
+    }
+
+    Ok(buckets)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -767,5 +876,332 @@ mod tests {
 
         let total = total_tracked_seconds_for_task(&conn, "task-1").unwrap();
         assert_eq!(total, 2700);
+    }
+
+    mod tracked_seconds_per_day_tests {
+        use super::*;
+
+        fn day(y: i32, m: u32, d: u32) -> chrono::NaiveDate {
+            chrono::NaiveDate::from_ymd_opt(y, m, d).unwrap()
+        }
+
+        fn window(start: &str, end: &str) -> (DateTime<Utc>, DateTime<Utc>) {
+            (dt(start), dt(end))
+        }
+
+        #[test]
+        fn empty_task_ids_returns_an_empty_map() {
+            let conn = setup();
+            let (start, end) = window("2026-06-01T00:00:00+00:00", "2026-06-08T00:00:00+00:00");
+
+            let buckets =
+                tracked_seconds_per_day(&conn, &[], start, end, dt("2026-06-15T00:00:00+00:00"))
+                    .unwrap();
+
+            assert!(buckets.is_empty());
+        }
+
+        #[test]
+        fn empty_window_returns_an_empty_map() {
+            let conn = setup();
+            insert_completed_entry(
+                &conn,
+                "task-1",
+                dt("2026-06-15T09:00:00+00:00"),
+                dt("2026-06-15T10:00:00+00:00"),
+            )
+            .unwrap();
+            let task_ids = vec!["task-1".to_string()];
+            // range_start == range_end: an empty half-open window.
+            let now = dt("2026-06-20T00:00:00+00:00");
+
+            let buckets = tracked_seconds_per_day(
+                &conn,
+                &task_ids,
+                dt("2026-06-15T00:00:00+00:00"),
+                dt("2026-06-15T00:00:00+00:00"),
+                now,
+            )
+            .unwrap();
+
+            assert!(buckets.is_empty());
+        }
+
+        #[test]
+        fn an_inverted_window_returns_an_empty_map() {
+            let conn = setup();
+            let task_ids = vec!["task-1".to_string()];
+            let now = dt("2026-06-20T00:00:00+00:00");
+
+            let buckets = tracked_seconds_per_day(
+                &conn,
+                &task_ids,
+                dt("2026-06-20T00:00:00+00:00"),
+                dt("2026-06-10T00:00:00+00:00"),
+                now,
+            )
+            .unwrap();
+
+            assert!(buckets.is_empty());
+        }
+
+        #[test]
+        fn a_task_with_no_entries_contributes_nothing() {
+            let conn = setup();
+            let task_ids = vec!["never-tracked".to_string()];
+            let (start, end) = window("2026-06-01T00:00:00+00:00", "2026-06-08T00:00:00+00:00");
+            let now = dt("2026-06-20T00:00:00+00:00");
+
+            let buckets = tracked_seconds_per_day(&conn, &task_ids, start, end, now).unwrap();
+
+            assert!(buckets.is_empty());
+        }
+
+        #[test]
+        fn a_session_entirely_within_one_day_buckets_into_that_day_only() {
+            let conn = setup();
+            insert_completed_entry(
+                &conn,
+                "task-1",
+                dt("2026-06-15T09:00:00+00:00"),
+                dt("2026-06-15T10:00:00+00:00"), // 3600s
+            )
+            .unwrap();
+            let task_ids = vec!["task-1".to_string()];
+            let (start, end) = window("2026-06-01T00:00:00+00:00", "2026-06-30T00:00:00+00:00");
+            let now = dt("2026-06-20T00:00:00+00:00");
+
+            let buckets = tracked_seconds_per_day(&conn, &task_ids, start, end, now).unwrap();
+
+            assert_eq!(buckets.len(), 1);
+            assert_eq!(buckets.get(&day(2026, 6, 15)), Some(&3600));
+        }
+
+        #[test]
+        fn a_session_spanning_midnight_splits_proportionally_across_both_days() {
+            let conn = setup();
+            // 23:30 -> 00:15 next day: 30 min in day 1, 15 min in day 2.
+            insert_completed_entry(
+                &conn,
+                "task-1",
+                dt("2026-06-15T23:30:00+00:00"),
+                dt("2026-06-16T00:15:00+00:00"),
+            )
+            .unwrap();
+            let task_ids = vec!["task-1".to_string()];
+            let (start, end) = window("2026-06-01T00:00:00+00:00", "2026-06-30T00:00:00+00:00");
+            let now = dt("2026-06-20T00:00:00+00:00");
+
+            let buckets = tracked_seconds_per_day(&conn, &task_ids, start, end, now).unwrap();
+
+            assert_eq!(buckets.get(&day(2026, 6, 15)), Some(&1800));
+            assert_eq!(buckets.get(&day(2026, 6, 16)), Some(&900));
+            assert_eq!(buckets.len(), 2);
+        }
+
+        #[test]
+        fn a_session_spanning_multiple_days_splits_across_every_day_it_touches() {
+            let conn = setup();
+            // 2026-06-10 12:00 -> 2026-06-13 06:00: 4 calendar days touched.
+            insert_completed_entry(
+                &conn,
+                "task-1",
+                dt("2026-06-10T12:00:00+00:00"),
+                dt("2026-06-13T06:00:00+00:00"),
+            )
+            .unwrap();
+            let task_ids = vec!["task-1".to_string()];
+            let (start, end) = window("2026-06-01T00:00:00+00:00", "2026-06-30T00:00:00+00:00");
+            let now = dt("2026-06-20T00:00:00+00:00");
+
+            let buckets = tracked_seconds_per_day(&conn, &task_ids, start, end, now).unwrap();
+
+            // Day 1 (06-10): 12:00 -> 24:00 = 12h = 43200s
+            assert_eq!(buckets.get(&day(2026, 6, 10)), Some(&43200));
+            // Day 2 (06-11): full day = 86400s
+            assert_eq!(buckets.get(&day(2026, 6, 11)), Some(&86400));
+            // Day 3 (06-12): full day = 86400s
+            assert_eq!(buckets.get(&day(2026, 6, 12)), Some(&86400));
+            // Day 4 (06-13): 00:00 -> 06:00 = 6h = 21600s
+            assert_eq!(buckets.get(&day(2026, 6, 13)), Some(&21600));
+            assert_eq!(buckets.len(), 4);
+
+            let total: i64 = buckets.values().sum();
+            assert_eq!(total, (3 * 86400) - (12 * 3600) + (6 * 3600)); // sanity cross-check
+        }
+
+        #[test]
+        fn a_still_running_session_is_clipped_against_now() {
+            let conn = setup();
+            // Started 09:00, still running; "now" is 09:30 on the same day.
+            time_storage_start_then_no_end(&conn, "task-1", "2026-06-15T09:00:00+00:00");
+            let task_ids = vec!["task-1".to_string()];
+            let (start, end) = window("2026-06-01T00:00:00+00:00", "2026-06-30T00:00:00+00:00");
+            let now = dt("2026-06-15T09:30:00+00:00");
+
+            let buckets = tracked_seconds_per_day(&conn, &task_ids, start, end, now).unwrap();
+
+            assert_eq!(buckets.get(&day(2026, 6, 15)), Some(&1800));
+        }
+
+        #[test]
+        fn a_still_running_session_clipped_against_now_can_span_into_a_later_day() {
+            let conn = setup();
+            time_storage_start_then_no_end(&conn, "task-1", "2026-06-15T23:00:00+00:00");
+            let task_ids = vec!["task-1".to_string()];
+            let (start, end) = window("2026-06-01T00:00:00+00:00", "2026-06-30T00:00:00+00:00");
+            let now = dt("2026-06-16T01:00:00+00:00");
+
+            let buckets = tracked_seconds_per_day(&conn, &task_ids, start, end, now).unwrap();
+
+            assert_eq!(buckets.get(&day(2026, 6, 15)), Some(&3600));
+            assert_eq!(buckets.get(&day(2026, 6, 16)), Some(&3600));
+        }
+
+        #[test]
+        fn a_session_starting_before_and_ending_after_the_query_window_is_clipped_to_it() {
+            let conn = setup();
+            insert_completed_entry(
+                &conn,
+                "task-1",
+                dt("2026-05-01T00:00:00+00:00"),
+                dt("2026-07-01T00:00:00+00:00"),
+            )
+            .unwrap();
+            let task_ids = vec!["task-1".to_string()];
+            // Window is just one day: 06-15 00:00 -> 06-16 00:00.
+            let (start, end) = window("2026-06-15T00:00:00+00:00", "2026-06-16T00:00:00+00:00");
+            let now = dt("2026-08-01T00:00:00+00:00");
+
+            let buckets = tracked_seconds_per_day(&conn, &task_ids, start, end, now).unwrap();
+
+            assert_eq!(buckets.len(), 1);
+            assert_eq!(buckets.get(&day(2026, 6, 15)), Some(&86400));
+        }
+
+        #[test]
+        fn a_session_entirely_before_the_window_contributes_nothing() {
+            let conn = setup();
+            insert_completed_entry(
+                &conn,
+                "task-1",
+                dt("2026-01-01T00:00:00+00:00"),
+                dt("2026-01-02T00:00:00+00:00"),
+            )
+            .unwrap();
+            let task_ids = vec!["task-1".to_string()];
+            let (start, end) = window("2026-06-01T00:00:00+00:00", "2026-06-30T00:00:00+00:00");
+            let now = dt("2026-06-20T00:00:00+00:00");
+
+            let buckets = tracked_seconds_per_day(&conn, &task_ids, start, end, now).unwrap();
+
+            assert!(buckets.is_empty());
+        }
+
+        #[test]
+        fn a_session_entirely_after_the_window_contributes_nothing() {
+            let conn = setup();
+            insert_completed_entry(
+                &conn,
+                "task-1",
+                dt("2026-12-01T00:00:00+00:00"),
+                dt("2026-12-02T00:00:00+00:00"),
+            )
+            .unwrap();
+            let task_ids = vec!["task-1".to_string()];
+            let (start, end) = window("2026-06-01T00:00:00+00:00", "2026-06-30T00:00:00+00:00");
+            let now = dt("2026-12-20T00:00:00+00:00");
+
+            let buckets = tracked_seconds_per_day(&conn, &task_ids, start, end, now).unwrap();
+
+            assert!(buckets.is_empty());
+        }
+
+        #[test]
+        fn multiple_tasks_entries_are_interleaved_and_summed_per_day() {
+            let conn = setup();
+            insert_completed_entry(
+                &conn,
+                "task-1",
+                dt("2026-06-15T09:00:00+00:00"),
+                dt("2026-06-15T10:00:00+00:00"), // 3600s on 06-15
+            )
+            .unwrap();
+            insert_completed_entry(
+                &conn,
+                "task-2",
+                dt("2026-06-15T11:00:00+00:00"),
+                dt("2026-06-15T11:30:00+00:00"), // 1800s on 06-15
+            )
+            .unwrap();
+            insert_completed_entry(
+                &conn,
+                "task-2",
+                dt("2026-06-16T08:00:00+00:00"),
+                dt("2026-06-16T08:10:00+00:00"), // 600s on 06-16
+            )
+            .unwrap();
+            let task_ids = vec!["task-1".to_string(), "task-2".to_string()];
+            let (start, end) = window("2026-06-01T00:00:00+00:00", "2026-06-30T00:00:00+00:00");
+            let now = dt("2026-06-20T00:00:00+00:00");
+
+            let buckets = tracked_seconds_per_day(&conn, &task_ids, start, end, now).unwrap();
+
+            assert_eq!(buckets.get(&day(2026, 6, 15)), Some(&5400));
+            assert_eq!(buckets.get(&day(2026, 6, 16)), Some(&600));
+            assert_eq!(buckets.len(), 2);
+        }
+
+        #[test]
+        fn a_task_id_not_in_the_requested_list_is_excluded() {
+            let conn = setup();
+            insert_completed_entry(
+                &conn,
+                "task-1",
+                dt("2026-06-15T09:00:00+00:00"),
+                dt("2026-06-15T10:00:00+00:00"),
+            )
+            .unwrap();
+            insert_completed_entry(
+                &conn,
+                "task-not-requested",
+                dt("2026-06-15T09:00:00+00:00"),
+                dt("2026-06-15T20:00:00+00:00"),
+            )
+            .unwrap();
+            let task_ids = vec!["task-1".to_string()];
+            let (start, end) = window("2026-06-01T00:00:00+00:00", "2026-06-30T00:00:00+00:00");
+            let now = dt("2026-06-20T00:00:00+00:00");
+
+            let buckets = tracked_seconds_per_day(&conn, &task_ids, start, end, now).unwrap();
+
+            assert_eq!(buckets.get(&day(2026, 6, 15)), Some(&3600));
+        }
+
+        #[test]
+        fn a_zero_length_session_contributes_nothing() {
+            let conn = setup();
+            insert_completed_entry(
+                &conn,
+                "task-1",
+                dt("2026-06-15T09:00:00+00:00"),
+                dt("2026-06-15T09:00:00+00:00"),
+            )
+            .unwrap();
+            let task_ids = vec!["task-1".to_string()];
+            let (start, end) = window("2026-06-01T00:00:00+00:00", "2026-06-30T00:00:00+00:00");
+            let now = dt("2026-06-20T00:00:00+00:00");
+
+            let buckets = tracked_seconds_per_day(&conn, &task_ids, start, end, now).unwrap();
+
+            assert!(buckets.is_empty());
+        }
+
+        /// Test-only helper: starts an active (never-ended) session directly
+        /// via [`start_entry`], named to read clearly at each call site above
+        /// without repeating the "still running" framing every time.
+        fn time_storage_start_then_no_end(conn: &Connection, task_id: &str, started_at: &str) {
+            start_entry(conn, task_id, dt(started_at)).unwrap();
+        }
     }
 }

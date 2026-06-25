@@ -1,13 +1,16 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { WeekStartsOn } from "./displaySettings.svelte";
 import type { ParsedTaskInput } from "./naturalLanguage";
 import type { DueRule, RecurrenceFrequency, SeriesEditScope } from "./recurrence";
 import type {
   DeleteProjectResult,
   FinishDayResult,
   Project,
+  ProjectStatusStats,
   ProjectTaskStrategy,
   Series,
   Settings,
+  StatLayout,
   Task,
   TimeEntry,
 } from "./types";
@@ -233,4 +236,37 @@ export async function startProjectTracking(projectId: string): Promise<void> {
 /** Stops tracking `projectId` as a whole and recomputes its hidden tracker task's `tracked_minutes`, returning the new value. */
 export async function stopProjectTracking(projectId: string): Promise<number> {
   return invoke<number>("stop_project_tracking", { projectId });
+}
+
+/** Returns every project-status-line stat for `projectId`, computed as of "now". */
+export async function getProjectStatusStats(
+  projectId: string,
+  weekStartsOn: WeekStartsOn,
+): Promise<ProjectStatusStats> {
+  return invoke<ProjectStatusStats>("get_project_status_stats", { projectId, weekStartsOn });
+}
+
+/** Returns every saved `StatLayout`, in storage order. */
+export async function listStatusLayouts(): Promise<StatLayout[]> {
+  return invoke<StatLayout[]>("list_status_layouts");
+}
+
+/** Creates a new status-line `StatLayout` named `name` with `statIds`, and returns it. */
+export async function createStatusLayout(name: string, statIds: string[]): Promise<StatLayout> {
+  return invoke<StatLayout>("create_status_layout", { name, statIds });
+}
+
+/** Updates an existing `StatLayout` in place — every project (or the global default) pointing at `layout.id` sees the change immediately. */
+export async function updateStatusLayout(layout: StatLayout): Promise<StatLayout> {
+  return invoke<StatLayout>("update_status_layout", { layout });
+}
+
+/** Forks `layoutId` into a brand-new `StatLayout` named `newName`, with a freshly generated id and the same `stat_ids`. */
+export async function duplicateStatusLayout(layoutId: string, newName: string): Promise<StatLayout> {
+  return invoke<StatLayout>("duplicate_status_layout", { layoutId, newName });
+}
+
+/** Permanently deletes `layoutId`. Rejects if any project or the global default still references it. */
+export async function deleteStatusLayout(layoutId: string): Promise<void> {
+  return invoke<void>("delete_status_layout", { layoutId });
 }

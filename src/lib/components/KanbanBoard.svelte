@@ -23,6 +23,7 @@
   import CalendarView from "$lib/components/CalendarView.svelte";
   import ConfirmDialog from "$lib/components/ConfirmDialog.svelte";
   import KanbanGrid from "$lib/components/KanbanGrid.svelte";
+  import ProjectStatusLine from "$lib/components/ProjectStatusLine.svelte";
   import WeekView from "$lib/components/WeekView.svelte";
   import { displayState } from "$lib/displaySettings.svelte";
   import { getErrorMessage } from "$lib/errors";
@@ -53,6 +54,7 @@
     statusColor,
     statusLabel,
   } from "$lib/statuses.svelte";
+  import { refreshProjectStatusStats } from "$lib/statusLine.svelte";
   import {
     allDoneQueueState,
     checkAllDoneTransitions,
@@ -341,6 +343,24 @@
     if (allDoneDialogTask) dismissAllDonePermanently(allDoneDialogTask.id);
   }
 
+  /**
+   * Re-fetches this board's project-status-line stats, when this board is
+   * scoped to a project — a no-op on the unfiltered "all tasks" view, which
+   * has no single project to show stats for. Called explicitly after every
+   * action that can change a stat's underlying numbers (task create/update/
+   * delete, recurrence/finish-day bulk operations via `refresh()` itself,
+   * and starting/stopping tracking) rather than reactively recomputing on
+   * every unrelated state change — `get_project_status_stats` does real file
+   * I/O and a SQLite query, so each call is a deliberate, explicit refresh
+   * point, mirroring this codebase's existing `refreshTasks`/
+   * `refreshActiveSessions` "explicit refresh after specific actions"
+   * convention rather than wiring up a reactive `$effect`.
+   */
+  async function refreshStatusLine() {
+    if (!projectFilter) return;
+    await refreshProjectStatusStats(projectFilter, displayState.weekStartsOn);
+  }
+
   async function refresh() {
     try {
       const allTasks = await listTasks();
@@ -361,6 +381,7 @@
       buckets = groupByStatusAndPriority(boardVisible, priorities, boardStatusIds, groupByPriority);
       recomputeHasOther();
       errorMessage = "";
+      void refreshStatusLine();
     } catch (error) {
       errorMessage = getErrorMessage(error, "Failed to load tasks");
     } finally {
@@ -488,6 +509,7 @@
         ? insertTaskIntoBuckets(withoutUpdated, updated, priorities, groupByPriority)
         : withoutUpdated;
     recomputeHasOther();
+    void refreshStatusLine();
   }
 
   async function handleUpdate(task: Task, scope?: SeriesEditScope) {
@@ -523,11 +545,13 @@
         } else {
           removeTask(id);
           removeCachedTask(id);
+          void refreshStatusLine();
         }
       } else {
         await deleteTask(id);
         removeTask(id);
         removeCachedTask(id);
+        void refreshStatusLine();
       }
       errorMessage = "";
       finishDayMessage = "";
@@ -633,6 +657,12 @@
       } else {
         await startProjectTracking(project.id);
       }
+      // `total_time_tracked` only changes on stop/start, not while a timer
+      // ticks live — see `statusLine.svelte`'s own doc comment on why this
+      // bar isn't a per-second ticker. Refreshing here, rather than from a
+      // reactive watch on `isProjectTracking`, keeps the same "explicit
+      // refresh after a specific action" shape as every other call site.
+      void refreshStatusLine();
     } catch (error) {
       errorMessage = getErrorMessage(error, "Failed to update project tracking");
     } finally {
@@ -892,6 +922,10 @@
       </button>
     </div>
   </header>
+
+  {#if project}
+    <ProjectStatusLine projectId={project.id} projectName={project.name} />
+  {/if}
 
   <AddTaskModal
     open={modalOpen}

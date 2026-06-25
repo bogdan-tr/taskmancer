@@ -72,6 +72,29 @@ fn default_card_tracked_time_display() -> String {
     "total".to_string()
 }
 
+/// The fixed set of values accepted by `Settings.status_bar_style` — see the
+/// project-status-line spec's "Bar visual style is itself a customization
+/// point" clarification. `"tiles"`: a header row plus a row of label/value
+/// tiles, one per active stat (the seeded default). `"chips"`: each stat in
+/// its own small rounded badge, thin separators between them. `"tint"`:
+/// plain inline text values, no per-stat boxes, with the whole bar's
+/// background carrying a soft color wash that shifts with the current status
+/// tier. Global-only, like the light/dark/dark-blue theme picker — no
+/// per-project override.
+pub const STATUS_BAR_STYLES: &[&str] = &["tiles", "chips", "tint"];
+
+/// Default `Settings.status_bar_style`: the spec's seeded default.
+fn default_status_bar_style() -> String {
+    "tiles".to_string()
+}
+
+/// Default `Settings.avg_time_per_week_window`: the trailing-week count the
+/// `avg_time_per_week` status-line stat averages over, per the
+/// project-status-line spec's stat catalog entry.
+fn default_avg_time_per_week_window() -> u32 {
+    4
+}
+
 /// A user-defined priority level: an id stored in `Task.priority`, a display
 /// label, a `color` used to render that priority throughout the UI, and a
 /// `rank` used to sort tasks by priority (lower `rank` sorts first / is
@@ -95,6 +118,65 @@ pub struct StatusDefinition {
     pub order: i64,
     #[serde(default = "default_status_color")]
     pub color: String,
+}
+
+/// One status-line health tier's condition set (see
+/// `crate::status_tier` for the evaluator and
+/// `docs/features/project-status-line.md`'s "Status algorithm"). Every
+/// condition the tier has set must match for the tier to match (AND); an
+/// unset (`None`) condition is simply skipped for that tier, so a tier can
+/// use just one of the three fields if that's all it needs.
+///
+/// `due_within_days`: matches if any of the project's own qualifying tasks
+/// has a `due` date `<= today + due_within_days` (zero or negative catches
+/// overdue/due-today).
+///
+/// `min_priority`: matches if any qualifying task's priority has a `rank`
+/// less-than-or-equal-to (i.e. at least as severe as) the named
+/// `PriorityLevel.id`'s `rank`. An `id` that doesn't match any current
+/// priority level never matches (fails closed rather than erroring), mirroring
+/// how this codebase already degrades gracefully when a setting references a
+/// since-removed id elsewhere (e.g. `Task.priority`/`Task.status` reads).
+///
+/// `estimated_time_left_exceeds_minutes`: matches if the project's own
+/// already-computed `estimated_time_left` stat value is strictly greater
+/// than this many minutes.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct StatusTierRule {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub due_within_days: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_priority: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_time_left_exceeds_minutes: Option<u32>,
+}
+
+/// Seeds `Settings.default_status_tier_rules`: exactly 4 entries in
+/// `[severe, critical, needs_attention, on_track]` order, matching the
+/// project-status-line spec's "Seeded defaults" table.
+fn default_status_tier_rules() -> Vec<StatusTierRule> {
+    vec![
+        StatusTierRule {
+            due_within_days: Some(0),
+            min_priority: None,
+            estimated_time_left_exceeds_minutes: None,
+        },
+        StatusTierRule {
+            due_within_days: Some(1),
+            min_priority: Some("high".to_string()),
+            estimated_time_left_exceeds_minutes: None,
+        },
+        StatusTierRule {
+            due_within_days: Some(3),
+            min_priority: None,
+            estimated_time_left_exceeds_minutes: None,
+        },
+        StatusTierRule {
+            due_within_days: Some(7),
+            min_priority: None,
+            estimated_time_left_exceeds_minutes: None,
+        },
+    ]
 }
 
 /// Default task attributes. Used both as the global defaults and as a
@@ -196,6 +278,28 @@ pub struct TaskDefaults {
 ///
 /// `card_tracked_time_display` is one of [`CARD_TRACKED_TIME_DISPLAY_MODES`]
 /// — see that constant's own doc comment for what each value means.
+///
+/// `default_status_tier_rules` is the project-status-line feature's global
+/// tier thresholds (see [`StatusTierRule`] and `crate::status_tier`): always
+/// exactly 4 entries in `[severe, critical, needs_attention, on_track]`
+/// order (enforced by [`validate_settings`]). A project's
+/// `ProjectBoard.status_tier_rule_overrides` overrides individual slots when
+/// set — see that field's own doc comment.
+///
+/// `avg_time_per_week_window` is how many trailing complete weeks the
+/// `avg_time_per_week` status-line stat averages over; must be `> 0`
+/// (enforced by [`validate_settings`]). No per-project override, per the
+/// project-status-line spec.
+///
+/// `default_status_line_layout_id` points at the seeded built-in
+/// `StatLayout` (see `crate::layout`) shown by default on a project's status
+/// line. Empty only transiently, before the startup migration ensures a
+/// real default layout exists and sets this to its id — mirrors
+/// `default_project_id`/`commands::ensure_default_project` exactly.
+///
+/// `status_bar_style` is one of [`STATUS_BAR_STYLES`] — see that constant's
+/// own doc comment for what each value means. Global-only; no per-project
+/// override.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Settings {
     #[serde(default)]
@@ -230,6 +334,14 @@ pub struct Settings {
     pub tracking_auto_transition_status_id: Option<String>,
     #[serde(default = "default_card_tracked_time_display")]
     pub card_tracked_time_display: String,
+    #[serde(default = "default_status_tier_rules")]
+    pub default_status_tier_rules: Vec<StatusTierRule>,
+    #[serde(default = "default_avg_time_per_week_window")]
+    pub avg_time_per_week_window: u32,
+    #[serde(default)]
+    pub default_status_line_layout_id: String,
+    #[serde(default = "default_status_bar_style")]
+    pub status_bar_style: String,
 }
 
 impl Default for Settings {
@@ -314,6 +426,10 @@ impl Default for Settings {
             tracking_auto_transition_enabled: false,
             tracking_auto_transition_status_id: None,
             card_tracked_time_display: default_card_tracked_time_display(),
+            default_status_tier_rules: default_status_tier_rules(),
+            avg_time_per_week_window: default_avg_time_per_week_window(),
+            default_status_line_layout_id: String::new(),
+            status_bar_style: default_status_bar_style(),
         }
     }
 }
@@ -527,6 +643,16 @@ pub fn validate_card_tracked_time_display(value: &str) -> Result<(), String> {
     }
 }
 
+/// Returns `Ok(())` if `value` is one of [`STATUS_BAR_STYLES`], or an error
+/// naming the unrecognized value otherwise. Used for `Settings.status_bar_style`.
+pub fn validate_status_bar_style(value: &str) -> Result<(), String> {
+    if STATUS_BAR_STYLES.contains(&value) {
+        Ok(())
+    } else {
+        Err(format!("'{value}' is not a recognized status bar style"))
+    }
+}
+
 /// Validates settings before they're persisted: `priorities` and `statuses`
 /// must each be non-empty with unique ids (an empty or duplicate-id list
 /// would make `validate_priority_id`/`validate_status_id` reject every task
@@ -539,8 +665,15 @@ pub fn validate_card_tracked_time_display(value: &str) -> Result<(), String> {
 /// reference a defined status distinct from `done_status`,
 /// `card_lightness`/`bar_lightness` must each be a valid OKLCH lightness
 /// (see [`validate_lightness`]), `default_project_id` must be non-empty,
-/// and `tracking_auto_transition_status_id`, if set, must reference a
-/// defined status.
+/// `tracking_auto_transition_status_id`, if set, must reference a
+/// defined status, `default_status_tier_rules` must have exactly 4 entries
+/// (`[severe, critical, needs_attention, on_track]` — a `min_priority` on
+/// any entry is deliberately *not* validated against `priorities` here, since
+/// it's meant to fail closed rather than reject a save when it references a
+/// since-removed level, per `crate::status_tier`'s evaluator),
+/// `avg_time_per_week_window` must be `> 0`, `default_status_line_layout_id`
+/// must be non-empty, and `status_bar_style` must be one of
+/// [`STATUS_BAR_STYLES`].
 pub fn validate_settings(settings: &Settings) -> Result<(), String> {
     if settings.priorities.is_empty() {
         return Err("at least one priority level must be defined".to_string());
@@ -609,6 +742,23 @@ pub fn validate_settings(settings: &Settings) -> Result<(), String> {
     }
 
     validate_card_tracked_time_display(&settings.card_tracked_time_display)?;
+
+    if settings.default_status_tier_rules.len() != 4 {
+        return Err(format!(
+            "default_status_tier_rules must have exactly 4 entries, got {}",
+            settings.default_status_tier_rules.len()
+        ));
+    }
+
+    if settings.avg_time_per_week_window == 0 {
+        return Err("avg_time_per_week_window must be greater than 0".to_string());
+    }
+
+    if settings.default_status_line_layout_id.is_empty() {
+        return Err("a default status line layout must be defined".to_string());
+    }
+
+    validate_status_bar_style(&settings.status_bar_style)?;
 
     Ok(())
 }
@@ -744,10 +894,21 @@ mod tests {
         assert!(err.contains("on-hold"));
     }
 
+    /// Fills in every other entity-existence field [`validate_settings`]
+    /// requires to be non-empty (`default_project_id`,
+    /// `default_status_line_layout_id`) so tests targeting one specific
+    /// validation rule don't have to restate this boilerplate.
+    fn settings_with_required_ids_set() -> Settings {
+        Settings {
+            default_project_id: "some-project-id".to_string(),
+            default_status_line_layout_id: "some-layout-id".to_string(),
+            ..Settings::default()
+        }
+    }
+
     #[test]
     fn validate_settings_accepts_default_settings() {
-        let mut settings = Settings::default();
-        settings.default_project_id = "some-project-id".to_string();
+        let settings = settings_with_required_ids_set();
 
         assert!(validate_settings(&settings).is_ok());
     }
@@ -785,8 +946,7 @@ mod tests {
 
     #[test]
     fn validate_settings_accepts_a_missing_default_priority() {
-        let mut settings = Settings::default();
-        settings.default_project_id = "some-project-id".to_string();
+        let mut settings = settings_with_required_ids_set();
         settings.defaults.priority = None;
 
         assert!(validate_settings(&settings).is_ok());
@@ -825,8 +985,7 @@ mod tests {
 
     #[test]
     fn validate_settings_accepts_a_missing_default_status() {
-        let mut settings = Settings::default();
-        settings.default_project_id = "some-project-id".to_string();
+        let mut settings = settings_with_required_ids_set();
         settings.defaults.status = None;
 
         assert!(validate_settings(&settings).is_ok());
@@ -852,8 +1011,7 @@ mod tests {
 
     #[test]
     fn validate_settings_accepts_a_valid_done_status() {
-        let mut settings = Settings::default();
-        settings.default_project_id = "some-project-id".to_string();
+        let mut settings = settings_with_required_ids_set();
         settings.done_status = "backlog".to_string();
 
         assert!(validate_settings(&settings).is_ok());
@@ -861,8 +1019,7 @@ mod tests {
 
     #[test]
     fn validate_settings_accepts_a_missing_cancelled_status() {
-        let mut settings = Settings::default();
-        settings.default_project_id = "some-project-id".to_string();
+        let mut settings = settings_with_required_ids_set();
         settings.cancelled_status = None;
 
         assert!(validate_settings(&settings).is_ok());
@@ -888,8 +1045,7 @@ mod tests {
 
     #[test]
     fn validate_settings_accepts_a_valid_distinct_cancelled_status() {
-        let mut settings = Settings::default();
-        settings.default_project_id = "some-project-id".to_string();
+        let mut settings = settings_with_required_ids_set();
         settings.cancelled_status = Some("blocked".to_string());
 
         assert!(validate_settings(&settings).is_ok());
@@ -906,8 +1062,7 @@ mod tests {
 
     #[test]
     fn validate_settings_accepts_a_valid_default_due() {
-        let mut settings = Settings::default();
-        settings.default_project_id = "some-project-id".to_string();
+        let mut settings = settings_with_required_ids_set();
         settings.defaults.due = Some("next_day".to_string());
 
         assert!(validate_settings(&settings).is_ok());
@@ -915,8 +1070,7 @@ mod tests {
 
     #[test]
     fn validate_settings_accepts_a_missing_default_due() {
-        let mut settings = Settings::default();
-        settings.default_project_id = "some-project-id".to_string();
+        let mut settings = settings_with_required_ids_set();
         settings.defaults.due = None;
 
         assert!(validate_settings(&settings).is_ok());
@@ -933,8 +1087,7 @@ mod tests {
 
     #[test]
     fn validate_settings_accepts_a_valid_default_scheduled() {
-        let mut settings = Settings::default();
-        settings.default_project_id = "some-project-id".to_string();
+        let mut settings = settings_with_required_ids_set();
         settings.defaults.scheduled = Some("in_1_week".to_string());
 
         assert!(validate_settings(&settings).is_ok());
@@ -942,8 +1095,7 @@ mod tests {
 
     #[test]
     fn validate_settings_accepts_a_missing_default_scheduled() {
-        let mut settings = Settings::default();
-        settings.default_project_id = "some-project-id".to_string();
+        let mut settings = settings_with_required_ids_set();
         settings.defaults.scheduled = None;
 
         assert!(validate_settings(&settings).is_ok());
@@ -962,10 +1114,7 @@ mod tests {
 
     #[test]
     fn validate_settings_accepts_a_valid_default_project() {
-        let settings = Settings {
-            default_project_id: "some-project-id".to_string(),
-            ..Default::default()
-        };
+        let settings = settings_with_required_ids_set();
 
         assert!(validate_settings(&settings).is_ok());
     }
@@ -1011,8 +1160,7 @@ mod tests {
 
     #[test]
     fn validate_settings_accepts_the_default_card_and_bar_lightness() {
-        let mut settings = Settings::default();
-        settings.default_project_id = "some-project-id".to_string();
+        let settings = settings_with_required_ids_set();
 
         assert!(validate_settings(&settings).is_ok());
         assert_eq!(settings.card_lightness, 0.5);
@@ -1091,8 +1239,7 @@ mod tests {
         for mode in INK_MODES {
             let settings = Settings {
                 ink_mode: mode.to_string(),
-                default_project_id: "some-project-id".to_string(),
-                ..Settings::default()
+                ..settings_with_required_ids_set()
             };
 
             assert!(
@@ -1139,10 +1286,9 @@ mod tests {
     #[test]
     fn validate_settings_accepts_a_valid_tracking_auto_transition_status_id() {
         let settings = Settings {
-            default_project_id: "some-project-id".to_string(),
             tracking_auto_transition_enabled: true,
             tracking_auto_transition_status_id: Some("in-progress".to_string()),
-            ..Settings::default()
+            ..settings_with_required_ids_set()
         };
 
         assert!(validate_settings(&settings).is_ok());
@@ -1164,10 +1310,9 @@ mod tests {
     #[test]
     fn validate_settings_accepts_a_missing_tracking_auto_transition_status_id() {
         let settings = Settings {
-            default_project_id: "some-project-id".to_string(),
             tracking_auto_transition_enabled: false,
             tracking_auto_transition_status_id: None,
-            ..Settings::default()
+            ..settings_with_required_ids_set()
         };
 
         assert!(validate_settings(&settings).is_ok());
@@ -1219,13 +1364,279 @@ mod tests {
     #[test]
     fn validate_settings_rejects_an_unknown_card_tracked_time_display() {
         let settings = Settings {
-            default_project_id: "some-project-id".to_string(),
             card_tracked_time_display: "always-on".to_string(),
-            ..Settings::default()
+            ..settings_with_required_ids_set()
         };
 
         let err = validate_settings(&settings).unwrap_err();
         assert!(err.contains("always-on"));
+    }
+
+    #[test]
+    fn default_settings_seed_has_four_status_tier_rules_in_severity_order() {
+        let settings = Settings::default();
+
+        assert_eq!(settings.default_status_tier_rules.len(), 4);
+        // [severe, critical, needs_attention, on_track]
+        assert_eq!(
+            settings.default_status_tier_rules[0].due_within_days,
+            Some(0)
+        );
+        assert_eq!(
+            settings.default_status_tier_rules[1].due_within_days,
+            Some(1)
+        );
+        assert_eq!(
+            settings.default_status_tier_rules[1].min_priority,
+            Some("high".to_string())
+        );
+        assert_eq!(
+            settings.default_status_tier_rules[2].due_within_days,
+            Some(3)
+        );
+        assert_eq!(
+            settings.default_status_tier_rules[3].due_within_days,
+            Some(7)
+        );
+    }
+
+    #[test]
+    fn default_status_tier_rules_have_no_estimated_time_left_or_min_priority_except_critical() {
+        let settings = Settings::default();
+
+        for (index, rule) in settings.default_status_tier_rules.iter().enumerate() {
+            assert_eq!(rule.estimated_time_left_exceeds_minutes, None);
+            if index != 1 {
+                assert_eq!(rule.min_priority, None);
+            }
+        }
+    }
+
+    #[test]
+    fn deserializing_settings_without_default_status_tier_rules_seeds_the_defaults() {
+        let settings: Settings = serde_json::from_str("{}").unwrap();
+
+        assert_eq!(
+            settings.default_status_tier_rules,
+            default_status_tier_rules()
+        );
+    }
+
+    #[test]
+    fn status_tier_rule_round_trips_through_json_when_every_field_is_set() {
+        let rule = StatusTierRule {
+            due_within_days: Some(2),
+            min_priority: Some("high".to_string()),
+            estimated_time_left_exceeds_minutes: Some(120),
+        };
+
+        let json = serde_json::to_string(&rule).expect("serialization should succeed");
+        let parsed: StatusTierRule = serde_json::from_str(&json).expect("parsing should succeed");
+
+        assert_eq!(parsed, rule);
+    }
+
+    #[test]
+    fn status_tier_rule_defaults_to_every_condition_unset() {
+        let rule = StatusTierRule::default();
+
+        assert_eq!(rule.due_within_days, None);
+        assert_eq!(rule.min_priority, None);
+        assert_eq!(rule.estimated_time_left_exceeds_minutes, None);
+    }
+
+    #[test]
+    fn status_tier_rule_omits_unset_fields_when_serialized() {
+        let rule = StatusTierRule::default();
+
+        let json = serde_json::to_string(&rule).expect("serialization should succeed");
+
+        assert_eq!(json, "{}");
+    }
+
+    #[test]
+    fn validate_settings_rejects_default_status_tier_rules_with_too_few_entries() {
+        let settings = Settings {
+            default_status_tier_rules: vec![StatusTierRule::default(); 3],
+            ..settings_with_required_ids_set()
+        };
+
+        let err = validate_settings(&settings).unwrap_err();
+        assert!(err.contains("default_status_tier_rules"));
+    }
+
+    #[test]
+    fn validate_settings_rejects_default_status_tier_rules_with_too_many_entries() {
+        let settings = Settings {
+            default_status_tier_rules: vec![StatusTierRule::default(); 5],
+            ..settings_with_required_ids_set()
+        };
+
+        let err = validate_settings(&settings).unwrap_err();
+        assert!(err.contains("default_status_tier_rules"));
+    }
+
+    #[test]
+    fn validate_settings_accepts_exactly_four_status_tier_rules() {
+        let settings = Settings {
+            default_status_tier_rules: vec![StatusTierRule::default(); 4],
+            ..settings_with_required_ids_set()
+        };
+
+        assert!(validate_settings(&settings).is_ok());
+    }
+
+    #[test]
+    fn validate_settings_accepts_a_status_tier_rule_with_min_priority_referencing_a_removed_level()
+    {
+        // min_priority is deliberately not cross-checked against `priorities`
+        // here — it's meant to fail closed at evaluation time, not reject
+        // the settings save, per crate::status_tier's evaluator.
+        let mut rules = default_status_tier_rules();
+        rules[0].min_priority = Some("a-priority-that-was-deleted".to_string());
+        let settings = Settings {
+            default_status_tier_rules: rules,
+            ..settings_with_required_ids_set()
+        };
+
+        assert!(validate_settings(&settings).is_ok());
+    }
+
+    #[test]
+    fn default_settings_seed_has_an_avg_time_per_week_window_of_four() {
+        let settings = Settings::default();
+
+        assert_eq!(settings.avg_time_per_week_window, 4);
+    }
+
+    #[test]
+    fn deserializing_settings_without_avg_time_per_week_window_defaults_to_four() {
+        let settings: Settings = serde_json::from_str("{}").unwrap();
+
+        assert_eq!(settings.avg_time_per_week_window, 4);
+    }
+
+    #[test]
+    fn validate_settings_rejects_a_zero_avg_time_per_week_window() {
+        let settings = Settings {
+            avg_time_per_week_window: 0,
+            ..settings_with_required_ids_set()
+        };
+
+        let err = validate_settings(&settings).unwrap_err();
+        assert!(err.contains("avg_time_per_week_window"));
+    }
+
+    #[test]
+    fn validate_settings_accepts_an_avg_time_per_week_window_of_one() {
+        let settings = Settings {
+            avg_time_per_week_window: 1,
+            ..settings_with_required_ids_set()
+        };
+
+        assert!(validate_settings(&settings).is_ok());
+    }
+
+    #[test]
+    fn default_settings_seed_has_an_empty_default_status_line_layout_id() {
+        let settings = Settings::default();
+
+        assert_eq!(settings.default_status_line_layout_id, "");
+    }
+
+    #[test]
+    fn deserializing_settings_without_default_status_line_layout_id_leaves_it_empty() {
+        let settings: Settings = serde_json::from_str("{}").unwrap();
+
+        assert_eq!(settings.default_status_line_layout_id, "");
+    }
+
+    #[test]
+    fn validate_settings_rejects_an_empty_default_status_line_layout_id() {
+        let settings = Settings {
+            default_status_line_layout_id: String::new(),
+            ..settings_with_required_ids_set()
+        };
+
+        let err = validate_settings(&settings).unwrap_err();
+        assert!(err.contains("status line layout"));
+    }
+
+    #[test]
+    fn validate_settings_accepts_a_non_empty_default_status_line_layout_id() {
+        let settings = settings_with_required_ids_set();
+
+        assert!(validate_settings(&settings).is_ok());
+        assert_eq!(settings.default_status_line_layout_id, "some-layout-id");
+    }
+
+    #[test]
+    fn default_settings_seed_has_a_status_bar_style_of_tiles() {
+        let settings = Settings::default();
+
+        assert_eq!(settings.status_bar_style, "tiles");
+    }
+
+    #[test]
+    fn deserializing_settings_without_status_bar_style_defaults_to_tiles() {
+        let settings: Settings = serde_json::from_str("{}").unwrap();
+
+        assert_eq!(settings.status_bar_style, "tiles");
+    }
+
+    #[test]
+    fn validate_status_bar_style_accepts_every_defined_style() {
+        for style in STATUS_BAR_STYLES {
+            assert!(
+                validate_status_bar_style(style).is_ok(),
+                "{style} should be valid"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_status_bar_style_rejects_an_unknown_style() {
+        let err = validate_status_bar_style("neon").unwrap_err();
+        assert!(err.contains("neon"));
+    }
+
+    #[test]
+    fn validate_settings_rejects_an_unknown_status_bar_style() {
+        let settings = Settings {
+            status_bar_style: "neon".to_string(),
+            ..settings_with_required_ids_set()
+        };
+
+        let err = validate_settings(&settings).unwrap_err();
+        assert!(err.contains("status bar style"));
+    }
+
+    #[test]
+    fn validate_settings_accepts_every_defined_status_bar_style() {
+        for style in STATUS_BAR_STYLES {
+            let settings = Settings {
+                status_bar_style: style.to_string(),
+                ..settings_with_required_ids_set()
+            };
+
+            assert!(
+                validate_settings(&settings).is_ok(),
+                "{style} should be valid"
+            );
+        }
+    }
+
+    #[test]
+    fn status_bar_style_round_trips_when_set_to_chips() {
+        let settings = Settings {
+            status_bar_style: "chips".to_string(),
+            ..Settings::default()
+        };
+
+        let json = serde_json::to_string(&settings).expect("serialization should succeed");
+        let parsed: Settings = serde_json::from_str(&json).expect("parsing should succeed");
+
+        assert_eq!(parsed.status_bar_style, "chips");
     }
 
     #[test]
