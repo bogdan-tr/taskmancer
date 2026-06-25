@@ -29,7 +29,7 @@
   }
 </script>
 
-{#if stats && !loadError}
+{#if stats && !loadError && (settingsState.current?.status_bar_enabled ?? true)}
   <div class="global-status-bar">
     <div class="global-status-bar-inner">
       <div class="stat-group">

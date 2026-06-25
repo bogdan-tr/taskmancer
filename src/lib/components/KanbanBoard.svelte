@@ -928,7 +928,6 @@
   {#if project}
     <ProjectStatusLine
       projectId={project.id}
-      projectName={project.name}
       statusBarEnabledOverride={project.board.status_bar_enabled_override}
     />
   {:else if !projectFilter}

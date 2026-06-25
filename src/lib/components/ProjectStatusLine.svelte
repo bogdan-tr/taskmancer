@@ -16,8 +16,6 @@
   interface Props {
     /** The currently-viewed project's id — stats and the resolved layout are always scoped to exactly one project. */
     projectId: string;
-    /** Shown next to the health badge in the header row. */
-    projectName: string;
     /**
      * 3-state per-project override from `ProjectBoard.status_bar_enabled_override`.
      * `undefined` inherits the global `Settings.status_bar_enabled`; `true` forces
@@ -26,7 +24,7 @@
     statusBarEnabledOverride?: boolean;
   }
 
-  let { projectId, projectName, statusBarEnabledOverride }: Props = $props();
+  let { projectId, statusBarEnabledOverride }: Props = $props();
 
   /** Resolved enabled state: per-project override wins, falling back to the global setting (default true). */
   let barEnabled = $derived(
@@ -89,12 +87,11 @@
 {#if barEnabled}
   <div
     class="status-line"
-    class:tint={tilesTint && !!stats}
     style={tilesTint && stats ? `--tier-tint: ${tierTintColor(stats.status_tier)}` : undefined}
   >
-    <div class="status-line-header">
-      <div class="status-line-identity">
-        {#if stats && showBadge}
+    {#if stats && (showBadge || displayedStatIds.length > 0)}
+      <div class="stat-tiles">
+        {#if showBadge}
           <span
             class="status-badge"
             class:severe={stats.status_tier === "severe"}
@@ -106,12 +103,6 @@
             {tierLabel(stats.status_tier)}
           </span>
         {/if}
-        <span class="status-line-project-name">{projectName}</span>
-      </div>
-    </div>
-
-    {#if stats && displayedStatIds.length > 0}
-      <div class="stat-tiles">
         {#each displayedStatIds as statId (statId)}
           <div class="stat-tile" class:tint-tile={tilesTint}>
             <span class="stat-tile-label">{statLabel(statId)}</span>
@@ -125,9 +116,6 @@
 
 <style>
   .status-line {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-sm);
     padding: var(--space-sm) var(--space-lg);
     margin-bottom: var(--space-lg);
     border-radius: var(--radius-md);
@@ -135,27 +123,9 @@
     background: var(--color-surface);
   }
 
-  .status-line.tint {
-    background: color-mix(in oklch, var(--tier-tint) 16%, var(--color-surface));
-    border-color: color-mix(in oklch, var(--tier-tint) 35%, var(--color-border));
-  }
-
-  .status-line-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-md);
-  }
-
-  .status-line-identity {
-    display: flex;
-    align-items: center;
-    gap: var(--space-sm);
-    min-width: 0;
-  }
-
   .status-badge {
     flex-shrink: 0;
+    align-self: center;
     padding: var(--space-4xs) var(--space-xs);
     border-radius: var(--radius-pill);
     font-size: var(--text-xs);
@@ -187,18 +157,10 @@
     background: oklch(68% 0.15 145);
   }
 
-  .status-line-project-name {
-    font-size: var(--text-sm);
-    font-weight: 600;
-    color: var(--color-ink-muted);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
   .stat-tiles {
     display: flex;
     flex-wrap: wrap;
+    align-items: center;
     gap: var(--space-sm);
   }
 
