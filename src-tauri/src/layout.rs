@@ -19,11 +19,11 @@ pub const DASHBOARD_LAYOUT_KIND: &str = "dashboard";
 /// order seeded into the default layout by
 /// [`ensure_default_dashboard_layout`].
 pub const KNOWN_DASHBOARD_WIDGET_IDS: &[&str] = &[
-    "time_by_project_tag",
-    "estimated_vs_actual",
-    "completion_trend",
-    "status_distribution",
-    "busy_histogram",
+    "completion_overview",
+    "project_scale",
+    "status_by_project",
+    "project_health",
+    "productivity",
 ];
 
 /// The fixed set of stat ids a `"status_line"` `StatLayout.stat_ids` entry
@@ -60,11 +60,33 @@ pub struct StatLayout {
     pub kind: String,
     #[serde(default)]
     pub stat_ids: Vec<String>,
-    /// Per-widget width overrides for dashboard layouts: maps widget id to a
-    /// CSS column-span string (e.g. `"1"`, `"2"`).  Absent from JSON when
-    /// empty so legacy status-line layouts don't gain a noisy extra field.
+    /// Superseded by `dashboard_widgets` for dashboard layouts. Kept for
+    /// backward-compatible deserialization of Phase 3 layouts already on disk.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub widget_widths: HashMap<String, String>,
+    /// Per-widget grid position, size, and config for dashboard layouts.
+    /// Empty on status-line layouts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dashboard_widgets: Vec<DashboardWidget>,
+    /// Visual theme for dashboard layouts: `"dark"` (default), `"app"`, or `"glass"`.
+    /// `None` on status-line layouts and on dashboard layouts using the default theme.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dashboard_theme: Option<String>,
+}
+
+/// One widget's position, size, and optional config in a dashboard grid.
+/// `x` and `y` are zero-based column/row indices; `w` and `h` are the column-
+/// span and row-span.  `include_subprojects` is only used by the
+/// `"project_health"` widget (ignored by all others).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DashboardWidget {
+    pub widget_type: String,
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_subprojects: Option<bool>,
 }
 
 impl StatLayout {
@@ -76,17 +98,21 @@ impl StatLayout {
             kind: STATUS_LINE_LAYOUT_KIND.to_string(),
             stat_ids,
             widget_widths: HashMap::new(),
+            dashboard_widgets: Vec::new(),
+            dashboard_theme: None,
         }
     }
 
     /// Creates a new dashboard layout with a freshly generated id.
-    pub fn new_dashboard(name: String, widget_ids: Vec<String>) -> Self {
+    pub fn new_dashboard(name: String, widgets: Vec<DashboardWidget>) -> Self {
         StatLayout {
             id: Uuid::new_v4().to_string(),
             name,
             kind: DASHBOARD_LAYOUT_KIND.to_string(),
-            stat_ids: widget_ids,
+            stat_ids: Vec::new(),
             widget_widths: HashMap::new(),
+            dashboard_widgets: widgets,
+            dashboard_theme: None,
         }
     }
 }
@@ -156,7 +182,8 @@ pub fn ensure_default_status_line_layout(
 
 /// Returns `Ok(())` if `layout` is internally well-formed as a dashboard
 /// layout: `kind` must be [`DASHBOARD_LAYOUT_KIND`] and every entry in
-/// `stat_ids` must be one of [`KNOWN_DASHBOARD_WIDGET_IDS`].
+/// `dashboard_widgets` must have a `widget_type` that is one of
+/// [`KNOWN_DASHBOARD_WIDGET_IDS`].
 #[allow(dead_code)]
 pub fn validate_dashboard_layout(layout: &StatLayout) -> Result<(), String> {
     if layout.kind != DASHBOARD_LAYOUT_KIND {
@@ -164,27 +191,31 @@ pub fn validate_dashboard_layout(layout: &StatLayout) -> Result<(), String> {
     }
 
     if let Some(unknown) = layout
-        .stat_ids
+        .dashboard_widgets
         .iter()
-        .find(|id| !KNOWN_DASHBOARD_WIDGET_IDS.contains(&id.as_str()))
+        .find(|w| !KNOWN_DASHBOARD_WIDGET_IDS.contains(&w.widget_type.as_str()))
     {
         return Err(format!(
-            "'{unknown}' is not a recognized dashboard widget id"
+            "'{}' is not a recognized dashboard widget type",
+            unknown.widget_type
         ));
     }
 
     Ok(())
 }
 
-/// Returns the seeded default dashboard layout: all known dashboard widgets,
-/// in catalog order (see [`KNOWN_DASHBOARD_WIDGET_IDS`]).
+/// Returns the seeded default dashboard layout: 5 widgets pre-placed on a
+/// 12-column grid (see [`KNOWN_DASHBOARD_WIDGET_IDS`] for the full catalog).
 fn default_dashboard_layout() -> StatLayout {
     StatLayout::new_dashboard(
         "Default".to_string(),
-        KNOWN_DASHBOARD_WIDGET_IDS
-            .iter()
-            .map(|id| id.to_string())
-            .collect(),
+        vec![
+            DashboardWidget { widget_type: "completion_overview".to_string(), x: 0, y: 0, w: 6, h: 4, include_subprojects: None },
+            DashboardWidget { widget_type: "project_scale".to_string(), x: 6, y: 0, w: 6, h: 4, include_subprojects: None },
+            DashboardWidget { widget_type: "status_by_project".to_string(), x: 0, y: 4, w: 4, h: 4, include_subprojects: None },
+            DashboardWidget { widget_type: "project_health".to_string(), x: 4, y: 4, w: 3, h: 4, include_subprojects: Some(false) },
+            DashboardWidget { widget_type: "productivity".to_string(), x: 7, y: 4, w: 5, h: 4, include_subprojects: None },
+        ],
     )
 }
 
@@ -295,6 +326,8 @@ mod tests {
             kind: "widget_grid".to_string(),
             stat_ids: vec![],
             widget_widths: HashMap::new(),
+            dashboard_widgets: Vec::new(),
+            dashboard_theme: None,
         };
 
         let err = validate_status_layout(&layout).unwrap_err();
@@ -376,6 +409,8 @@ mod tests {
         assert_eq!(layout.kind, DASHBOARD_LAYOUT_KIND);
         assert_eq!(layout.name, "My Dashboard");
         assert!(layout.widget_widths.is_empty());
+        assert!(layout.dashboard_widgets.is_empty());
+        assert!(layout.dashboard_theme.is_none());
     }
 
     #[test]
@@ -392,23 +427,29 @@ mod tests {
         let mut layout = StatLayout::new_dashboard("D".to_string(), vec![]);
         layout
             .widget_widths
-            .insert("time_by_project_tag".to_string(), "2".to_string());
+            .insert("completion_overview".to_string(), "2".to_string());
 
         let json = serde_json::to_string(&layout).expect("should serialize");
 
         assert!(json.contains("widget_widths"));
-        assert!(json.contains("time_by_project_tag"));
+        assert!(json.contains("completion_overview"));
     }
 
     #[test]
     fn validate_dashboard_layout_accepts_a_well_formed_layout() {
-        let layout = StatLayout::new_dashboard(
-            "Full".to_string(),
-            KNOWN_DASHBOARD_WIDGET_IDS
-                .iter()
-                .map(|id| id.to_string())
-                .collect(),
-        );
+        let widgets: Vec<DashboardWidget> = KNOWN_DASHBOARD_WIDGET_IDS
+            .iter()
+            .enumerate()
+            .map(|(i, id)| DashboardWidget {
+                widget_type: id.to_string(),
+                x: (i as i32) * 2,
+                y: 0,
+                w: 2,
+                h: 4,
+                include_subprojects: None,
+            })
+            .collect();
+        let layout = StatLayout::new_dashboard("Full".to_string(), widgets);
 
         assert!(validate_dashboard_layout(&layout).is_ok());
     }
@@ -428,6 +469,8 @@ mod tests {
             kind: "status_line".to_string(),
             stat_ids: vec![],
             widget_widths: HashMap::new(),
+            dashboard_widgets: Vec::new(),
+            dashboard_theme: None,
         };
 
         let err = validate_dashboard_layout(&layout).unwrap_err();
@@ -435,8 +478,18 @@ mod tests {
     }
 
     #[test]
-    fn validate_dashboard_layout_rejects_an_unknown_widget_id() {
-        let layout = StatLayout::new_dashboard("Bad".to_string(), vec!["not_a_widget".to_string()]);
+    fn validate_dashboard_layout_rejects_an_unknown_widget_type() {
+        let layout = StatLayout::new_dashboard(
+            "Bad".to_string(),
+            vec![DashboardWidget {
+                widget_type: "not_a_widget".to_string(),
+                x: 0,
+                y: 0,
+                w: 2,
+                h: 2,
+                include_subprojects: None,
+            }],
+        );
 
         let err = validate_dashboard_layout(&layout).unwrap_err();
         assert!(err.contains("not_a_widget"));
@@ -452,6 +505,7 @@ mod tests {
         let (layouts, settings) = result.expect("should have created a default layout");
         assert_eq!(layouts.len(), 1);
         assert_eq!(layouts[0].kind, DASHBOARD_LAYOUT_KIND);
+        assert_eq!(layouts[0].dashboard_widgets.len(), 5);
         assert_eq!(settings.default_dashboard_layout_id, layouts[0].id);
     }
 

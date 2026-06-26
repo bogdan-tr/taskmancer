@@ -3,11 +3,11 @@ import type { WeekStartsOn } from "./displaySettings.svelte";
 import type { ParsedTaskInput } from "./naturalLanguage";
 import type { DueRule, RecurrenceFrequency, SeriesEditScope } from "./recurrence";
 import type {
-  DashboardBusyHistogram,
-  DashboardCompletionWeek,
-  DashboardEstVsActual,
-  DashboardStatusCount,
-  DashboardTimeEntry,
+  DashboardProductivityDay,
+  DashboardProjectCompletions,
+  DashboardProjectHealth,
+  DashboardProjectStatusDist,
+  DashboardProjectSummary,
   DeleteProjectResult,
   FinishDayResult,
   GlobalStatusStats,
@@ -292,61 +292,33 @@ export type DashboardDateRange =
   | "last_3_months"
   | "all_time";
 
-/** Returns time tracked per project, filtered by `projectId` (null = all) and `dateRange`. */
-export async function getDashboardTimeByProject(
-  projectId: string | null,
+/** Returns per-project time tracked, task count, and estimated minutes for the "Project Time & Scale" widget. */
+export async function getDashboardProjectSummary(
   dateRange: DashboardDateRange,
-): Promise<DashboardTimeEntry[]> {
-  return invoke<DashboardTimeEntry[]>("get_dashboard_time_by_project", { projectId, dateRange });
+): Promise<DashboardProjectSummary[]> {
+  return invoke<DashboardProjectSummary[]>("get_dashboard_project_summary", { dateRange });
 }
 
-/** Returns time tracked per tag, filtered by `projectId` (null = all) and `dateRange`. */
-export async function getDashboardTimeByTag(
-  projectId: string | null,
-  dateRange: DashboardDateRange,
-): Promise<DashboardTimeEntry[]> {
-  return invoke<DashboardTimeEntry[]>("get_dashboard_time_by_tag", { projectId, dateRange });
+/** Returns per-project completed and cancelled task counts for the "Completion Overview" widget. */
+export async function getDashboardCompletionsByProject(): Promise<DashboardProjectCompletions[]> {
+  return invoke<DashboardProjectCompletions[]>("get_dashboard_completions_by_project");
 }
 
-/** Returns estimated vs. actual time per project, filtered by `projectId` (null = all) and `dateRange`. */
-export async function getDashboardEstimatedVsActual(
-  projectId: string | null,
-  dateRange: DashboardDateRange,
-): Promise<DashboardEstVsActual[]> {
-  return invoke<DashboardEstVsActual[]>("get_dashboard_estimated_vs_actual", {
-    projectId,
-    dateRange,
-  });
+/** Returns per-project status distribution for the "Status by Project" widget. */
+export async function getDashboardStatusDistributionByProject(): Promise<DashboardProjectStatusDist[]> {
+  return invoke<DashboardProjectStatusDist[]>("get_dashboard_status_distribution_by_project");
 }
 
-/** Returns weekly task-completion trend, filtered by `projectId` (null = all), `dateRange`, and `weekStartsOn`. */
-export async function getDashboardCompletionTrend(
-  projectId: string | null,
+/** Returns total tracked minutes per calendar day for the "Productivity" widget. */
+export async function getDashboardProductivity(
   dateRange: DashboardDateRange,
-  weekStartsOn: WeekStartsOn,
-): Promise<DashboardCompletionWeek[]> {
-  return invoke<DashboardCompletionWeek[]>("get_dashboard_completion_trend", {
-    projectId,
-    dateRange,
-    weekStartsOn,
-  });
+): Promise<DashboardProductivityDay[]> {
+  return invoke<DashboardProductivityDay[]>("get_dashboard_productivity", { dateRange });
 }
 
-/** Returns task-count per status, filtered by `projectId` (null = all) and `dateRange`. */
-export async function getDashboardStatusDistribution(
-  projectId: string | null,
-  dateRange: DashboardDateRange,
-): Promise<DashboardStatusCount[]> {
-  return invoke<DashboardStatusCount[]>("get_dashboard_status_distribution", {
-    projectId,
-    dateRange,
-  });
-}
-
-/** Returns time-tracked heatmap data by day-of-week and hour-of-day, filtered by `projectId` (null = all) and `dateRange`. */
-export async function getDashboardBusyHistogram(
-  projectId: string | null,
-  dateRange: DashboardDateRange,
-): Promise<DashboardBusyHistogram> {
-  return invoke<DashboardBusyHistogram>("get_dashboard_busy_histogram", { projectId, dateRange });
+/** Returns per-project health snapshots sorted by urgency for the "Project Health" widget. */
+export async function getDashboardProjectHealth(
+  includeSubprojects: boolean,
+): Promise<DashboardProjectHealth[]> {
+  return invoke<DashboardProjectHealth[]>("get_dashboard_project_health", { includeSubprojects });
 }

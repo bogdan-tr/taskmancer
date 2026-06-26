@@ -122,12 +122,11 @@ pub fn run() {
             commands::update_status_layout,
             commands::duplicate_status_layout,
             commands::delete_status_layout,
-            commands::get_dashboard_time_by_project,
-            commands::get_dashboard_time_by_tag,
-            commands::get_dashboard_estimated_vs_actual,
-            commands::get_dashboard_completion_trend,
-            commands::get_dashboard_status_distribution,
-            commands::get_dashboard_busy_histogram
+            commands::get_dashboard_project_summary,
+            commands::get_dashboard_completions_by_project,
+            commands::get_dashboard_status_distribution_by_project,
+            commands::get_dashboard_productivity,
+            commands::get_dashboard_project_health
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

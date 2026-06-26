@@ -104,21 +104,34 @@ export interface StatusTierRule {
 }
 
 /**
- * A shared layout entity (status lines today, dashboards in Phase 3),
- * mirroring `StatLayout` in `src-tauri/src/layout.rs` exactly. Editing a
- * layout mutates it in place — every project (or the global default)
- * currently pointing at `id` sees the change immediately; `duplicateStatusLayout`
- * forks a new one instead. `kind` is `"status_line"` for every layout this
- * milestone reads/renders; `"dashboard"` is reserved for Phase 3.
+ * A shared layout entity (status lines + dashboards), mirroring `StatLayout`
+ * in `src-tauri/src/layout.rs` exactly. Editing a layout mutates it in place
+ * — every project (or the global default) currently pointing at `id` sees the
+ * change immediately; `duplicateStatusLayout` forks a new one instead.
  */
 export interface StatLayout {
   id: string;
   name: string;
   kind: "status_line" | "dashboard";
-  /** Ordered ids of the stats currently shown — see `ProjectStatusStats`' field names for the valid stat ids, plus `"status_badge"`. */
+  /** Ordered stat ids for status-line layouts (e.g. `"estimated_time_left"`, `"status_badge"`). Empty for dashboard layouts. */
   stat_ids: string[];
-  /** Per-widget width override: `"half"` = one column, `"full"` = full row. Absent keys fall back to `"half"`. Only meaningful for `kind === "dashboard"` layouts. */
+  /** Per-widget grid position, size, and config for dashboard layouts. Empty for status-line layouts. */
+  dashboard_widgets?: DashboardWidget[];
+  /** Visual theme for dashboard layouts: `"dark"` (default), `"app"`, or `"glass"`. Absent means `"dark"`. */
+  dashboard_theme?: "dark" | "app" | "glass" | "aurora";
+  /** @deprecated Superseded by `dashboard_widgets`. Kept for backward-compatible deserialization. */
   widget_widths?: Record<string, "half" | "full">;
+}
+
+/** One widget's position, size, and optional config in a dashboard grid. */
+export interface DashboardWidget {
+  widget_type: "completion_overview" | "project_scale" | "status_by_project" | "project_health" | "productivity";
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  /** Only meaningful for the `"project_health"` widget. */
+  include_subprojects?: boolean;
 }
 
 /**
@@ -378,45 +391,65 @@ export interface GlobalStatusStats {
 
 // ── Dashboard API response types ──────────────────────────────────────────────
 
-/** One bar in a "time by project" or "time by tag" chart. */
-export interface DashboardTimeEntry {
-  label: string;
-  minutes: number;
-}
-
-/** One row in the "estimated vs. actual" chart. */
-export interface DashboardEstVsActual {
+/** Per-project summary for the "Project Time & Scale" widget (3 donuts). */
+export interface DashboardProjectSummary {
+  project_id: string;
   project_name: string;
-  estimated_minutes: number;
-  actual_minutes: number;
+  project_color: string;
+  time_tracked_minutes: number;
+  task_count: number;
+  estimated_minutes_total: number;
 }
 
-/** One series (status label + count) inside a completion-trend week. */
-export interface DashboardCompletionSeries {
-  label: string;
-  count: number;
+/** Per-project completed/cancelled counts for the "Completion Overview" widget. */
+export interface DashboardProjectCompletions {
+  project_id: string;
+  project_name: string;
+  project_color: string;
+  completed: number;
+  cancelled: number;
 }
 
-/** One week's data in the completion-trend chart. */
-export interface DashboardCompletionWeek {
-  week_label: string;
-  series: DashboardCompletionSeries[];
-}
-
-/** One status bucket in the status-distribution chart. */
-export interface DashboardStatusCount {
+/** One status slot inside a per-project status-distribution bar. */
+export interface DashboardProjectStatusSlot {
   status_id: string;
+  status_name: string;
+  status_color: string;
   count: number;
 }
 
-/** One bucket (day-of-week or hour-of-day) in the busy-histogram. */
-export interface DashboardBucket {
-  index: number;
+/** Per-project status distribution for the "Status by Project" widget. */
+export interface DashboardProjectStatusDist {
+  project_id: string;
+  project_name: string;
+  project_color: string;
+  statuses: DashboardProjectStatusSlot[];
+}
+
+/** One calendar day's tracked time for the "Productivity" widget. */
+export interface DashboardProductivityProjectEntry {
+  project_id: string;
+  project_name: string;
+  project_color: string;
   minutes: number;
 }
 
-/** Both axes of the busy-histogram: one entry per day of week, one per hour of day. */
-export interface DashboardBusyHistogram {
-  days: DashboardBucket[];
-  hours: DashboardBucket[];
+export interface DashboardProductivityDay {
+  date: string;
+  /** Total tracked minutes across all tasks (including unattributed). */
+  tracked_minutes: number;
+  /** Per-project breakdown; only entries with minutes > 0 are included. */
+  project_entries: DashboardProductivityProjectEntry[];
+}
+
+/** Per-project health snapshot for the "Project Health" widget. */
+export interface DashboardProjectHealth {
+  project_id: string;
+  project_name: string;
+  project_color: string;
+  /** `"great"` | `"on_track"` | `"needs_attention"` | `"critical"` | `"severe"` */
+  tier: string;
+  tasks_due_today: number;
+  tasks_due_tomorrow: number;
+  estimated_time_left_minutes: number;
 }
