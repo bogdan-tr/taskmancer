@@ -425,9 +425,7 @@ pub fn total_tracked_seconds_all_tasks_in_range(
         return Ok(0);
     }
 
-    let mut stmt = conn.prepare(
-        "SELECT started_at, ended_at FROM time_entries",
-    )?;
+    let mut stmt = conn.prepare("SELECT started_at, ended_at FROM time_entries")?;
     let rows = stmt.query_map([], |row| {
         let started_at: String = row.get(0)?;
         let ended_at: Option<String> = row.get(1)?;
@@ -450,6 +448,99 @@ pub fn total_tracked_seconds_all_tasks_in_range(
     }
 
     Ok(total)
+}
+
+/// Total tracked seconds for the specified `task_ids` within
+/// `[range_start, range_end)`, clipping still-running entries against `now`.
+/// Returns `0` immediately when `task_ids` is empty or the window is empty/
+/// inverted. Mirrors [`total_tracked_seconds_all_tasks_in_range`] but filters
+/// by a caller-supplied id list, as needed by the analytics dashboard's
+/// per-project and per-tag time aggregations.
+#[allow(dead_code)]
+pub fn total_tracked_seconds_for_task_ids_in_range(
+    conn: &Connection,
+    task_ids: &[String],
+    range_start: DateTime<Utc>,
+    range_end: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> Result<i64, TimeStorageError> {
+    if task_ids.is_empty() || range_start >= range_end {
+        return Ok(0);
+    }
+
+    let placeholders = task_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let sql =
+        format!("SELECT started_at, ended_at FROM time_entries WHERE task_id IN ({placeholders})");
+    let mut stmt = conn.prepare(&sql)?;
+    let params: Vec<&dyn rusqlite::ToSql> = task_ids
+        .iter()
+        .map(|id| id as &dyn rusqlite::ToSql)
+        .collect();
+    let rows = stmt.query_map(params.as_slice(), |row| {
+        let started_at: String = row.get(0)?;
+        let ended_at: Option<String> = row.get(1)?;
+        Ok((started_at, ended_at))
+    })?;
+
+    let mut total: i64 = 0;
+    for row in rows {
+        let (started_at, ended_at) = row?;
+        let started = parse_rfc3339(&started_at)?;
+        let ended = match ended_at {
+            Some(v) => parse_rfc3339(&v)?,
+            None => now,
+        };
+        let clipped_start = started.max(range_start);
+        let clipped_end = ended.min(range_end);
+        if clipped_end > clipped_start {
+            total += (clipped_end - clipped_start).num_seconds();
+        }
+    }
+
+    Ok(total)
+}
+
+/// Returns every time-entry row that overlaps `[range_start, range_end)` as a
+/// `(task_id, clamped_start, clamped_end)` triple, with the open endpoint of
+/// still-running entries clamped to `now` and each entry additionally clamped
+/// to the query window.  Used by the analytics dashboard's busy-histogram
+/// command, which needs per-entry timestamps (not just totals) to bucket work
+/// by day-of-week and hour-of-day.
+#[allow(dead_code, clippy::type_complexity)]
+pub fn list_time_entries_in_range(
+    conn: &Connection,
+    range_start: DateTime<Utc>,
+    range_end: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> Result<Vec<(String, DateTime<Utc>, DateTime<Utc>)>, TimeStorageError> {
+    if range_start >= range_end {
+        return Ok(Vec::new());
+    }
+
+    let mut stmt = conn.prepare("SELECT task_id, started_at, ended_at FROM time_entries")?;
+    let rows = stmt.query_map([], |row| {
+        let task_id: String = row.get(0)?;
+        let started_at: String = row.get(1)?;
+        let ended_at: Option<String> = row.get(2)?;
+        Ok((task_id, started_at, ended_at))
+    })?;
+
+    let mut entries = Vec::new();
+    for row in rows {
+        let (task_id, started_at, ended_at) = row?;
+        let started = parse_rfc3339(&started_at)?;
+        let ended = match ended_at {
+            Some(v) => parse_rfc3339(&v)?,
+            None => now,
+        };
+        let clipped_start = started.max(range_start);
+        let clipped_end = ended.min(range_end);
+        if clipped_end > clipped_start {
+            entries.push((task_id, clipped_start, clipped_end));
+        }
+    }
+
+    Ok(entries)
 }
 
 #[cfg(test)]
@@ -1243,6 +1334,186 @@ mod tests {
         /// without repeating the "still running" framing every time.
         fn time_storage_start_then_no_end(conn: &Connection, task_id: &str, started_at: &str) {
             start_entry(conn, task_id, dt(started_at)).unwrap();
+        }
+    }
+
+    mod total_tracked_seconds_for_task_ids_in_range_tests {
+        use super::*;
+
+        fn window(start: &str, end: &str) -> (DateTime<Utc>, DateTime<Utc>) {
+            (dt(start), dt(end))
+        }
+
+        #[test]
+        fn returns_zero_for_empty_task_ids() {
+            let conn = setup();
+            insert_completed_entry(
+                &conn,
+                "task-1",
+                dt("2026-06-15T09:00:00+00:00"),
+                dt("2026-06-15T10:00:00+00:00"),
+            )
+            .unwrap();
+            let (start, end) = window("2026-06-15T00:00:00+00:00", "2026-06-16T00:00:00+00:00");
+            let now = dt("2026-06-20T00:00:00+00:00");
+
+            let total =
+                total_tracked_seconds_for_task_ids_in_range(&conn, &[], start, end, now).unwrap();
+
+            assert_eq!(total, 0);
+        }
+
+        #[test]
+        fn returns_zero_for_empty_window() {
+            let conn = setup();
+            insert_completed_entry(
+                &conn,
+                "task-1",
+                dt("2026-06-15T09:00:00+00:00"),
+                dt("2026-06-15T10:00:00+00:00"),
+            )
+            .unwrap();
+            let task_ids = vec!["task-1".to_string()];
+            let ts = dt("2026-06-15T12:00:00+00:00");
+
+            let total =
+                total_tracked_seconds_for_task_ids_in_range(&conn, &task_ids, ts, ts, ts).unwrap();
+
+            assert_eq!(total, 0);
+        }
+
+        #[test]
+        fn sums_entries_for_requested_task_ids_only() {
+            let conn = setup();
+            insert_completed_entry(
+                &conn,
+                "task-1",
+                dt("2026-06-15T09:00:00+00:00"),
+                dt("2026-06-15T09:30:00+00:00"), // 1800s
+            )
+            .unwrap();
+            insert_completed_entry(
+                &conn,
+                "task-2",
+                dt("2026-06-15T10:00:00+00:00"),
+                dt("2026-06-15T11:00:00+00:00"), // 3600s — excluded
+            )
+            .unwrap();
+            let task_ids = vec!["task-1".to_string()];
+            let (start, end) = window("2026-06-01T00:00:00+00:00", "2026-06-30T00:00:00+00:00");
+            let now = dt("2026-06-20T00:00:00+00:00");
+
+            let total =
+                total_tracked_seconds_for_task_ids_in_range(&conn, &task_ids, start, end, now)
+                    .unwrap();
+
+            assert_eq!(total, 1800);
+        }
+
+        #[test]
+        fn clips_entries_to_the_query_window() {
+            let conn = setup();
+            // Entry spans three days but window is just one hour.
+            insert_completed_entry(
+                &conn,
+                "task-1",
+                dt("2026-06-14T00:00:00+00:00"),
+                dt("2026-06-16T00:00:00+00:00"),
+            )
+            .unwrap();
+            let task_ids = vec!["task-1".to_string()];
+            let (start, end) = window("2026-06-15T10:00:00+00:00", "2026-06-15T11:00:00+00:00");
+            let now = dt("2026-06-20T00:00:00+00:00");
+
+            let total =
+                total_tracked_seconds_for_task_ids_in_range(&conn, &task_ids, start, end, now)
+                    .unwrap();
+
+            assert_eq!(total, 3600);
+        }
+    }
+
+    mod list_time_entries_in_range_tests {
+        use super::*;
+
+        fn window(start: &str, end: &str) -> (DateTime<Utc>, DateTime<Utc>) {
+            (dt(start), dt(end))
+        }
+
+        #[test]
+        fn returns_empty_for_inverted_window() {
+            let conn = setup();
+            let ts = dt("2026-06-15T12:00:00+00:00");
+
+            let entries = list_time_entries_in_range(&conn, ts, ts, ts).unwrap();
+
+            assert!(entries.is_empty());
+        }
+
+        #[test]
+        fn returns_empty_when_no_entries_exist() {
+            let conn = setup();
+            let (start, end) = window("2026-06-01T00:00:00+00:00", "2026-06-30T00:00:00+00:00");
+            let now = dt("2026-06-20T00:00:00+00:00");
+
+            let entries = list_time_entries_in_range(&conn, start, end, now).unwrap();
+
+            assert!(entries.is_empty());
+        }
+
+        #[test]
+        fn returns_entry_clamped_to_window() {
+            let conn = setup();
+            insert_completed_entry(
+                &conn,
+                "task-1",
+                dt("2026-06-15T09:00:00+00:00"),
+                dt("2026-06-15T10:00:00+00:00"),
+            )
+            .unwrap();
+            let (start, end) = window("2026-06-15T09:30:00+00:00", "2026-06-15T10:30:00+00:00");
+            let now = dt("2026-06-20T00:00:00+00:00");
+
+            let entries = list_time_entries_in_range(&conn, start, end, now).unwrap();
+
+            assert_eq!(entries.len(), 1);
+            let (task_id, clipped_start, clipped_end) = &entries[0];
+            assert_eq!(task_id, "task-1");
+            assert_eq!(*clipped_start, dt("2026-06-15T09:30:00+00:00"));
+            assert_eq!(*clipped_end, dt("2026-06-15T10:00:00+00:00"));
+        }
+
+        #[test]
+        fn excludes_entries_entirely_outside_window() {
+            let conn = setup();
+            insert_completed_entry(
+                &conn,
+                "task-1",
+                dt("2026-01-01T09:00:00+00:00"),
+                dt("2026-01-01T10:00:00+00:00"),
+            )
+            .unwrap();
+            let (start, end) = window("2026-06-01T00:00:00+00:00", "2026-06-30T00:00:00+00:00");
+            let now = dt("2026-06-20T00:00:00+00:00");
+
+            let entries = list_time_entries_in_range(&conn, start, end, now).unwrap();
+
+            assert!(entries.is_empty());
+        }
+
+        #[test]
+        fn clamps_running_entry_to_now() {
+            let conn = setup();
+            start_entry(&conn, "task-1", dt("2026-06-15T09:00:00+00:00")).unwrap();
+            let (start, end) = window("2026-06-15T00:00:00+00:00", "2026-06-16T00:00:00+00:00");
+            let now = dt("2026-06-15T09:30:00+00:00");
+
+            let entries = list_time_entries_in_range(&conn, start, end, now).unwrap();
+
+            assert_eq!(entries.len(), 1);
+            let (_, clipped_start, clipped_end) = &entries[0];
+            assert_eq!(*clipped_start, dt("2026-06-15T09:00:00+00:00"));
+            assert_eq!(*clipped_end, now);
         }
     }
 }

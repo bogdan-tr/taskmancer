@@ -1,15 +1,30 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::settings::Settings;
 
-/// The only `StatLayout.kind` value accepted today. `"dashboard"` is named in
-/// the project-status-line spec as a future `kind` sharing this same entity
-/// (Phase 3's analytics dashboards), but that kind's widget catalog doesn't
-/// exist yet — validating for it now would be speculative, so
-/// [`validate_status_layout`] rejects it like any other unrecognized kind
-/// until Phase 3 actually extends this list.
+/// The `StatLayout.kind` value for project status-line layouts — validated
+/// by [`validate_status_layout`].
 pub const STATUS_LINE_LAYOUT_KIND: &str = "status_line";
+
+/// The `StatLayout.kind` value for analytics dashboard layouts — validated
+/// by [`validate_dashboard_layout`].
+pub const DASHBOARD_LAYOUT_KIND: &str = "dashboard";
+
+/// The fixed set of widget ids a `"dashboard"` `StatLayout.stat_ids` entry
+/// may reference — see the analytics dashboard feature spec for each widget's
+/// role.  Order here matches the spec's catalog listing order and is also the
+/// order seeded into the default layout by
+/// [`ensure_default_dashboard_layout`].
+pub const KNOWN_DASHBOARD_WIDGET_IDS: &[&str] = &[
+    "time_by_project_tag",
+    "estimated_vs_actual",
+    "completion_trend",
+    "status_distribution",
+    "busy_histogram",
+];
 
 /// The fixed set of stat ids a `"status_line"` `StatLayout.stat_ids` entry
 /// may reference — see `crate::status_stats` for each stat's computation and
@@ -45,6 +60,11 @@ pub struct StatLayout {
     pub kind: String,
     #[serde(default)]
     pub stat_ids: Vec<String>,
+    /// Per-widget width overrides for dashboard layouts: maps widget id to a
+    /// CSS column-span string (e.g. `"1"`, `"2"`).  Absent from JSON when
+    /// empty so legacy status-line layouts don't gain a noisy extra field.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub widget_widths: HashMap<String, String>,
 }
 
 impl StatLayout {
@@ -55,6 +75,18 @@ impl StatLayout {
             name,
             kind: STATUS_LINE_LAYOUT_KIND.to_string(),
             stat_ids,
+            widget_widths: HashMap::new(),
+        }
+    }
+
+    /// Creates a new dashboard layout with a freshly generated id.
+    pub fn new_dashboard(name: String, widget_ids: Vec<String>) -> Self {
+        StatLayout {
+            id: Uuid::new_v4().to_string(),
+            name,
+            kind: DASHBOARD_LAYOUT_KIND.to_string(),
+            stat_ids: widget_ids,
+            widget_widths: HashMap::new(),
         }
     }
 }
@@ -118,6 +150,65 @@ pub fn ensure_default_status_line_layout(
     let mut settings = settings;
     let layout = default_status_line_layout();
     settings.default_status_line_layout_id = layout.id.clone();
+    layouts.push(layout);
+    Some((layouts, settings))
+}
+
+/// Returns `Ok(())` if `layout` is internally well-formed as a dashboard
+/// layout: `kind` must be [`DASHBOARD_LAYOUT_KIND`] and every entry in
+/// `stat_ids` must be one of [`KNOWN_DASHBOARD_WIDGET_IDS`].
+#[allow(dead_code)]
+pub fn validate_dashboard_layout(layout: &StatLayout) -> Result<(), String> {
+    if layout.kind != DASHBOARD_LAYOUT_KIND {
+        return Err(format!("'{}' is not a dashboard layout kind", layout.kind));
+    }
+
+    if let Some(unknown) = layout
+        .stat_ids
+        .iter()
+        .find(|id| !KNOWN_DASHBOARD_WIDGET_IDS.contains(&id.as_str()))
+    {
+        return Err(format!(
+            "'{unknown}' is not a recognized dashboard widget id"
+        ));
+    }
+
+    Ok(())
+}
+
+/// Returns the seeded default dashboard layout: all known dashboard widgets,
+/// in catalog order (see [`KNOWN_DASHBOARD_WIDGET_IDS`]).
+fn default_dashboard_layout() -> StatLayout {
+    StatLayout::new_dashboard(
+        "Default".to_string(),
+        KNOWN_DASHBOARD_WIDGET_IDS
+            .iter()
+            .map(|id| id.to_string())
+            .collect(),
+    )
+}
+
+/// Ensures `settings.default_dashboard_layout_id` references a layout that
+/// actually exists in `layouts`, creating the seeded default dashboard layout
+/// (see [`default_dashboard_layout`]) and pointing `settings` at it if it
+/// doesn't.  Mirrors [`ensure_default_status_line_layout`]'s pattern exactly.
+/// Returns `Some((updated_layouts, updated_settings))` if a layout was created,
+/// or `None` if `default_dashboard_layout_id` already pointed at a real layout.
+pub fn ensure_default_dashboard_layout(
+    layouts: Vec<StatLayout>,
+    settings: Settings,
+) -> Option<(Vec<StatLayout>, Settings)> {
+    if layouts
+        .iter()
+        .any(|l| l.id == settings.default_dashboard_layout_id)
+    {
+        return None;
+    }
+
+    let mut layouts = layouts;
+    let mut settings = settings;
+    let layout = default_dashboard_layout();
+    settings.default_dashboard_layout_id = layout.id.clone();
     layouts.push(layout);
     Some((layouts, settings))
 }
@@ -197,25 +288,13 @@ mod tests {
     }
 
     #[test]
-    fn validate_status_layout_rejects_the_dashboard_kind() {
-        let layout = StatLayout {
-            id: "layout-1".to_string(),
-            name: "Future Dashboard".to_string(),
-            kind: "dashboard".to_string(),
-            stat_ids: vec![],
-        };
-
-        let err = validate_status_layout(&layout).unwrap_err();
-        assert!(err.contains("dashboard"));
-    }
-
-    #[test]
     fn validate_status_layout_rejects_an_arbitrary_unknown_kind() {
         let layout = StatLayout {
             id: "layout-1".to_string(),
             name: "Mystery".to_string(),
             kind: "widget_grid".to_string(),
             stat_ids: vec![],
+            widget_widths: HashMap::new(),
         };
 
         let err = validate_status_layout(&layout).unwrap_err();
@@ -285,5 +364,108 @@ mod tests {
         let result = ensure_default_status_line_layout(layouts, settings);
 
         assert!(result.is_some());
+    }
+
+    // --- Dashboard layout tests ---
+
+    #[test]
+    fn new_dashboard_has_generated_id_and_dashboard_kind() {
+        let layout = StatLayout::new_dashboard("My Dashboard".to_string(), vec![]);
+
+        assert!(!layout.id.is_empty());
+        assert_eq!(layout.kind, DASHBOARD_LAYOUT_KIND);
+        assert_eq!(layout.name, "My Dashboard");
+        assert!(layout.widget_widths.is_empty());
+    }
+
+    #[test]
+    fn widget_widths_omitted_from_json_when_empty() {
+        let layout = StatLayout::new_dashboard("D".to_string(), vec![]);
+
+        let json = serde_json::to_string(&layout).expect("should serialize");
+
+        assert!(!json.contains("widget_widths"));
+    }
+
+    #[test]
+    fn widget_widths_included_in_json_when_nonempty() {
+        let mut layout = StatLayout::new_dashboard("D".to_string(), vec![]);
+        layout
+            .widget_widths
+            .insert("time_by_project_tag".to_string(), "2".to_string());
+
+        let json = serde_json::to_string(&layout).expect("should serialize");
+
+        assert!(json.contains("widget_widths"));
+        assert!(json.contains("time_by_project_tag"));
+    }
+
+    #[test]
+    fn validate_dashboard_layout_accepts_a_well_formed_layout() {
+        let layout = StatLayout::new_dashboard(
+            "Full".to_string(),
+            KNOWN_DASHBOARD_WIDGET_IDS
+                .iter()
+                .map(|id| id.to_string())
+                .collect(),
+        );
+
+        assert!(validate_dashboard_layout(&layout).is_ok());
+    }
+
+    #[test]
+    fn validate_dashboard_layout_accepts_an_empty_widget_list() {
+        let layout = StatLayout::new_dashboard("Empty".to_string(), vec![]);
+
+        assert!(validate_dashboard_layout(&layout).is_ok());
+    }
+
+    #[test]
+    fn validate_dashboard_layout_rejects_a_non_dashboard_kind() {
+        let layout = StatLayout {
+            id: "x".to_string(),
+            name: "X".to_string(),
+            kind: "status_line".to_string(),
+            stat_ids: vec![],
+            widget_widths: HashMap::new(),
+        };
+
+        let err = validate_dashboard_layout(&layout).unwrap_err();
+        assert!(err.contains("status_line"));
+    }
+
+    #[test]
+    fn validate_dashboard_layout_rejects_an_unknown_widget_id() {
+        let layout = StatLayout::new_dashboard("Bad".to_string(), vec!["not_a_widget".to_string()]);
+
+        let err = validate_dashboard_layout(&layout).unwrap_err();
+        assert!(err.contains("not_a_widget"));
+    }
+
+    #[test]
+    fn ensure_default_dashboard_layout_creates_one_when_none_exists() {
+        let layouts: Vec<StatLayout> = Vec::new();
+        let settings = Settings::default();
+
+        let result = ensure_default_dashboard_layout(layouts, settings);
+
+        let (layouts, settings) = result.expect("should have created a default layout");
+        assert_eq!(layouts.len(), 1);
+        assert_eq!(layouts[0].kind, DASHBOARD_LAYOUT_KIND);
+        assert_eq!(settings.default_dashboard_layout_id, layouts[0].id);
+    }
+
+    #[test]
+    fn ensure_default_dashboard_layout_does_nothing_when_default_already_exists() {
+        let layout = StatLayout::new_dashboard("Custom".to_string(), vec![]);
+        let settings = Settings {
+            default_dashboard_layout_id: layout.id.clone(),
+            ..Settings::default()
+        };
+        let layouts = vec![layout];
+
+        let result = ensure_default_dashboard_layout(layouts, settings);
+
+        assert!(result.is_none());
     }
 }

@@ -3,6 +3,11 @@ import type { WeekStartsOn } from "./displaySettings.svelte";
 import type { ParsedTaskInput } from "./naturalLanguage";
 import type { DueRule, RecurrenceFrequency, SeriesEditScope } from "./recurrence";
 import type {
+  DashboardBusyHistogram,
+  DashboardCompletionWeek,
+  DashboardEstVsActual,
+  DashboardStatusCount,
+  DashboardTimeEntry,
   DeleteProjectResult,
   FinishDayResult,
   GlobalStatusStats,
@@ -275,4 +280,73 @@ export async function deleteStatusLayout(layoutId: string): Promise<void> {
 /** Returns global stats for the "All tasks" status bar, computed as of "now". */
 export async function getGlobalStatusStats(weekStartsOn: WeekStartsOn): Promise<GlobalStatusStats> {
   return invoke<GlobalStatusStats>("get_global_status_stats", { weekStartsOn });
+}
+
+// ── Dashboard analytics commands ──────────────────────────────────────────────
+
+/** The date-range filter sent to every dashboard analytics command. */
+export type DashboardDateRange =
+  | "last_7_days"
+  | "last_30_days"
+  | "this_month"
+  | "last_3_months"
+  | "all_time";
+
+/** Returns time tracked per project, filtered by `projectId` (null = all) and `dateRange`. */
+export async function getDashboardTimeByProject(
+  projectId: string | null,
+  dateRange: DashboardDateRange,
+): Promise<DashboardTimeEntry[]> {
+  return invoke<DashboardTimeEntry[]>("get_dashboard_time_by_project", { projectId, dateRange });
+}
+
+/** Returns time tracked per tag, filtered by `projectId` (null = all) and `dateRange`. */
+export async function getDashboardTimeByTag(
+  projectId: string | null,
+  dateRange: DashboardDateRange,
+): Promise<DashboardTimeEntry[]> {
+  return invoke<DashboardTimeEntry[]>("get_dashboard_time_by_tag", { projectId, dateRange });
+}
+
+/** Returns estimated vs. actual time per project, filtered by `projectId` (null = all) and `dateRange`. */
+export async function getDashboardEstimatedVsActual(
+  projectId: string | null,
+  dateRange: DashboardDateRange,
+): Promise<DashboardEstVsActual[]> {
+  return invoke<DashboardEstVsActual[]>("get_dashboard_estimated_vs_actual", {
+    projectId,
+    dateRange,
+  });
+}
+
+/** Returns weekly task-completion trend, filtered by `projectId` (null = all), `dateRange`, and `weekStartsOn`. */
+export async function getDashboardCompletionTrend(
+  projectId: string | null,
+  dateRange: DashboardDateRange,
+  weekStartsOn: WeekStartsOn,
+): Promise<DashboardCompletionWeek[]> {
+  return invoke<DashboardCompletionWeek[]>("get_dashboard_completion_trend", {
+    projectId,
+    dateRange,
+    weekStartsOn,
+  });
+}
+
+/** Returns task-count per status, filtered by `projectId` (null = all) and `dateRange`. */
+export async function getDashboardStatusDistribution(
+  projectId: string | null,
+  dateRange: DashboardDateRange,
+): Promise<DashboardStatusCount[]> {
+  return invoke<DashboardStatusCount[]>("get_dashboard_status_distribution", {
+    projectId,
+    dateRange,
+  });
+}
+
+/** Returns time-tracked heatmap data by day-of-week and hour-of-day, filtered by `projectId` (null = all) and `dateRange`. */
+export async function getDashboardBusyHistogram(
+  projectId: string | null,
+  dateRange: DashboardDateRange,
+): Promise<DashboardBusyHistogram> {
+  return invoke<DashboardBusyHistogram>("get_dashboard_busy_histogram", { projectId, dateRange });
 }

@@ -22,6 +22,7 @@
   import AllSubtasksDoneDialog from "$lib/components/AllSubtasksDoneDialog.svelte";
   import CalendarView from "$lib/components/CalendarView.svelte";
   import ConfirmDialog from "$lib/components/ConfirmDialog.svelte";
+  import DashboardView from "$lib/components/DashboardView.svelte";
   import KanbanGrid from "$lib/components/KanbanGrid.svelte";
   import GlobalStatusBar from "$lib/components/GlobalStatusBar.svelte";
   import ProjectStatusLine from "$lib/components/ProjectStatusLine.svelte";
@@ -103,6 +104,11 @@
     projectFilter ? projectsState.items.find((p) => p.id === projectFilter) : undefined,
   );
 
+  /** True when the current project is a subtask container (navigated to via a task's own subtask board). Subtask containers should not expose project settings. */
+  let isSubtaskContainer = $derived(
+    !!projectFilter && tasksState.items.some((t) => t.subtask_project_id === projectFilter),
+  );
+
   /** The full ancestor chain for the current project (own board first, then ancestors' boards, nearest-first), or empty when this board isn't project-scoped. */
   let projectChain = $derived(project ? selfAndAncestors(projectsState.items, project.id) : []);
 
@@ -130,7 +136,10 @@
     const descendants = descendantsOf(projectsState.items, projectFilter);
     const included = showSubprojectTasks
       ? descendants
-      : descendants.filter((p) => containerOwner(p.id, tasksState.items) !== undefined);
+      : descendants.filter((p) => {
+          const owner = containerOwner(p.id, tasksState.items);
+          return owner !== undefined && owner.project_id === projectFilter;
+        });
     return [projectFilter, ...included.map((p) => p.id)];
   });
 
@@ -200,7 +209,7 @@
   let isFinishingDay = $state(false);
 
   /** Which view this board shows: the Kanban grid or the calendar week view. */
-  let activeView: "board" | "week" | "calendar" = $state("board");
+  let activeView: "board" | "week" | "calendar" | "dashboard" = $state("board");
 
   /**
    * Every task visible on this board (project-filtered, but not subject to
@@ -824,6 +833,16 @@
       >
         Calendar
       </button>
+      <button
+        type="button"
+        class="view-tab"
+        class:active={activeView === "dashboard"}
+        role="tab"
+        aria-selected={activeView === "dashboard"}
+        onclick={() => (activeView = "dashboard")}
+      >
+        Dashboard
+      </button>
     </div>
     <div class="header-actions">
       {#if !projectFilter}
@@ -874,6 +893,7 @@
             {/if}
           </button>
         </div>
+        {#if !isSubtaskContainer}
         <a
           class="icon-button settings-link"
           href="/projects/{project.id}/settings"
@@ -898,6 +918,7 @@
             />
           </svg>
         </a>
+        {/if}
       {/if}
       <button
         type="button"
@@ -995,6 +1016,8 @@
       onEnsureOccurrences={ensureOccurrencesThrough}
       onCreateSubtask={openCreateSubtask}
     />
+  {:else if activeView === "dashboard"}
+    <DashboardView projectId={projectFilter ?? null} />
   {:else}
     <KanbanGrid
       {boardColumns}

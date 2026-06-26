@@ -1,5 +1,6 @@
 <script lang="ts">
   import CardAppearanceSettings from "$lib/components/CardAppearanceSettings.svelte";
+  import DashboardSettings from "$lib/components/DashboardSettings.svelte";
   import DefaultsSettings from "$lib/components/DefaultsSettings.svelte";
   import DisplaySettings from "$lib/components/DisplaySettings.svelte";
   import GeneralSettings from "$lib/components/GeneralSettings.svelte";
@@ -68,6 +69,7 @@
   <StatusSettings />
   <DefaultsSettings />
   <ProjectStatusLineSettings />
+  <DashboardSettings />
 </main>
 
 <style>

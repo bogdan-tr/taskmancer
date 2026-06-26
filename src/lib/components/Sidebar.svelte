@@ -108,30 +108,61 @@
 
   <TrackingTray />
 
-  <a
-    href="/"
-    class="nav-link"
-    class:active={page.url.pathname === "/"}
-    title={sidebarState.collapsed ? "All Tasks" : undefined}
-  >
-    <svg
-      class="nav-icon"
-      xmlns="http://www.w3.org/2000/svg"
-      width="18"
-      height="18"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      stroke-width="2"
-      stroke-linecap="round"
-      stroke-linejoin="round"
-      aria-hidden="true"
+  <div class="nav-section views-section">
+    {#if !sidebarState.collapsed}
+      <h3 class="section-label">Views</h3>
+    {/if}
+    <a
+      href="/"
+      class="nav-link"
+      class:active={page.url.pathname === "/"}
+      title={sidebarState.collapsed ? "All Tasks" : undefined}
     >
-      <rect x="3" y="3" width="18" height="18" rx="2" />
-      <path d="M8 8h8M8 12h8M8 16h5" />
-    </svg>
-    {#if !sidebarState.collapsed}<span>All Tasks</span>{/if}
-  </a>
+      <svg
+        class="nav-icon"
+        xmlns="http://www.w3.org/2000/svg"
+        width="18"
+        height="18"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        aria-hidden="true"
+      >
+        <rect x="3" y="3" width="18" height="18" rx="2" />
+        <path d="M8 8h8M8 12h8M8 16h5" />
+      </svg>
+      {#if !sidebarState.collapsed}<span>All Tasks</span>{/if}
+    </a>
+    <a
+      href="/dashboard"
+      class="nav-link"
+      class:active={page.url.pathname === "/dashboard"}
+      title={sidebarState.collapsed ? "Dashboard" : undefined}
+    >
+      <svg
+        class="nav-icon"
+        xmlns="http://www.w3.org/2000/svg"
+        width="18"
+        height="18"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        aria-hidden="true"
+      >
+        <rect x="3" y="3" width="7" height="7" rx="1" />
+        <rect x="14" y="3" width="7" height="7" rx="1" />
+        <rect x="3" y="14" width="7" height="7" rx="1" />
+        <rect x="14" y="14" width="7" height="7" rx="1" />
+      </svg>
+      {#if !sidebarState.collapsed}<span>Dashboard</span>{/if}
+    </a>
+  </div>
 
   <div class="nav-section">
     {#if !sidebarState.collapsed}
@@ -223,6 +254,8 @@
     background: var(--color-surface);
     border-right: 1px solid var(--color-border);
     transition: width var(--duration-normal) var(--ease-out-expo);
+    overflow-y: auto;
+    overflow-x: hidden;
   }
 
   .sidebar.collapsed {
@@ -353,6 +386,10 @@
     flex-direction: column;
     gap: var(--space-2xs);
     margin-top: var(--space-md);
+  }
+
+  .views-section {
+    margin-top: var(--space-sm);
   }
 
   .section-label {

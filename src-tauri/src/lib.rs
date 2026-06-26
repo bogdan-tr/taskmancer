@@ -58,6 +58,15 @@ pub fn run() {
                 settings_storage::save_settings(&settings_file, &settings)?;
             }
 
+            let layouts = layout_storage::list_layouts(&layouts_file)?;
+            let settings = settings_storage::load_settings(&settings_file)?;
+            if let Some((layouts, settings)) =
+                layout::ensure_default_dashboard_layout(layouts, settings)
+            {
+                layout_storage::save_layouts(&layouts_file, &layouts)?;
+                settings_storage::save_settings(&settings_file, &settings)?;
+            }
+
             app.manage(commands::AppState {
                 tasks_dir,
                 archive_dir,
@@ -112,7 +121,13 @@ pub fn run() {
             commands::create_status_layout,
             commands::update_status_layout,
             commands::duplicate_status_layout,
-            commands::delete_status_layout
+            commands::delete_status_layout,
+            commands::get_dashboard_time_by_project,
+            commands::get_dashboard_time_by_tag,
+            commands::get_dashboard_estimated_vs_actual,
+            commands::get_dashboard_completion_trend,
+            commands::get_dashboard_status_distribution,
+            commands::get_dashboard_busy_histogram
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

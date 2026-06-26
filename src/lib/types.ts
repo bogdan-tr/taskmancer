@@ -78,6 +78,8 @@ export interface ProjectBoard {
   status_tier_rule_overrides?: (StatusTierRule | null)[];
   /** Overrides `Settings.default_status_line_layout_id` for which `StatLayout` this project's status line renders. `undefined` inherits the global default. */
   status_line_layout_id?: string;
+  /** Overrides `Settings.default_dashboard_layout_id` for which dashboard `StatLayout` this project's dashboard renders. `undefined` inherits the global default. */
+  dashboard_layout_id?: string;
   /**
    * 3-state status-bar override for this project: `undefined` inherits the
    * global `Settings.status_bar_enabled` value; `true` forces the bar on even
@@ -115,6 +117,8 @@ export interface StatLayout {
   kind: "status_line" | "dashboard";
   /** Ordered ids of the stats currently shown — see `ProjectStatusStats`' field names for the valid stat ids, plus `"status_badge"`. */
   stat_ids: string[];
+  /** Per-widget width override: `"half"` = one column, `"full"` = full row. Absent keys fall back to `"half"`. Only meaningful for `kind === "dashboard"` layouts. */
+  widget_widths?: Record<string, "half" | "full">;
 }
 
 /**
@@ -284,6 +288,8 @@ export interface Settings {
   avg_time_per_week_window: number;
   /** The `StatLayout.id` the status line renders when a project hasn't set `ProjectBoard.status_line_layout_id`. */
   default_status_line_layout_id: string;
+  /** The `StatLayout.id` (of `kind === "dashboard"`) rendered when a project hasn't set `ProjectBoard.dashboard_layout_id`. */
+  default_dashboard_layout_id: string;
   /** Only `"tiles"` remains after "chips" and "tint" were removed. Kept as a field for future extension but effectively always `"tiles"`. */
   status_bar_style: "tiles";
   /** Global on/off switch for the project status bar. `true` by default. Per-project override via `ProjectBoard.status_bar_enabled_override`. */
@@ -368,4 +374,49 @@ export interface GlobalStatusStats {
   total_projects: number;
   time_tracked_today_minutes: number;
   time_tracked_this_week_minutes: number;
+}
+
+// ── Dashboard API response types ──────────────────────────────────────────────
+
+/** One bar in a "time by project" or "time by tag" chart. */
+export interface DashboardTimeEntry {
+  label: string;
+  minutes: number;
+}
+
+/** One row in the "estimated vs. actual" chart. */
+export interface DashboardEstVsActual {
+  project_name: string;
+  estimated_minutes: number;
+  actual_minutes: number;
+}
+
+/** One series (status label + count) inside a completion-trend week. */
+export interface DashboardCompletionSeries {
+  label: string;
+  count: number;
+}
+
+/** One week's data in the completion-trend chart. */
+export interface DashboardCompletionWeek {
+  week_label: string;
+  series: DashboardCompletionSeries[];
+}
+
+/** One status bucket in the status-distribution chart. */
+export interface DashboardStatusCount {
+  status_id: string;
+  count: number;
+}
+
+/** One bucket (day-of-week or hour-of-day) in the busy-histogram. */
+export interface DashboardBucket {
+  index: number;
+  minutes: number;
+}
+
+/** Both axes of the busy-histogram: one entry per day of week, one per hour of day. */
+export interface DashboardBusyHistogram {
+  days: DashboardBucket[];
+  hours: DashboardBucket[];
 }

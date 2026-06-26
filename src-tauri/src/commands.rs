@@ -2953,10 +2953,19 @@ pub fn get_global_status_stats(
     let today = chrono::Local::now().date_naive();
     let now = chrono::Utc::now();
 
-    // Task counts by status — non-hidden, actively scheduled (scheduled.is_some()) active tasks.
+    // Task counts by status — non-hidden tasks scheduled on or before today.
+    // Filtering to today matches the kanban board's `isVisibleOnBoard` rule, which hides
+    // future-dated recurring occurrences from the board. Counting all scheduled tasks
+    // (including future occurrences) would inflate counts far beyond what the user sees.
+    let today_str = today.format("%Y-%m-%d").to_string();
     let scheduled_tasks: Vec<&Task> = active_tasks
         .iter()
-        .filter(|t| !t.hidden && t.scheduled.is_some())
+        .filter(|t| {
+            !t.hidden
+                && t.scheduled
+                    .as_deref()
+                    .map_or(false, |d| d <= today_str.as_str())
+        })
         .collect();
 
     let mut tasks_by_status: Vec<(String, usize)> = settings
@@ -2985,7 +2994,7 @@ pub fn get_global_status_stats(
             *unknown_counts.entry(task.status.clone()).or_insert(0) += 1;
         }
     }
-    tasks_by_status.extend(unknown_counts.into_iter());
+    tasks_by_status.extend(unknown_counts);
 
     // Project count: exclude subtask container projects (those whose id appears
     // as `subtask_project_id` on any active task).
@@ -3030,13 +3039,9 @@ pub fn get_global_status_stats(
         .expect("midnight is valid")
         .and_utc();
 
-    let time_tracked_this_week_seconds = time_storage::total_tracked_seconds_all_tasks_in_range(
-        &conn,
-        week_start,
-        now,
-        now,
-    )
-    .map_err(|e| e.to_string())?;
+    let time_tracked_this_week_seconds =
+        time_storage::total_tracked_seconds_all_tasks_in_range(&conn, week_start, now, now)
+            .map_err(|e| e.to_string())?;
 
     Ok(GlobalStatusStats {
         tasks_by_status,
@@ -3182,6 +3187,751 @@ pub fn delete_status_layout(state: State<AppState>, layout_id: String) -> Result
 
     layouts.retain(|l| l.id != layout_id);
     layout_storage::save_layouts(&state.layouts_file, &layouts).map_err(|e| e.to_string())
+}
+
+// ---- Analytics dashboard response types ----
+
+/// One slice of a time-by-project or time-by-tag chart: the label is a
+/// project name or tag string, and `minutes` is total tracked time in the
+/// requested date range.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct DashboardTimeEntry {
+    pub label: String,
+    pub minutes: u32,
+}
+
+/// Estimated vs actual tracked time for one project in the requested range.
+/// `estimated_minutes` is the sum of `task.estimated_minutes` across the
+/// project's tasks (using the effective default estimate for tasks without
+/// one); `actual_minutes` is the sum of tracked seconds converted to minutes.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct DashboardEstVsActual {
+    pub project_name: String,
+    pub estimated_minutes: u32,
+    pub actual_minutes: u32,
+}
+
+/// One data series within a single week of the completion trend chart.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct DashboardCompletionSeries {
+    pub label: String,
+    pub count: u32,
+}
+
+/// One week's worth of task-completion data in the trend chart.
+/// `week_label` is the human-readable week-start date (e.g. `"Jun 9"`);
+/// `series` carries one or more named counts (typically a single `"All"` or a
+/// per-project series).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct DashboardCompletionWeek {
+    pub week_label: String,
+    pub series: Vec<DashboardCompletionSeries>,
+}
+
+/// One status bucket in the status-distribution bar/pie chart.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct DashboardStatusCount {
+    pub status_id: String,
+    pub count: u32,
+}
+
+/// One index-keyed bucket in a busy-histogram axis.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct DashboardBucket {
+    /// 0-6 for day buckets (Monday = 0 … Sunday = 6);
+    /// 0-23 for hour buckets.
+    pub index: u8,
+    pub minutes: u32,
+}
+
+/// Busy-histogram result: all 7 day-of-week buckets and all 24 hour-of-day
+/// buckets, both expressed in total tracked minutes.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct DashboardBusyHistogram {
+    pub days: Vec<DashboardBucket>,
+    pub hours: Vec<DashboardBucket>,
+}
+
+// ---- Analytics dashboard helpers ----
+
+/// Parses a named date-range key into a half-open `[start, end)` window
+/// anchored at `now`.  Recognised keys:
+/// - `"last_7_days"` → `[now − 7 days, now)`
+/// - `"last_30_days"` → `[now − 30 days, now)`
+/// - `"this_month"` → `[start of UTC month, now)`
+/// - `"last_3_months"` → `[now − 3 calendar months, now)`
+/// - `"all_time"` → `[Unix epoch, now)`
+fn parse_date_range(
+    range: &str,
+    now: DateTime<Utc>,
+) -> Result<(DateTime<Utc>, DateTime<Utc>), String> {
+    let end = now;
+    let start = match range {
+        "last_7_days" => end - chrono::Duration::days(7),
+        "last_30_days" => end - chrono::Duration::days(30),
+        "this_month" => {
+            // Build "YYYY-MM-01" without needing Datelike in scope.
+            let month_start_str = now.format("%Y-%m-01").to_string();
+            NaiveDate::parse_from_str(&month_start_str, "%Y-%m-%d")
+                .expect("format %Y-%m-01 always produces a valid date")
+                .and_hms_opt(0, 0, 0)
+                .expect("midnight is always valid")
+                .and_utc()
+        }
+        "last_3_months" => {
+            let today = now.date_naive();
+            today
+                .checked_sub_months(chrono::Months::new(3))
+                .unwrap_or(today)
+                .and_hms_opt(0, 0, 0)
+                .expect("midnight is always valid")
+                .and_utc()
+        }
+        "all_time" => NaiveDate::from_ymd_opt(1970, 1, 1)
+            .expect("epoch date is valid")
+            .and_hms_opt(0, 0, 0)
+            .expect("midnight is always valid")
+            .and_utc(),
+        _ => return Err(format!("'{range}' is not a recognized date range")),
+    };
+    Ok((start, end))
+}
+
+/// Returns the task-ids to include when summing tracked time for `project_id`:
+/// non-hidden tasks in the project (and its descendants when
+/// `include_subprojects` is `true`) plus each project's own hidden tracker
+/// task (if set).  Mirrors `status_stats::avg_time_per_week_task_ids`.
+fn task_ids_for_project_time(
+    project_id: &str,
+    projects: &[Project],
+    tasks: &[Task],
+    include_subprojects: bool,
+) -> Vec<String> {
+    let mut project_ids = vec![project_id.to_string()];
+    if include_subprojects {
+        project_ids.extend(
+            project_tree::descendants_of(projects, project_id)
+                .into_iter()
+                .map(|p| p.id.clone()),
+        );
+    }
+
+    let mut ids: Vec<String> = tasks
+        .iter()
+        .filter(|t| {
+            !t.hidden
+                && t.project_id
+                    .as_deref()
+                    .is_some_and(|id| project_ids.iter().any(|p| p == id))
+        })
+        .map(|t| t.id.clone())
+        .collect();
+
+    for pid in &project_ids {
+        if let Some(tracker_id) = projects
+            .iter()
+            .find(|p| &p.id == pid)
+            .and_then(|p| p.tracking_task_id.as_deref())
+        {
+            ids.push(tracker_id.to_string());
+        }
+    }
+
+    ids
+}
+
+/// Returns the non-hidden tasks that are in scope for `project_id`:
+/// all non-hidden tasks when `project_id` is `None`, or only tasks belonging
+/// to that project (and its descendants when the project's effective
+/// `show_subproject_tasks` setting is true) otherwise.
+fn scope_non_hidden_tasks<'a>(
+    tasks: &'a [Task],
+    projects: &[Project],
+    settings: &Settings,
+    project_id: Option<&str>,
+) -> Vec<&'a Task> {
+    match project_id {
+        None => tasks.iter().filter(|t| !t.hidden).collect(),
+        Some(pid) => {
+            let include_sub = resolve_show_subproject_tasks(projects, pid, settings);
+            let mut project_ids = vec![pid.to_string()];
+            if include_sub {
+                project_ids.extend(
+                    project_tree::descendants_of(projects, pid)
+                        .into_iter()
+                        .map(|p| p.id.clone()),
+                );
+            }
+            tasks
+                .iter()
+                .filter(|t| {
+                    !t.hidden
+                        && t.project_id
+                            .as_deref()
+                            .is_some_and(|id| project_ids.iter().any(|p| p == id))
+                })
+                .collect()
+        }
+    }
+}
+
+/// Returns the Monday or Sunday on or before `date` that starts `date`'s
+/// calendar week, controlled by `week_starts_on` (`"monday"` or anything
+/// else → Sunday, matching `status_stats::start_of_week`'s degraded-to-Sunday
+/// behaviour).
+fn start_of_week_for_date(date: NaiveDate, week_starts_on: &str) -> NaiveDate {
+    use chrono::Datelike;
+    use chrono::Weekday;
+
+    let week_start_day = if week_starts_on == "monday" {
+        Weekday::Mon
+    } else {
+        Weekday::Sun
+    };
+    let days_since_start = (date.weekday().num_days_from_monday() as i64
+        - week_start_day.num_days_from_monday() as i64)
+        .rem_euclid(7);
+    date - chrono::Duration::days(days_since_start)
+}
+
+// ---- Analytics dashboard pure-computation functions ----
+
+#[allow(clippy::too_many_arguments)]
+fn build_dashboard_time_by_project(
+    conn: &rusqlite::Connection,
+    tasks: &[Task],
+    projects: &[Project],
+    settings: &Settings,
+    project_id: Option<&str>,
+    range_start: DateTime<Utc>,
+    range_end: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> Result<Vec<DashboardTimeEntry>, String> {
+    let scoped_project_ids: Vec<String> = match project_id {
+        None => projects.iter().map(|p| p.id.clone()).collect(),
+        Some(pid) => {
+            let include_sub = resolve_show_subproject_tasks(projects, pid, settings);
+            let mut ids = vec![pid.to_string()];
+            if include_sub {
+                ids.extend(
+                    project_tree::descendants_of(projects, pid)
+                        .into_iter()
+                        .map(|p| p.id.clone()),
+                );
+            }
+            ids
+        }
+    };
+
+    let mut entries = Vec::new();
+    for pid in &scoped_project_ids {
+        // Use include_subprojects=false: we already expanded scoped_project_ids above.
+        let task_ids = task_ids_for_project_time(pid, projects, tasks, false);
+        if task_ids.is_empty() {
+            continue;
+        }
+        let seconds = time_storage::total_tracked_seconds_for_task_ids_in_range(
+            conn,
+            &task_ids,
+            range_start,
+            range_end,
+            now,
+        )
+        .map_err(|e| e.to_string())?;
+        let minutes = (seconds / 60) as u32;
+        if minutes > 0 {
+            let label = projects
+                .iter()
+                .find(|p| &p.id == pid)
+                .map(|p| p.name.clone())
+                .unwrap_or_else(|| pid.clone());
+            entries.push(DashboardTimeEntry { label, minutes });
+        }
+    }
+    entries.sort_by(|a, b| b.minutes.cmp(&a.minutes));
+    Ok(entries)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_dashboard_time_by_tag(
+    conn: &rusqlite::Connection,
+    tasks: &[Task],
+    projects: &[Project],
+    settings: &Settings,
+    project_id: Option<&str>,
+    range_start: DateTime<Utc>,
+    range_end: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> Result<Vec<DashboardTimeEntry>, String> {
+    let scoped_tasks = scope_non_hidden_tasks(tasks, projects, settings, project_id);
+
+    let mut tag_minutes: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+
+    for task in scoped_tasks {
+        if task.tags.is_empty() {
+            continue;
+        }
+        let task_ids = vec![task.id.clone()];
+        let seconds = time_storage::total_tracked_seconds_for_task_ids_in_range(
+            conn,
+            &task_ids,
+            range_start,
+            range_end,
+            now,
+        )
+        .map_err(|e| e.to_string())?;
+        let minutes = (seconds / 60) as u32;
+        if minutes > 0 {
+            for tag in &task.tags {
+                *tag_minutes.entry(tag.clone()).or_insert(0) += minutes;
+            }
+        }
+    }
+
+    let mut entries: Vec<DashboardTimeEntry> = tag_minutes
+        .into_iter()
+        .map(|(label, minutes)| DashboardTimeEntry { label, minutes })
+        .collect();
+    entries.sort_by(|a, b| b.minutes.cmp(&a.minutes));
+    Ok(entries)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_dashboard_estimated_vs_actual(
+    conn: &rusqlite::Connection,
+    tasks: &[Task],
+    projects: &[Project],
+    settings: &Settings,
+    project_id: Option<&str>,
+    range_start: DateTime<Utc>,
+    range_end: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> Result<Vec<DashboardEstVsActual>, String> {
+    let scoped_project_ids: Vec<String> = match project_id {
+        None => projects.iter().map(|p| p.id.clone()).collect(),
+        Some(pid) => {
+            let include_sub = resolve_show_subproject_tasks(projects, pid, settings);
+            let mut ids = vec![pid.to_string()];
+            if include_sub {
+                ids.extend(
+                    project_tree::descendants_of(projects, pid)
+                        .into_iter()
+                        .map(|p| p.id.clone()),
+                );
+            }
+            ids
+        }
+    };
+
+    let mut result = Vec::new();
+    for pid in &scoped_project_ids {
+        let project = match projects.iter().find(|p| &p.id == pid) {
+            Some(p) => p,
+            None => continue,
+        };
+        let project_tasks: Vec<&Task> = tasks
+            .iter()
+            .filter(|t| !t.hidden && t.project_id.as_deref() == Some(pid.as_str()))
+            .collect();
+
+        if project_tasks.is_empty() {
+            continue;
+        }
+
+        let project_chain = project_tree::self_and_ancestors(projects, pid);
+        let chain_refs: Vec<&Project> = project_chain.to_vec();
+
+        let mut actual_minutes = 0u32;
+        let mut estimated_minutes = 0u32;
+
+        for task in &project_tasks {
+            let task_ids = vec![task.id.clone()];
+            let seconds = time_storage::total_tracked_seconds_for_task_ids_in_range(
+                conn,
+                &task_ids,
+                range_start,
+                range_end,
+                now,
+            )
+            .map_err(|e| e.to_string())?;
+            actual_minutes += (seconds / 60) as u32;
+
+            if let Some(est) = task.estimated_minutes {
+                estimated_minutes += est;
+            } else {
+                estimated_minutes +=
+                    effective_default_estimated_minutes(&settings.defaults, &chain_refs)
+                        .unwrap_or(0);
+            }
+        }
+
+        if actual_minutes > 0 || estimated_minutes > 0 {
+            result.push(DashboardEstVsActual {
+                project_name: project.name.clone(),
+                estimated_minutes,
+                actual_minutes,
+            });
+        }
+    }
+    result.sort_by(|a, b| a.project_name.cmp(&b.project_name));
+    Ok(result)
+}
+
+fn build_dashboard_completion_trend(
+    archived_tasks: &[Task],
+    projects: &[Project],
+    settings: &Settings,
+    project_id: Option<&str>,
+    range_start: DateTime<Utc>,
+    range_end: DateTime<Utc>,
+    week_starts_on: &str,
+) -> Vec<DashboardCompletionWeek> {
+    let scoped_tasks = scope_non_hidden_tasks(archived_tasks, projects, settings, project_id);
+
+    let mut week_counts: std::collections::HashMap<NaiveDate, u32> =
+        std::collections::HashMap::new();
+
+    for task in scoped_tasks {
+        let task_date = if let Some(sched) = &task.scheduled {
+            NaiveDate::parse_from_str(sched, "%Y-%m-%d").ok()
+        } else {
+            task.due
+                .as_ref()
+                .and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
+        };
+
+        let Some(date) = task_date else {
+            continue;
+        };
+        let task_dt = date
+            .and_hms_opt(0, 0, 0)
+            .expect("midnight is always valid")
+            .and_utc();
+        if task_dt < range_start || task_dt >= range_end {
+            continue;
+        }
+
+        let week_start = start_of_week_for_date(date, week_starts_on);
+        *week_counts.entry(week_start).or_insert(0) += 1;
+    }
+
+    let series_label = match project_id {
+        None => "All".to_string(),
+        Some(pid) => projects
+            .iter()
+            .find(|p| p.id == pid)
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| pid.to_string()),
+    };
+
+    // Sort descending, keep last 12, then reverse to oldest-first.
+    let mut weeks: Vec<NaiveDate> = week_counts.keys().copied().collect();
+    weeks.sort_by(|a, b| b.cmp(a));
+    weeks.truncate(12);
+    weeks.sort();
+
+    weeks
+        .into_iter()
+        .map(|week_start| {
+            let count = week_counts[&week_start];
+            // "Jun 9" — %-d strips the leading space/zero on the day number.
+            let label = week_start.format("%b %-d").to_string();
+            DashboardCompletionWeek {
+                week_label: label,
+                series: vec![DashboardCompletionSeries {
+                    label: series_label.clone(),
+                    count,
+                }],
+            }
+        })
+        .collect()
+}
+
+fn build_dashboard_status_distribution(
+    tasks: &[Task],
+    projects: &[Project],
+    settings: &Settings,
+    project_id: Option<&str>,
+) -> Vec<DashboardStatusCount> {
+    let today_str = chrono::Local::now()
+        .date_naive()
+        .format("%Y-%m-%d")
+        .to_string();
+    // Mirror `isVisibleOnBoard`: count only tasks scheduled on or before today,
+    // which excludes future recurring occurrences that inflate the counts.
+    let scoped_tasks: Vec<&Task> = scope_non_hidden_tasks(tasks, projects, settings, project_id)
+        .into_iter()
+        .filter(|t| {
+            t.scheduled
+                .as_deref()
+                .map_or(false, |d| d <= today_str.as_str())
+        })
+        .collect();
+
+    settings
+        .statuses
+        .iter()
+        .filter_map(|status_def| {
+            let count = scoped_tasks
+                .iter()
+                .filter(|t| t.status == status_def.id)
+                .count() as u32;
+            if count > 0 {
+                Some(DashboardStatusCount {
+                    status_id: status_def.id.clone(),
+                    count,
+                })
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_dashboard_busy_histogram(
+    conn: &rusqlite::Connection,
+    tasks: &[Task],
+    projects: &[Project],
+    settings: &Settings,
+    project_id: Option<&str>,
+    range_start: DateTime<Utc>,
+    range_end: DateTime<Utc>,
+    now: DateTime<Utc>,
+    tz_offset: chrono::FixedOffset,
+) -> Result<DashboardBusyHistogram, String> {
+    let all_entries = time_storage::list_time_entries_in_range(conn, range_start, range_end, now)
+        .map_err(|e| e.to_string())?;
+
+    // If a project scope is requested, build a set of task-ids in scope.
+    let scoped_ids: Option<std::collections::HashSet<String>> = project_id.map(|pid| {
+        let include_sub = resolve_show_subproject_tasks(projects, pid, settings);
+        task_ids_for_project_time(pid, projects, tasks, include_sub)
+            .into_iter()
+            .collect()
+    });
+
+    let mut day_secs = [0i64; 7];
+    let mut hour_secs = [0i64; 24];
+    let tz_secs = tz_offset.local_minus_utc() as i64;
+
+    for (task_id, start, end) in all_entries {
+        if let Some(ref ids) = scoped_ids {
+            if !ids.contains(&task_id) {
+                continue;
+            }
+        }
+
+        // Walk hour-by-hour in local time using integer timestamp arithmetic —
+        // avoids importing Timelike/Datelike while keeping FixedOffset correct.
+        let mut pos_utc = start;
+        while pos_utc < end {
+            let local_ts = pos_utc.timestamp() + tz_secs;
+            // day-of-week: Unix epoch (Jan 1 1970) was a Thursday.
+            // Monday = 0 in our encoding: Thu = 3, so epoch day 0 → index 3.
+            let day = ((local_ts.div_euclid(86400) + 3).rem_euclid(7)) as usize;
+            let hour = (local_ts.rem_euclid(86400) / 3600) as usize;
+            let mins_into_hour = local_ts.rem_euclid(3600) / 60;
+            let secs_into_min = local_ts.rem_euclid(60);
+            let secs_to_next_hour = (60 - mins_into_hour) * 60 - secs_into_min;
+            let next_hour_utc = pos_utc + chrono::Duration::seconds(secs_to_next_hour);
+            let chunk_end_utc = next_hour_utc.min(end);
+            let chunk_secs = (chunk_end_utc - pos_utc).num_seconds();
+            if chunk_secs > 0 {
+                day_secs[day] += chunk_secs;
+                hour_secs[hour] += chunk_secs;
+            }
+            pos_utc = next_hour_utc;
+        }
+    }
+
+    let days = (0u8..7)
+        .map(|i| DashboardBucket {
+            index: i,
+            minutes: (day_secs[i as usize] / 60) as u32,
+        })
+        .collect();
+    let hours = (0u8..24)
+        .map(|i| DashboardBucket {
+            index: i,
+            minutes: (hour_secs[i as usize] / 60) as u32,
+        })
+        .collect();
+
+    Ok(DashboardBusyHistogram { days, hours })
+}
+
+// ---- Analytics dashboard Tauri commands ----
+
+/// Returns tracked time in minutes grouped by project for the requested date
+/// range, sorted descending by minutes.  `project_id: None` aggregates all
+/// projects; `Some(id)` restricts to that project (and its descendants when
+/// the project's effective `show_subproject_tasks` setting is true).
+#[tauri::command]
+pub fn get_dashboard_time_by_project(
+    state: State<AppState>,
+    project_id: Option<String>,
+    date_range: String,
+) -> Result<Vec<DashboardTimeEntry>, String> {
+    let settings =
+        settings_storage::load_settings(&state.settings_file).map_err(|e| e.to_string())?;
+    let projects =
+        project_storage::list_projects(&state.projects_file).map_err(|e| e.to_string())?;
+    let tasks = storage::list_tasks(&state.tasks_dir).map_err(|e| e.to_string())?;
+    let conn = state.time_db.lock().map_err(|e| e.to_string())?;
+    let now = Utc::now();
+    let (range_start, range_end) = parse_date_range(&date_range, now)?;
+    build_dashboard_time_by_project(
+        &conn,
+        &tasks,
+        &projects,
+        &settings,
+        project_id.as_deref(),
+        range_start,
+        range_end,
+        now,
+    )
+}
+
+/// Returns tracked time in minutes grouped by tag for the requested date
+/// range, sorted descending by minutes.  Tasks with no tags are excluded.
+#[tauri::command]
+pub fn get_dashboard_time_by_tag(
+    state: State<AppState>,
+    project_id: Option<String>,
+    date_range: String,
+) -> Result<Vec<DashboardTimeEntry>, String> {
+    let settings =
+        settings_storage::load_settings(&state.settings_file).map_err(|e| e.to_string())?;
+    let projects =
+        project_storage::list_projects(&state.projects_file).map_err(|e| e.to_string())?;
+    let tasks = storage::list_tasks(&state.tasks_dir).map_err(|e| e.to_string())?;
+    let conn = state.time_db.lock().map_err(|e| e.to_string())?;
+    let now = Utc::now();
+    let (range_start, range_end) = parse_date_range(&date_range, now)?;
+    build_dashboard_time_by_tag(
+        &conn,
+        &tasks,
+        &projects,
+        &settings,
+        project_id.as_deref(),
+        range_start,
+        range_end,
+        now,
+    )
+}
+
+/// Returns estimated vs actual tracked minutes per project for the requested
+/// date range, sorted alphabetically by project name.
+#[tauri::command]
+pub fn get_dashboard_estimated_vs_actual(
+    state: State<AppState>,
+    project_id: Option<String>,
+    date_range: String,
+) -> Result<Vec<DashboardEstVsActual>, String> {
+    let settings =
+        settings_storage::load_settings(&state.settings_file).map_err(|e| e.to_string())?;
+    let projects =
+        project_storage::list_projects(&state.projects_file).map_err(|e| e.to_string())?;
+    let tasks = storage::list_tasks(&state.tasks_dir).map_err(|e| e.to_string())?;
+    let conn = state.time_db.lock().map_err(|e| e.to_string())?;
+    let now = Utc::now();
+    let (range_start, range_end) = parse_date_range(&date_range, now)?;
+    build_dashboard_estimated_vs_actual(
+        &conn,
+        &tasks,
+        &projects,
+        &settings,
+        project_id.as_deref(),
+        range_start,
+        range_end,
+        now,
+    )
+}
+
+/// Returns the task-completion trend over the requested date range, bucketed
+/// by calendar week (at most 12 weeks, oldest first).  Each task's completion
+/// date is taken from its `scheduled` date, falling back to `due` date.
+/// Tasks lacking both fields are excluded.  Reads from the archive directory.
+#[tauri::command]
+pub fn get_dashboard_completion_trend(
+    state: State<AppState>,
+    project_id: Option<String>,
+    date_range: String,
+    week_starts_on: String,
+) -> Result<Vec<DashboardCompletionWeek>, String> {
+    let settings =
+        settings_storage::load_settings(&state.settings_file).map_err(|e| e.to_string())?;
+    let projects =
+        project_storage::list_projects(&state.projects_file).map_err(|e| e.to_string())?;
+    let archived_tasks = storage::list_tasks(&state.archive_dir).map_err(|e| e.to_string())?;
+    let now = Utc::now();
+    let (range_start, range_end) = parse_date_range(&date_range, now)?;
+    Ok(build_dashboard_completion_trend(
+        &archived_tasks,
+        &projects,
+        &settings,
+        project_id.as_deref(),
+        range_start,
+        range_end,
+        &week_starts_on,
+    ))
+}
+
+/// Returns the count of active (non-archived) non-hidden tasks for each
+/// status in `settings.statuses` order, omitting statuses with zero tasks.
+/// The `date_range` parameter is accepted for API consistency but is not used
+/// — status distribution always reflects the current state of tasks.
+#[tauri::command]
+pub fn get_dashboard_status_distribution(
+    state: State<AppState>,
+    project_id: Option<String>,
+    date_range: String,
+) -> Result<Vec<DashboardStatusCount>, String> {
+    let settings =
+        settings_storage::load_settings(&state.settings_file).map_err(|e| e.to_string())?;
+    let projects =
+        project_storage::list_projects(&state.projects_file).map_err(|e| e.to_string())?;
+    let tasks = storage::list_tasks(&state.tasks_dir).map_err(|e| e.to_string())?;
+    let _ = date_range; // accepted for API consistency; status is current state
+    Ok(build_dashboard_status_distribution(
+        &tasks,
+        &projects,
+        &settings,
+        project_id.as_deref(),
+    ))
+}
+
+/// Returns a busy-histogram decomposing tracked time by day-of-week (Mon = 0
+/// … Sun = 6) and hour-of-day (0 – 23), expressed in minutes.  Times are
+/// converted to the server's local timezone (via `chrono::Local`) so the
+/// histogram reflects the user's actual work schedule.
+#[tauri::command]
+pub fn get_dashboard_busy_histogram(
+    state: State<AppState>,
+    project_id: Option<String>,
+    date_range: String,
+) -> Result<DashboardBusyHistogram, String> {
+    let settings =
+        settings_storage::load_settings(&state.settings_file).map_err(|e| e.to_string())?;
+    let projects =
+        project_storage::list_projects(&state.projects_file).map_err(|e| e.to_string())?;
+    let tasks = storage::list_tasks(&state.tasks_dir).map_err(|e| e.to_string())?;
+    let conn = state.time_db.lock().map_err(|e| e.to_string())?;
+    let now = Utc::now();
+    let (range_start, range_end) = parse_date_range(&date_range, now)?;
+    let tz_offset = *chrono::Local::now().offset();
+    build_dashboard_busy_histogram(
+        &conn,
+        &tasks,
+        &projects,
+        &settings,
+        project_id.as_deref(),
+        range_start,
+        range_end,
+        now,
+        tz_offset,
+    )
 }
 
 #[cfg(test)]
@@ -7057,6 +7807,502 @@ mod tests {
             let result = ensure_layout_not_in_use("layout-1", &[project], &settings);
 
             assert!(result.is_ok());
+        }
+    }
+
+    mod dashboard_tests {
+        use super::*;
+        use rusqlite::Connection;
+
+        fn dt(rfc3339: &str) -> DateTime<Utc> {
+            DateTime::parse_from_rfc3339(rfc3339)
+                .unwrap()
+                .with_timezone(&Utc)
+        }
+
+        fn setup_conn() -> Connection {
+            let conn = Connection::open_in_memory().unwrap();
+            time_storage::init_schema(&conn).unwrap();
+            conn
+        }
+
+        fn project_with_id(id: &str) -> Project {
+            let mut p = Project::new(id.to_string(), "#111111".to_string(), 1);
+            p.id = id.to_string();
+            p
+        }
+
+        fn task_in_project(project_id: &str) -> Task {
+            let mut t = Task::new("Task".to_string());
+            t.project_id = Some(project_id.to_string());
+            t
+        }
+
+        fn settings_with_status(status_id: &str) -> Settings {
+            Settings {
+                statuses: vec![crate::settings::StatusDefinition {
+                    id: status_id.to_string(),
+                    label: status_id.to_string(),
+                    color: "#000000".to_string(),
+                    order: 0,
+                }],
+                ..Settings::default()
+            }
+        }
+
+        // --- parse_date_range tests ---
+
+        #[test]
+        fn parse_date_range_last_7_days_returns_7_day_window() {
+            let now = dt("2026-06-25T12:00:00+00:00");
+
+            let (start, end) = parse_date_range("last_7_days", now).unwrap();
+
+            assert_eq!(end, now);
+            assert_eq!((end - start).num_days(), 7);
+        }
+
+        #[test]
+        fn parse_date_range_last_30_days_returns_30_day_window() {
+            let now = dt("2026-06-25T12:00:00+00:00");
+
+            let (start, end) = parse_date_range("last_30_days", now).unwrap();
+
+            assert_eq!(end, now);
+            assert_eq!((end - start).num_days(), 30);
+        }
+
+        #[test]
+        fn parse_date_range_this_month_starts_at_the_first() {
+            let now = dt("2026-06-25T12:00:00+00:00");
+
+            let (start, _end) = parse_date_range("this_month", now).unwrap();
+
+            assert_eq!(start, dt("2026-06-01T00:00:00+00:00"));
+        }
+
+        #[test]
+        fn parse_date_range_last_3_months_starts_3_months_ago() {
+            let now = dt("2026-06-25T12:00:00+00:00");
+
+            let (start, _end) = parse_date_range("last_3_months", now).unwrap();
+
+            assert_eq!(start, dt("2026-03-25T00:00:00+00:00"));
+        }
+
+        #[test]
+        fn parse_date_range_all_time_starts_at_epoch() {
+            let now = dt("2026-06-25T12:00:00+00:00");
+
+            let (start, _end) = parse_date_range("all_time", now).unwrap();
+
+            assert_eq!(start, dt("1970-01-01T00:00:00+00:00"));
+        }
+
+        #[test]
+        fn parse_date_range_rejects_an_unrecognized_range() {
+            let now = dt("2026-06-25T12:00:00+00:00");
+
+            let err = parse_date_range("last_year", now).unwrap_err();
+
+            assert!(err.contains("last_year"));
+        }
+
+        // --- start_of_week_for_date tests ---
+
+        #[test]
+        fn start_of_week_monday_start_returns_monday_for_wednesday() {
+            let wednesday = NaiveDate::from_ymd_opt(2026, 6, 24).unwrap(); // Wednesday
+
+            let week_start = start_of_week_for_date(wednesday, "monday");
+
+            assert_eq!(week_start, NaiveDate::from_ymd_opt(2026, 6, 22).unwrap());
+            // Monday
+        }
+
+        #[test]
+        fn start_of_week_sunday_start_returns_sunday_for_wednesday() {
+            let wednesday = NaiveDate::from_ymd_opt(2026, 6, 24).unwrap();
+
+            let week_start = start_of_week_for_date(wednesday, "sunday");
+
+            assert_eq!(week_start, NaiveDate::from_ymd_opt(2026, 6, 21).unwrap());
+            // Sunday
+        }
+
+        #[test]
+        fn start_of_week_returns_same_day_for_monday_when_week_starts_on_monday() {
+            let monday = NaiveDate::from_ymd_opt(2026, 6, 22).unwrap();
+
+            let week_start = start_of_week_for_date(monday, "monday");
+
+            assert_eq!(week_start, monday);
+        }
+
+        // --- build_dashboard_time_by_project tests ---
+
+        #[test]
+        fn time_by_project_returns_empty_when_no_time_tracked() {
+            let conn = setup_conn();
+            let project = project_with_id("p1");
+            let task = task_in_project("p1");
+            let settings = Settings::default();
+            let now = dt("2026-06-25T12:00:00+00:00");
+            let start = dt("2026-06-01T00:00:00+00:00");
+            let end = dt("2026-06-30T00:00:00+00:00");
+
+            let result = build_dashboard_time_by_project(
+                &conn,
+                &[task],
+                &[project],
+                &settings,
+                None,
+                start,
+                end,
+                now,
+            )
+            .unwrap();
+
+            assert!(result.is_empty());
+        }
+
+        #[test]
+        fn time_by_project_aggregates_tracked_minutes_per_project() {
+            let conn = setup_conn();
+            let p1 = project_with_id("p1");
+            let p2 = project_with_id("p2");
+            let mut task1 = task_in_project("p1");
+            task1.id = "task-1".to_string();
+            let mut task2 = task_in_project("p2");
+            task2.id = "task-2".to_string();
+
+            // 60 minutes for p1, 30 minutes for p2
+            time_storage::insert_completed_entry(
+                &conn,
+                "task-1",
+                dt("2026-06-15T09:00:00+00:00"),
+                dt("2026-06-15T10:00:00+00:00"),
+            )
+            .unwrap();
+            time_storage::insert_completed_entry(
+                &conn,
+                "task-2",
+                dt("2026-06-15T10:00:00+00:00"),
+                dt("2026-06-15T10:30:00+00:00"),
+            )
+            .unwrap();
+
+            let settings = Settings::default();
+            let now = dt("2026-06-25T12:00:00+00:00");
+            let start = dt("2026-06-01T00:00:00+00:00");
+            let end = dt("2026-06-30T00:00:00+00:00");
+
+            let result = build_dashboard_time_by_project(
+                &conn,
+                &[task1, task2],
+                &[p1, p2],
+                &settings,
+                None,
+                start,
+                end,
+                now,
+            )
+            .unwrap();
+
+            // Sorted descending by minutes
+            assert_eq!(result.len(), 2);
+            assert_eq!(result[0].label, "p1");
+            assert_eq!(result[0].minutes, 60);
+            assert_eq!(result[1].label, "p2");
+            assert_eq!(result[1].minutes, 30);
+        }
+
+        // --- build_dashboard_time_by_tag tests ---
+
+        #[test]
+        fn time_by_tag_returns_empty_when_tasks_have_no_tags() {
+            let conn = setup_conn();
+            let project = project_with_id("p1");
+            let mut task = task_in_project("p1");
+            task.id = "task-1".to_string();
+            // task has no tags
+            time_storage::insert_completed_entry(
+                &conn,
+                "task-1",
+                dt("2026-06-15T09:00:00+00:00"),
+                dt("2026-06-15T10:00:00+00:00"),
+            )
+            .unwrap();
+            let settings = Settings::default();
+            let now = dt("2026-06-25T12:00:00+00:00");
+            let start = dt("2026-06-01T00:00:00+00:00");
+            let end = dt("2026-06-30T00:00:00+00:00");
+
+            let result = build_dashboard_time_by_tag(
+                &conn,
+                &[task],
+                &[project],
+                &settings,
+                None,
+                start,
+                end,
+                now,
+            )
+            .unwrap();
+
+            assert!(result.is_empty());
+        }
+
+        #[test]
+        fn time_by_tag_sums_minutes_per_tag_across_tasks() {
+            let conn = setup_conn();
+            let project = project_with_id("p1");
+            let mut task1 = task_in_project("p1");
+            task1.id = "task-1".to_string();
+            task1.tags = vec!["work".to_string()];
+            let mut task2 = task_in_project("p1");
+            task2.id = "task-2".to_string();
+            task2.tags = vec!["work".to_string(), "urgent".to_string()];
+
+            // task1: 60min, task2: 30min → work: 90min, urgent: 30min
+            time_storage::insert_completed_entry(
+                &conn,
+                "task-1",
+                dt("2026-06-15T09:00:00+00:00"),
+                dt("2026-06-15T10:00:00+00:00"),
+            )
+            .unwrap();
+            time_storage::insert_completed_entry(
+                &conn,
+                "task-2",
+                dt("2026-06-15T10:00:00+00:00"),
+                dt("2026-06-15T10:30:00+00:00"),
+            )
+            .unwrap();
+
+            let settings = Settings::default();
+            let now = dt("2026-06-25T12:00:00+00:00");
+            let start = dt("2026-06-01T00:00:00+00:00");
+            let end = dt("2026-06-30T00:00:00+00:00");
+
+            let result = build_dashboard_time_by_tag(
+                &conn,
+                &[task1, task2],
+                &[project],
+                &settings,
+                None,
+                start,
+                end,
+                now,
+            )
+            .unwrap();
+
+            // sorted descending
+            assert_eq!(result[0].label, "work");
+            assert_eq!(result[0].minutes, 90);
+            let urgent = result.iter().find(|e| e.label == "urgent").unwrap();
+            assert_eq!(urgent.minutes, 30);
+        }
+
+        // --- build_dashboard_status_distribution tests ---
+
+        #[test]
+        fn status_distribution_counts_tasks_per_status() {
+            let today = chrono::Local::now().date_naive().format("%Y-%m-%d").to_string();
+            let project = project_with_id("p1");
+            let mut task1 = task_in_project("p1");
+            task1.status = "todo".to_string();
+            task1.scheduled = Some(today.clone());
+            let mut task2 = task_in_project("p1");
+            task2.status = "todo".to_string();
+            task2.scheduled = Some(today.clone());
+            let mut task3 = task_in_project("p1");
+            task3.status = "done".to_string();
+            task3.scheduled = Some(today.clone());
+            let mut settings = settings_with_status("todo");
+            settings.statuses.push(crate::settings::StatusDefinition {
+                id: "done".to_string(),
+                label: "Done".to_string(),
+                color: "#00ff00".to_string(),
+                order: 1,
+            });
+
+            let result = build_dashboard_status_distribution(
+                &[task1, task2, task3],
+                &[project],
+                &settings,
+                None,
+            );
+
+            let todo = result.iter().find(|s| s.status_id == "todo").unwrap();
+            assert_eq!(todo.count, 2);
+            let done = result.iter().find(|s| s.status_id == "done").unwrap();
+            assert_eq!(done.count, 1);
+        }
+
+        #[test]
+        fn status_distribution_excludes_future_scheduled_tasks() {
+            let project = project_with_id("p1");
+            let mut past_task = task_in_project("p1");
+            past_task.status = "todo".to_string();
+            past_task.scheduled = Some("2020-01-01".to_string());
+            let mut future_task = task_in_project("p1");
+            future_task.status = "todo".to_string();
+            future_task.scheduled = Some("2099-12-31".to_string());
+            let settings = settings_with_status("todo");
+
+            let result =
+                build_dashboard_status_distribution(&[past_task, future_task], &[project], &settings, None);
+
+            let todo = result.iter().find(|s| s.status_id == "todo").unwrap();
+            assert_eq!(todo.count, 1, "only the past task should be counted");
+        }
+
+        #[test]
+        fn status_distribution_omits_statuses_with_zero_tasks() {
+            let today = chrono::Local::now().date_naive().format("%Y-%m-%d").to_string();
+            let project = project_with_id("p1");
+            let mut task = task_in_project("p1");
+            task.status = "todo".to_string();
+            task.scheduled = Some(today);
+            let mut settings = settings_with_status("todo");
+            settings.statuses.push(crate::settings::StatusDefinition {
+                id: "done".to_string(),
+                label: "Done".to_string(),
+                color: "#00ff00".to_string(),
+                order: 1,
+            });
+
+            let result = build_dashboard_status_distribution(&[task], &[project], &settings, None);
+
+            assert_eq!(result.len(), 1);
+            assert_eq!(result[0].status_id, "todo");
+        }
+
+        // --- build_dashboard_completion_trend tests ---
+
+        #[test]
+        fn completion_trend_returns_empty_when_no_tasks_in_range() {
+            let project = project_with_id("p1");
+            let mut task = task_in_project("p1");
+            task.scheduled = Some("2025-01-01".to_string()); // outside range
+            let settings = Settings::default();
+            let start = dt("2026-06-01T00:00:00+00:00");
+            let end = dt("2026-06-30T00:00:00+00:00");
+
+            let result = build_dashboard_completion_trend(
+                &[task],
+                &[project],
+                &settings,
+                None,
+                start,
+                end,
+                "monday",
+            );
+
+            assert!(result.is_empty());
+        }
+
+        #[test]
+        fn completion_trend_groups_tasks_by_week() {
+            let project = project_with_id("p1");
+            let mut task1 = task_in_project("p1");
+            task1.scheduled = Some("2026-06-15".to_string()); // Monday of week 1
+            let mut task2 = task_in_project("p1");
+            task2.scheduled = Some("2026-06-16".to_string()); // Tuesday of week 1 (same week)
+            let mut task3 = task_in_project("p1");
+            task3.scheduled = Some("2026-06-22".to_string()); // Monday of week 2
+            let settings = Settings::default();
+            let start = dt("2026-06-01T00:00:00+00:00");
+            let end = dt("2026-06-30T00:00:00+00:00");
+
+            let result = build_dashboard_completion_trend(
+                &[task1, task2, task3],
+                &[project],
+                &settings,
+                None,
+                start,
+                end,
+                "monday",
+            );
+
+            assert_eq!(result.len(), 2);
+            // Oldest week first, with count 2 for week of Jun 15
+            let week1 = result.iter().find(|w| w.week_label == "Jun 15").unwrap();
+            assert_eq!(week1.series[0].count, 2);
+            let week2 = result.iter().find(|w| w.week_label == "Jun 22").unwrap();
+            assert_eq!(week2.series[0].count, 1);
+        }
+
+        // --- build_dashboard_busy_histogram tests ---
+
+        #[test]
+        fn busy_histogram_returns_all_24_hours_and_7_days() {
+            let conn = setup_conn();
+            let settings = Settings::default();
+            let now = dt("2026-06-25T12:00:00+00:00");
+            let start = dt("2026-06-01T00:00:00+00:00");
+            let end = dt("2026-06-30T00:00:00+00:00");
+            let tz = chrono::FixedOffset::east_opt(0).unwrap();
+
+            let result = build_dashboard_busy_histogram(
+                &conn,
+                &[],
+                &[],
+                &settings,
+                None,
+                start,
+                end,
+                now,
+                tz,
+            )
+            .unwrap();
+
+            assert_eq!(result.days.len(), 7);
+            assert_eq!(result.hours.len(), 24);
+            // Indices are 0..6 and 0..23
+            assert_eq!(result.days[0].index, 0);
+            assert_eq!(result.days[6].index, 6);
+            assert_eq!(result.hours[0].index, 0);
+            assert_eq!(result.hours[23].index, 23);
+        }
+
+        #[test]
+        fn busy_histogram_counts_tracked_minutes_in_the_correct_day_bucket() {
+            let conn = setup_conn();
+            let settings = Settings::default();
+            // 2026-06-15 is a Monday → Monday = 0 in our encoding
+            time_storage::insert_completed_entry(
+                &conn,
+                "task-1",
+                dt("2026-06-15T09:00:00+00:00"),
+                dt("2026-06-15T10:00:00+00:00"), // 60 minutes on Monday
+            )
+            .unwrap();
+            let now = dt("2026-06-25T12:00:00+00:00");
+            let start = dt("2026-06-01T00:00:00+00:00");
+            let end = dt("2026-06-30T00:00:00+00:00");
+            let tz = chrono::FixedOffset::east_opt(0).unwrap();
+
+            let result = build_dashboard_busy_histogram(
+                &conn,
+                &[],
+                &[],
+                &settings,
+                None,
+                start,
+                end,
+                now,
+                tz,
+            )
+            .unwrap();
+
+            // Monday is index 0; verify 60 minutes were accumulated there
+            let monday = result.days.iter().find(|d| d.index == 0).unwrap();
+            assert_eq!(monday.minutes, 60);
+            // Hour 9 (09:00 UTC) should hold 60 minutes
+            let hour9 = result.hours.iter().find(|h| h.index == 9).unwrap();
+            assert_eq!(hour9.minutes, 60);
         }
     }
 }

@@ -75,6 +75,8 @@ pub struct ProjectBoard {
     pub status_line_layout_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status_bar_enabled_override: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dashboard_layout_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -314,5 +316,14 @@ mod tests {
             parsed.board.status_line_layout_id,
             Some("layout-123".to_string())
         );
+    }
+
+    #[test]
+    fn project_board_dashboard_layout_id_is_none_when_absent_from_json() {
+        let json = r##"{"id":"abc","name":"Inbox","color":"#000000","created":"2026-06-11T10:00:00+00:00"}"##;
+
+        let project: Project = serde_json::from_str(json).expect("should parse");
+
+        assert_eq!(project.board.dashboard_layout_id, None);
     }
 }

@@ -359,6 +359,8 @@ pub struct Settings {
     pub status_bar_enabled: bool,
     #[serde(default)]
     pub status_bar_tile_tint: bool,
+    #[serde(default)]
+    pub default_dashboard_layout_id: String,
 }
 
 impl Default for Settings {
@@ -449,6 +451,7 @@ impl Default for Settings {
             status_bar_style: default_status_bar_style(),
             status_bar_enabled: default_status_bar_enabled(),
             status_bar_tile_tint: false,
+            default_dashboard_layout_id: String::new(),
         }
     }
 }
@@ -2091,5 +2094,12 @@ mod tests {
         let normalized = settings.normalize();
 
         assert_eq!(normalized.done_status, "");
+    }
+
+    #[test]
+    fn default_settings_seed_has_an_empty_default_dashboard_layout_id() {
+        let settings = Settings::default();
+
+        assert_eq!(settings.default_dashboard_layout_id, "");
     }
 }

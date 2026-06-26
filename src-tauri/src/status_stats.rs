@@ -63,10 +63,23 @@ fn project_and_descendant_ids(
 /// decision, a busy subproject can never flip its parent's badge or time-left
 /// figure.
 pub fn estimated_time_left(project_id: &str, tasks: &[Task], settings: &Settings) -> u32 {
+    // Include tasks inside subtask containers owned by tasks directly in project_id,
+    // so parent-task estimates and their subtask estimates are both counted.
+    let subtask_container_ids: std::collections::HashSet<&str> = tasks
+        .iter()
+        .filter(|t| belongs_to_project(t, project_id) && !t.hidden)
+        .filter_map(|t| t.subtask_project_id.as_deref())
+        .collect();
+
     tasks
         .iter()
         .filter(|task| {
-            belongs_to_project(task, project_id)
+            let in_scope = belongs_to_project(task, project_id)
+                || task
+                    .project_id
+                    .as_deref()
+                    .map_or(false, |pid| subtask_container_ids.contains(pid));
+            in_scope
                 && !task.hidden
                 && task.series_id.is_none()
                 && is_incomplete(task, settings)
@@ -273,7 +286,13 @@ pub fn active_completion_pct(
     include_subprojects: bool,
     settings: &Settings,
 ) -> Option<f64> {
-    completion_pct(project_id, projects, active_tasks, include_subprojects, settings)
+    completion_pct(
+        project_id,
+        projects,
+        active_tasks,
+        include_subprojects,
+        settings,
+    )
 }
 
 /// Returns the set of task ids `avg_time_per_week` aggregates tracked time
@@ -585,6 +604,59 @@ mod tests {
             let result = estimated_time_left("p1", &[sub_task], &settings);
 
             assert_eq!(result, 0);
+        }
+
+        #[test]
+        fn includes_subtask_estimates_from_container_project() {
+            let mut parent = task_in_project("p1");
+            parent.scheduled = Some("2026-06-24".to_string());
+            parent.estimated_minutes = Some(30);
+            parent.subtask_project_id = Some("container-1".to_string());
+
+            let mut subtask = task_in_project("container-1");
+            subtask.scheduled = Some("2026-06-24".to_string());
+            subtask.estimated_minutes = Some(40);
+            subtask.tracked_minutes = 10;
+
+            let settings = Settings::default();
+            let result = estimated_time_left("p1", &[parent, subtask], &settings);
+
+            // 30 (parent, nothing tracked) + (40-10) (subtask) = 60
+            assert_eq!(result, 60);
+        }
+
+        #[test]
+        fn does_not_include_containers_owned_by_tasks_in_other_projects() {
+            let mut other_parent = task_in_project("other");
+            other_parent.scheduled = Some("2026-06-24".to_string());
+            other_parent.subtask_project_id = Some("container-other".to_string());
+
+            let mut subtask = task_in_project("container-other");
+            subtask.scheduled = Some("2026-06-24".to_string());
+            subtask.estimated_minutes = Some(100);
+
+            let settings = Settings::default();
+            let result = estimated_time_left("p1", &[other_parent, subtask], &settings);
+
+            assert_eq!(result, 0);
+        }
+
+        #[test]
+        fn subtask_without_scheduled_date_is_excluded() {
+            let mut parent = task_in_project("p1");
+            parent.scheduled = Some("2026-06-24".to_string());
+            parent.estimated_minutes = Some(30);
+            parent.subtask_project_id = Some("container-1".to_string());
+
+            let mut subtask = task_in_project("container-1");
+            subtask.scheduled = None;
+            subtask.estimated_minutes = Some(40);
+
+            let settings = Settings::default();
+            let result = estimated_time_left("p1", &[parent, subtask], &settings);
+
+            // unscheduled subtask is excluded, only parent counted
+            assert_eq!(result, 30);
         }
     }
 
