@@ -15,6 +15,7 @@ mod storage;
 mod task;
 mod time_storage;
 mod time_tracking;
+pub mod widget_filters;
 
 use tauri::Manager;
 
@@ -126,7 +127,24 @@ pub fn run() {
             commands::get_dashboard_completions_by_project,
             commands::get_dashboard_status_distribution_by_project,
             commands::get_dashboard_productivity,
-            commands::get_dashboard_project_health
+            commands::get_dashboard_project_health,
+            commands::get_project_scoreboard,
+            commands::get_project_health_pulse,
+            commands::get_project_velocity,
+            commands::get_project_completion_dial,
+            commands::get_project_fuel_gauge,
+            commands::get_project_effort_balance,
+            commands::get_project_dashboard_layout,
+            commands::save_project_dashboard_layout,
+            commands::get_project_weekly_rhythm,
+            commands::get_project_time_breakdown,
+            commands::get_project_status_radial,
+            commands::get_project_due_timeline,
+            commands::get_project_burndown,
+            commands::get_project_completion_trend,
+            commands::get_project_subproject_tree,
+            commands::get_project_subproject_bars,
+            commands::get_project_subproject_sunburst
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

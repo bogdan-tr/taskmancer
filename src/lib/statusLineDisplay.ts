@@ -7,7 +7,8 @@ import type { ProjectStatusStats, StatusTier } from "./types";
  * is the health tier itself, rendered as part of the bar's header rather
  * than as a tile/chip/text value like the other 5 (see
  * `ProjectStatusLine.svelte`), but it's still a valid, orderable entry in
- * `stat_ids` that this union must recognize.
+ * `stat_ids` that this union must recognize. The `"mini_*"` ids are compact
+ * graphical tiles (Phase C) — rendered as visuals rather than text values.
  */
 export type StatusLineStatId =
   | "status_badge"
@@ -16,10 +17,24 @@ export type StatusLineStatId =
   | "avg_time_per_week"
   | "completion_pct"
   | "weighted_completion_pct"
-  | "active_completion_pct";
+  | "active_completion_pct"
+  | "mini_health"
+  | "mini_completion"
+  | "mini_fuel"
+  | "mini_sparkline";
 
-/** Short display labels for every stat *other than* `"status_badge"` (which has no tile/chip/text of its own — see `StatusLineStatId`'s doc comment). */
-const STAT_LABELS: Record<Exclude<StatusLineStatId, "status_badge">, string> = {
+/**
+ * Stat ids that render as text value tiles — everything except `"status_badge"`
+ * and the mini graphical widget ids. Used to type `STAT_LABELS` and `statLabel`
+ * so TypeScript catches accidental mis-use of mini ids with the text-only helpers.
+ */
+export type TextStatId = Exclude<
+  StatusLineStatId,
+  "status_badge" | "mini_health" | "mini_completion" | "mini_fuel" | "mini_sparkline"
+>;
+
+/** Short display labels for every text-value stat (excludes `"status_badge"` and mini widget ids). */
+const STAT_LABELS: Record<TextStatId, string> = {
   estimated_time_left: "Time left",
   total_time_tracked: "Tracked",
   avg_time_per_week: "Avg/week",
@@ -28,13 +43,36 @@ const STAT_LABELS: Record<Exclude<StatusLineStatId, "status_badge">, string> = {
   active_completion_pct: "Active complete",
 };
 
+/** Mini widget stat IDs — rendered as compact visual tiles, not text value tiles. */
+export const MINI_WIDGET_STAT_IDS = new Set<StatusLineStatId>([
+  "mini_health",
+  "mini_completion",
+  "mini_fuel",
+  "mini_sparkline",
+]);
+
+/** Short display labels for the mini widget stat ids. */
+export const MINI_WIDGET_LABELS: Record<string, string> = {
+  mini_health: "Health",
+  mini_completion: "Completion",
+  mini_fuel: "Fuel",
+  mini_sparkline: "Rhythm",
+};
+
 /** `true` if `id` is a recognized status-line stat id — guards against a layout referencing a since-removed/unknown id (e.g. a future Phase 3 dashboard-only stat) so rendering can skip it instead of crashing. */
 export function isKnownStatusLineStatId(id: string): id is StatusLineStatId {
-  return id in STAT_LABELS || id === "status_badge";
+  return (
+    id in STAT_LABELS ||
+    id === "status_badge" ||
+    id === "mini_health" ||
+    id === "mini_completion" ||
+    id === "mini_fuel" ||
+    id === "mini_sparkline"
+  );
 }
 
-/** The short display label for `statId`, or `undefined` for `"status_badge"` (no tile/chip/text label — see `STAT_LABELS`). */
-export function statLabel(statId: Exclude<StatusLineStatId, "status_badge">): string {
+/** The short display label for a text-value stat. Do not pass mini widget ids or `"status_badge"` — use `MINI_WIDGET_LABELS` for those. */
+export function statLabel(statId: TextStatId): string {
   return STAT_LABELS[statId];
 }
 

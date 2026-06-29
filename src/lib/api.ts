@@ -12,8 +12,23 @@ import type {
   FinishDayResult,
   GlobalStatusStats,
   Project,
+  ProjectBurndown,
+  ProjectCompletionDial,
+  ProjectCompletionWeek,
+  ProjectDueDateTimeline,
+  ProjectEffortBalance,
+  ProjectFuelGauge,
+  ProjectHealthPulse,
+  ProjectScoreboard,
+  ProjectStatusSlice,
   ProjectStatusStats,
+  ProjectSubprojectBar,
+  ProjectSunburstSlice,
   ProjectTaskStrategy,
+  ProjectTimeBreakdown,
+  ProjectTreeNode,
+  ProjectVelocity,
+  ProjectWeeklyRhythm,
   Series,
   Settings,
   StatLayout,
@@ -321,4 +336,107 @@ export async function getDashboardProjectHealth(
   includeSubprojects: boolean,
 ): Promise<DashboardProjectHealth[]> {
   return invoke<DashboardProjectHealth[]>("get_dashboard_project_health", { includeSubprojects });
+}
+
+// ── Project widget commands ───────────────────────────────────────────────────
+
+/** Returns the saved project-dashboard layout for `projectId`, or `null` if none has been saved yet. */
+export async function getProjectDashboardLayout(projectId: string): Promise<StatLayout | null> {
+  return invoke<StatLayout | null>("get_project_dashboard_layout", { projectId });
+}
+
+/** Saves (upsert) the project-dashboard layout for the layout's `project_id`. */
+export async function saveProjectDashboardLayout(layout: StatLayout): Promise<void> {
+  return invoke<void>("save_project_dashboard_layout", { layout });
+}
+
+/** Returns KPI scoreboard data for the project dashboard W1 widget. */
+export async function getProjectScoreboard(projectId: string): Promise<ProjectScoreboard> {
+  return invoke<ProjectScoreboard>("get_project_scoreboard", { projectId });
+}
+
+/** Returns health-pulse data for the project dashboard W2 widget. */
+export async function getProjectHealthPulse(projectId: string): Promise<ProjectHealthPulse> {
+  return invoke<ProjectHealthPulse>("get_project_health_pulse", { projectId });
+}
+
+/** Returns velocity data for the project dashboard W3 widget. */
+export async function getProjectVelocity(projectId: string): Promise<ProjectVelocity> {
+  return invoke<ProjectVelocity>("get_project_velocity", { projectId });
+}
+
+/** Returns completion-dial data for the project dashboard W4 widget. */
+export async function getProjectCompletionDial(projectId: string): Promise<ProjectCompletionDial> {
+  return invoke<ProjectCompletionDial>("get_project_completion_dial", { projectId });
+}
+
+/** Returns fuel-gauge data for the project dashboard W5 widget. */
+export async function getProjectFuelGauge(projectId: string): Promise<ProjectFuelGauge> {
+  return invoke<ProjectFuelGauge>("get_project_fuel_gauge", { projectId });
+}
+
+/** Returns effort-balance data for the project dashboard W6 widget. */
+export async function getProjectEffortBalance(projectId: string): Promise<ProjectEffortBalance> {
+  return invoke<ProjectEffortBalance>("get_project_effort_balance", { projectId });
+}
+
+/** Returns weekly-rhythm data for the project dashboard W7 widget. */
+export async function getProjectWeeklyRhythm(
+  projectId: string,
+): Promise<ProjectWeeklyRhythm> {
+  return invoke<ProjectWeeklyRhythm>("get_project_weekly_rhythm", { projectId });
+}
+
+/** Returns time-breakdown donut data for the project dashboard W9 widget. */
+export async function getProjectTimeBreakdown(
+  projectId: string,
+): Promise<ProjectTimeBreakdown> {
+  return invoke<ProjectTimeBreakdown>("get_project_time_breakdown", { projectId });
+}
+
+/** Returns status-radial data for the project dashboard W10 widget. */
+export async function getProjectStatusRadial(
+  projectId: string,
+): Promise<ProjectStatusSlice[]> {
+  return invoke<ProjectStatusSlice[]>("get_project_status_radial", { projectId });
+}
+
+/** Returns due-date timeline data for the project dashboard W12 widget. */
+export async function getProjectDueTimeline(
+  projectId: string,
+): Promise<ProjectDueDateTimeline> {
+  return invoke<ProjectDueDateTimeline>("get_project_due_timeline", { projectId });
+}
+
+/** Returns burndown chart data for the project dashboard W13 widget. */
+export async function getProjectBurndown(projectId: string): Promise<ProjectBurndown> {
+  return invoke<ProjectBurndown>("get_project_burndown", { projectId });
+}
+
+/** Returns completion-trend data for the project dashboard W14 widget. */
+export async function getProjectCompletionTrend(
+  projectId: string,
+): Promise<ProjectCompletionWeek[]> {
+  return invoke<ProjectCompletionWeek[]>("get_project_completion_trend", { projectId });
+}
+
+/** Returns subproject-tree data for the project dashboard W16 widget. */
+export async function getProjectSubprojectTree(
+  projectId: string,
+): Promise<ProjectTreeNode[]> {
+  return invoke<ProjectTreeNode[]>("get_project_subproject_tree", { projectId });
+}
+
+/** Returns subproject progress-bar data for the project dashboard W17 widget. */
+export async function getProjectSubprojectBars(
+  projectId: string,
+): Promise<ProjectSubprojectBar[]> {
+  return invoke<ProjectSubprojectBar[]>("get_project_subproject_bars", { projectId });
+}
+
+/** Returns subproject sunburst data for the project dashboard W18 widget. */
+export async function getProjectSubprojectSunburst(
+  projectId: string,
+): Promise<ProjectSunburstSlice[]> {
+  return invoke<ProjectSunburstSlice[]>("get_project_subproject_sunburst", { projectId });
 }

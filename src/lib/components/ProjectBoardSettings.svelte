@@ -88,6 +88,8 @@
   let draftBarLightness = $state(38);
   let draftInkModeOverride = $state(false);
   let draftInkMode: InkMode = $state("auto");
+  /** ISO date string `"YYYY-MM-DD"` or `""` (empty = no deadline). */
+  let draftDeadline = $state("");
   let initialized = $state(false);
   let errorMessage = $state("");
   let isSaving = $state(false);
@@ -106,6 +108,7 @@
       draftBarLightness = baselineBarLightness;
       draftInkModeOverride = baselineInkModeOverride;
       draftInkMode = baselineInkMode;
+      draftDeadline = project.board.deadline ?? "";
       initialized = true;
     }
   });
@@ -123,7 +126,8 @@
       draftBarLightnessOverride !== baselineBarLightnessOverride ||
       (draftBarLightnessOverride && draftBarLightness !== baselineBarLightness) ||
       draftInkModeOverride !== baselineInkModeOverride ||
-      (draftInkModeOverride && draftInkMode !== baselineInkMode),
+      (draftInkModeOverride && draftInkMode !== baselineInkMode) ||
+      draftDeadline !== (project.board.deadline ?? ""),
   );
 
   /** The ink mode that would actually apply if saved right now, for the preview swatches below. */
@@ -171,6 +175,7 @@
     draftBarLightness = baselineBarLightness;
     draftInkModeOverride = baselineInkModeOverride;
     draftInkMode = baselineInkMode;
+    draftDeadline = project.board.deadline ?? "";
     errorMessage = "";
   }
 
@@ -181,6 +186,7 @@
         ...project,
         parent_id: draftParentId || undefined,
         board: {
+          ...project.board,
           statuses: draftStatuses,
           default_status: draftDefault || undefined,
           show_previous_weeks: draftShowPreviousWeeks === "" ? undefined : draftShowPreviousWeeks === "true",
@@ -189,6 +195,7 @@
           card_lightness: draftCardLightnessOverride ? draftCardLightness / 100 : undefined,
           bar_lightness: draftBarLightnessOverride ? draftBarLightness / 100 : undefined,
           ink_mode: draftInkModeOverride ? draftInkMode : undefined,
+          deadline: draftDeadline || undefined,
         },
       });
       await refreshProjects();
@@ -404,6 +411,25 @@
   {#if inkModeInheritedFrom}
     <p class="inherited-note">Inherited from {inkModeInheritedFrom}.</p>
   {/if}
+
+  <div class="field">
+    <label for="deadline">Project deadline</label>
+    <input
+      id="deadline"
+      type="date"
+      bind:value={draftDeadline}
+    />
+    <p class="hint">Optional. Leave blank for no deadline.</p>
+    {#if draftDeadline}
+      <button
+        type="button"
+        class="secondary clear-deadline"
+        onclick={() => { draftDeadline = ""; }}
+      >
+        Clear deadline
+      </button>
+    {/if}
+  </div>
 
   {#if errorMessage}
     <p class="error" role="alert">{errorMessage}</p>
@@ -625,6 +651,27 @@
     margin: 0;
     font-size: var(--text-xs);
     color: var(--color-ink-faint);
+  }
+
+  .clear-deadline {
+    align-self: flex-start;
+    margin-top: var(--space-2xs);
+  }
+
+  .field input[type="date"] {
+    padding: var(--space-2xs) var(--space-sm);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--color-border);
+    background: var(--color-surface);
+    color: var(--color-ink);
+    font-size: var(--text-sm);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .field input[type="date"]:focus-visible {
+    border-color: var(--color-accent);
+    box-shadow: 0 0 0 3px var(--color-accent-soft);
+    outline: none;
   }
 
   .inherited-note {

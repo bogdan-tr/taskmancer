@@ -92,6 +92,19 @@ pub struct Task {
     /// rows can reference their id identically to a non-hidden task's.
     #[serde(default)]
     pub hidden: bool,
+    /// ISO 8601 datetime when this task entered the done status (see
+    /// `Settings::done_status`). Set automatically by [`crate::commands::update_task`]
+    /// on status transition to done, cleared when the task leaves done, and
+    /// left `None` for tasks that have never been marked done.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<String>,
+    /// ISO 8601 datetime when this task entered the cancelled status (see
+    /// `Settings::cancelled_status`). Set automatically by
+    /// [`crate::commands::update_task`] on status transition to cancelled,
+    /// cleared when the task leaves cancelled, and left `None` for tasks
+    /// that have never been cancelled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancelled_at: Option<String>,
     #[serde(skip)]
     pub notes: String,
 }
@@ -130,6 +143,8 @@ impl Task {
             series_id: None,
             subtask_project_id: None,
             hidden: false,
+            completed_at: None,
+            cancelled_at: None,
             notes: String::new(),
         }
     }
@@ -187,6 +202,8 @@ mod tests {
         task.series_id = Some("series-abc123".to_string());
         task.subtask_project_id = Some("container-project-id".to_string());
         task.hidden = true;
+        task.completed_at = Some("2026-06-25T12:34:56+00:00".to_string());
+        task.cancelled_at = None;
         task.notes = "Some free-form notes about the assignment.".to_string();
 
         let markdown = task.to_markdown().expect("serialization should succeed");
@@ -332,6 +349,84 @@ mod tests {
         let task = Task::from_markdown(markdown).expect("parsing should succeed");
 
         assert!(!task.hidden);
+    }
+
+    #[test]
+    fn new_task_has_no_completed_at_or_cancelled_at() {
+        let task = Task::new("Write report".to_string());
+
+        assert_eq!(task.completed_at, None);
+        assert_eq!(task.cancelled_at, None);
+    }
+
+    #[test]
+    fn to_markdown_omits_completed_at_when_unset() {
+        let task = Task::new("Demo".to_string());
+
+        let markdown = task.to_markdown().expect("serialization should succeed");
+
+        assert!(!markdown.contains("completed_at"));
+    }
+
+    #[test]
+    fn to_markdown_omits_cancelled_at_when_unset() {
+        let task = Task::new("Demo".to_string());
+
+        let markdown = task.to_markdown().expect("serialization should succeed");
+
+        assert!(!markdown.contains("cancelled_at"));
+    }
+
+    #[test]
+    fn to_markdown_then_from_markdown_round_trips_completed_at() {
+        let mut task = Task::new("Done task".to_string());
+        task.completed_at = Some("2026-06-25T12:34:56+00:00".to_string());
+
+        let markdown = task.to_markdown().expect("serialization should succeed");
+        let parsed = Task::from_markdown(&markdown).expect("parsing should succeed");
+
+        assert_eq!(parsed.completed_at, Some("2026-06-25T12:34:56+00:00".to_string()));
+        assert_eq!(parsed.cancelled_at, None);
+    }
+
+    #[test]
+    fn to_markdown_then_from_markdown_round_trips_cancelled_at() {
+        let mut task = Task::new("Cancelled task".to_string());
+        task.cancelled_at = Some("2026-06-25T09:00:00+00:00".to_string());
+
+        let markdown = task.to_markdown().expect("serialization should succeed");
+        let parsed = Task::from_markdown(&markdown).expect("parsing should succeed");
+
+        assert_eq!(parsed.cancelled_at, Some("2026-06-25T09:00:00+00:00".to_string()));
+        assert_eq!(parsed.completed_at, None);
+    }
+
+    #[test]
+    fn from_markdown_defaults_completed_at_to_none_when_absent() {
+        let markdown = "---\nid: abc123\ntitle: Demo\ncreated: 2026-06-11T10:00:00+00:00\n---\n\n";
+
+        let task = Task::from_markdown(markdown).expect("parsing should succeed");
+
+        assert_eq!(task.completed_at, None);
+    }
+
+    #[test]
+    fn from_markdown_defaults_cancelled_at_to_none_when_absent() {
+        let markdown = "---\nid: abc123\ntitle: Demo\ncreated: 2026-06-11T10:00:00+00:00\n---\n\n";
+
+        let task = Task::from_markdown(markdown).expect("parsing should succeed");
+
+        assert_eq!(task.cancelled_at, None);
+    }
+
+    #[test]
+    fn from_markdown_applies_defaults_includes_no_completed_or_cancelled_at() {
+        let markdown = "---\nid: abc123\ntitle: Demo\ncreated: 2026-06-11T10:00:00+00:00\n---\n\n";
+
+        let task = Task::from_markdown(markdown).expect("parsing should succeed");
+
+        assert_eq!(task.completed_at, None);
+        assert_eq!(task.cancelled_at, None);
     }
 
     #[test]

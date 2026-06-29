@@ -26,6 +26,7 @@ use crate::storage;
 use crate::task::Task;
 use crate::time_storage;
 use crate::time_tracking;
+use crate::widget_filters;
 
 /// How many days into the future a newly created series generates
 /// occurrences immediately, before any scroll-triggered extension —
@@ -805,7 +806,22 @@ pub fn update_task(state: State<AppState>, task: Task) -> Result<Task, String> {
 
     let resolved_project_id = resolve_project_id(task.project_id.clone(), &settings);
     let mut existing = storage::load_task(&state.tasks_dir, &task.id).map_err(|e| e.to_string())?;
+    let old_status = existing.status.clone();
     apply_task_update(&mut existing, title, resolved_project_id, task);
+
+    // Stamp completion / cancellation timestamps on status transitions.
+    if existing.status != old_status {
+        if widget_filters::is_completed(&existing, &settings) {
+            existing.completed_at = Some(Utc::now().to_rfc3339());
+            existing.cancelled_at = None;
+        } else if widget_filters::is_cancelled(&existing, &settings) {
+            existing.cancelled_at = Some(Utc::now().to_rfc3339());
+            existing.completed_at = None;
+        } else {
+            existing.completed_at = None;
+            existing.cancelled_at = None;
+        }
+    }
 
     if let Some(container_id) = &existing.subtask_project_id {
         let _guard = state.projects_lock.lock().map_err(|e| e.to_string())?;
@@ -995,6 +1011,7 @@ fn force_done_except_cancelled(
     done_status: &str,
     cancelled_status: Option<&str>,
 ) -> Vec<Task> {
+    let now = Utc::now().to_rfc3339();
     tasks
         .into_iter()
         .map(|t| {
@@ -1003,6 +1020,8 @@ fn force_done_except_cancelled(
             } else {
                 Task {
                     status: done_status.to_string(),
+                    completed_at: Some(now.clone()),
+                    cancelled_at: None,
                     ..t
                 }
             }
@@ -1169,7 +1188,22 @@ pub fn update_series_occurrence(
     let resolved_project_id = resolve_project_id(task.project_id.clone(), &settings);
     let mut existing = storage::load_task(&state.tasks_dir, &task.id).map_err(|e| e.to_string())?;
     let series_id = existing.series_id.clone();
+    let old_status = existing.status.clone();
     apply_task_update(&mut existing, title, resolved_project_id, task);
+
+    // Stamp completion / cancellation timestamps on status transitions.
+    if existing.status != old_status {
+        if widget_filters::is_completed(&existing, &settings) {
+            existing.completed_at = Some(Utc::now().to_rfc3339());
+            existing.cancelled_at = None;
+        } else if widget_filters::is_cancelled(&existing, &settings) {
+            existing.cancelled_at = Some(Utc::now().to_rfc3339());
+            existing.completed_at = None;
+        } else {
+            existing.completed_at = None;
+            existing.cancelled_at = None;
+        }
+    }
 
     if scope == "this" {
         existing.series_id = None;
@@ -3094,6 +3128,9 @@ pub fn update_status_layout(
     match layout.kind.as_str() {
         layout::STATUS_LINE_LAYOUT_KIND => layout::validate_status_layout(&layout)?,
         layout::DASHBOARD_LAYOUT_KIND => layout::validate_dashboard_layout(&layout)?,
+        layout::PROJECT_DASHBOARD_LAYOUT_KIND => {
+            layout::validate_project_dashboard_layout(&layout)?
+        }
         other => return Err(format!("'{}' is not a supported layout kind", other)),
     }
 
@@ -3434,15 +3471,14 @@ fn build_dashboard_status_distribution_by_project(
     top_level
         .into_iter()
         .map(|project| {
-            // Collect tasks directly in this project (non-hidden, visible on board)
-            let project_tasks: Vec<&Task> = tasks
-                .iter()
+            // Use canonical task pool (hidden-excluded, series-deduplicated), then
+            // apply the same scheduled<=today visibility filter as the board view.
+            let project_tasks: Vec<&Task> = widget_filters::project_task_pool(&project.id, tasks)
+                .into_iter()
                 .filter(|t| {
-                    !t.hidden
-                        && t.project_id.as_deref() == Some(&project.id)
-                        && t.scheduled
-                            .as_deref()
-                            .map_or(true, |d| d <= today_str.as_str())
+                    t.scheduled
+                        .as_deref()
+                        .map_or(true, |d| d <= today_str.as_str())
                 })
                 .collect();
 
@@ -3571,19 +3607,18 @@ fn build_dashboard_completions_by_project(
         .into_iter()
         .map(|project| {
             // No date filter — completion overview is an all-time health summary.
-            let project_tasks: Vec<&Task> = tasks
-                .iter()
-                .filter(|t| !t.hidden && t.project_id.as_deref() == Some(&project.id))
-                .collect();
+            // Use canonical task pool: excludes hidden tasks and deduplicates series.
+            let project_tasks = widget_filters::project_task_pool(&project.id, tasks);
 
             let completed = project_tasks
                 .iter()
-                .filter(|t| t.status == settings.done_status)
+                .filter(|t| widget_filters::is_completed(t, settings))
                 .count() as u32;
 
-            let cancelled = settings.cancelled_status.as_deref().map_or(0, |cs| {
-                project_tasks.iter().filter(|t| t.status == cs).count() as u32
-            });
+            let cancelled = project_tasks
+                .iter()
+                .filter(|t| widget_filters::is_cancelled(t, settings))
+                .count() as u32;
 
             DashboardProjectCompletions {
                 project_id: project.id.clone(),
@@ -3873,6 +3908,1426 @@ pub fn get_dashboard_project_health(
         &settings,
         include_subprojects,
     ))
+}
+
+// ---- Project widget data types ----
+
+/// KPI scoreboard for a single project's dashboard (W1).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ProjectScoreboard {
+    pub tasks_done: u32,
+    pub tasks_remaining: u32,
+    pub total_time_tracked_mins: i64,
+    pub estimated_time_left_mins: i64,
+}
+
+/// Health pulse for a single project's dashboard (W2).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ProjectHealthPulse {
+    /// `"Great"` | `"On Track"` | `"Needs Attention"` | `"Critical"` | `"Severe"`
+    pub tier: String,
+    /// Hex color for the tier level.
+    pub tier_color: String,
+    pub due_today: u32,
+    pub due_tomorrow: u32,
+}
+
+/// Velocity data for a single project's dashboard (W3).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ProjectVelocity {
+    /// Average tasks done per week over the last 4 weeks.
+    pub done_per_week_avg: f64,
+    /// Average tasks done per week over the prior 4-week window (for % change).
+    pub done_per_week_prev_avg: f64,
+    /// Count of tasks with due/scheduled date in the next 7 days.
+    pub due_next_7_days: u32,
+}
+
+/// Completion dial data for a single project's dashboard (W4).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ProjectCompletionDial {
+    /// Percentage 0.0–100.0 of tasks that are done (by count).
+    pub completion_pct: f64,
+    /// Percentage 0.0–100.0 weighted by estimated time.
+    pub weighted_pct: f64,
+}
+
+/// Fuel gauge data for a single project's dashboard (W5).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ProjectFuelGauge {
+    /// Estimated minutes of work remaining (incomplete tasks' est minus tracked).
+    pub estimated_remaining_mins: i64,
+    /// Total estimated minutes across all tasks (done + remaining).
+    pub estimated_total_mins: i64,
+}
+
+/// Effort balance data for a single project's dashboard (W6).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ProjectEffortBalance {
+    /// Total estimated minutes across all non-hidden tasks.
+    pub estimated_total_mins: i64,
+    /// Total minutes tracked across all non-hidden tasks (including tracker task).
+    pub tracked_total_mins: i64,
+}
+
+// ── Phase B project widget structs (W7, W9, W10, W12, W13, W14, W16, W17, W18) ──
+
+/// Weekly tracked-hours rhythm for a single project (W7).
+/// `weekday_hours[0]` = Mon, …, `weekday_hours[6]` = Sun.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ProjectWeeklyRhythm {
+    pub weekday_hours: [f64; 7],
+    /// 0 = Mon … 6 = Sun — which bar to highlight.
+    pub today_weekday: usize,
+}
+
+/// One slice of the time-breakdown donut (W9).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ProjectTimeBreakdownSlice {
+    pub name: String,
+    pub color: String,
+    pub tracked_minutes: i64,
+}
+
+/// Time breakdown by subproject (or tag fallback) for W9.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ProjectTimeBreakdown {
+    pub slices: Vec<ProjectTimeBreakdownSlice>,
+    pub total_tracked_minutes: i64,
+    /// `true` = slices are direct subprojects; `false` = tag fallback.
+    pub by_subproject: bool,
+}
+
+/// One wedge in the status radial (W10).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ProjectStatusSlice {
+    pub status_id: String,
+    pub label: String,
+    pub color: String,
+    pub count: u32,
+}
+
+/// One date bucket on the due-date timeline (W12).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ProjectDueDatePoint {
+    /// `"YYYY-MM-DD"` of the due date.
+    pub date: String,
+    /// Total tasks with this due date.
+    pub count: u32,
+    /// Non-terminal tasks whose due date is past today.
+    pub overdue_count: u32,
+    /// Completed tasks with this due date.
+    pub done_count: u32,
+}
+
+/// Due-date timeline data for W12.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ProjectDueDateTimeline {
+    pub points: Vec<ProjectDueDatePoint>,
+    pub today: String,
+    pub deadline: Option<String>,
+}
+
+/// One point on the burndown chart (W13).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ProjectBurndownPoint {
+    pub date: String,
+    pub remaining_hours: f64,
+    pub ideal_hours: f64,
+}
+
+/// Burndown chart data for W13.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ProjectBurndown {
+    pub points: Vec<ProjectBurndownPoint>,
+    pub start_date: String,
+    pub end_date: String,
+    pub has_deadline: bool,
+}
+
+/// One week bucket in the completion trend (W14).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ProjectCompletionWeek {
+    /// Monday of the week formatted as `"Jun 2"`.
+    pub week_label: String,
+    pub count: u32,
+    /// `true` for the current (possibly incomplete) week.
+    pub is_current: bool,
+}
+
+/// One node in the subproject tree (W16).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ProjectTreeNode {
+    pub project_id: String,
+    pub name: String,
+    pub color: String,
+    /// `None` for the root project itself.
+    pub parent_id: Option<String>,
+    pub task_count: u32,
+    pub completion_pct: f64,
+    /// `"Great"` | `"On Track"` | `"Needs Attention"` | `"Critical"` | `"Severe"`
+    pub health_tier: String,
+    /// 0 = root, 1 = direct child, 2 = grandchild, …
+    pub depth: u32,
+}
+
+/// One bar in the subproject progress list (W17).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ProjectSubprojectBar {
+    pub project_id: String,
+    pub name: String,
+    pub color: String,
+    /// 1 = direct child, 2 = grandchild, … (root excluded).
+    pub depth: u32,
+    pub completion_pct: f64,
+    pub done: u32,
+    pub total: u32,
+    pub health_tier: String,
+}
+
+/// One slice in the subproject sunburst (W18 — depth 1 and 2 only).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ProjectSunburstSlice {
+    pub project_id: String,
+    pub name: String,
+    pub color: String,
+    pub parent_id: Option<String>,
+    /// 1 = inner ring, 2 = outer ring.
+    pub depth: u32,
+    pub tracked_minutes: i64,
+    pub task_count: u32,
+}
+
+// ---- Project widget helpers ----
+
+/// Returns `true` if the task is in a "done" terminal state (matches
+/// `settings.done_status` or `settings.cancelled_status`).
+fn is_done_status(task: &Task, settings: &Settings) -> bool {
+    task.status == settings.done_status
+        || settings
+            .cancelled_status
+            .as_deref()
+            .is_some_and(|cs| task.status == cs)
+}
+
+/// Returns the non-hidden, non-series tasks that belong directly to
+/// `project_id` (not rolled up from subprojects).
+fn project_own_tasks<'a>(project_id: &str, tasks: &'a [Task]) -> Vec<&'a Task> {
+    tasks
+        .iter()
+        .filter(|t| !t.hidden && t.project_id.as_deref() == Some(project_id))
+        .collect()
+}
+
+// ---- Project widget pure-computation functions ----
+
+fn build_project_scoreboard(
+    project_id: &str,
+    projects: &[Project],
+    tasks: &[Task],
+    settings: &Settings,
+) -> ProjectScoreboard {
+    // Use canonical pool: hidden-excluded, series-deduplicated.
+    let pool = widget_filters::project_task_pool(project_id, tasks);
+
+    // tasks_done: completed (done_status) only — excludes cancelled.
+    let tasks_done = pool
+        .iter()
+        .filter(|t| widget_filters::is_completed(t, settings))
+        .count() as u32;
+    // tasks_remaining: anything that is NOT in a terminal state (done or cancelled).
+    let tasks_remaining = pool
+        .iter()
+        .filter(|t| !widget_filters::is_terminal(t, settings))
+        .count() as u32;
+
+    // Total tracked: use status_stats helper which also counts the tracker task
+    let total_time_tracked_mins =
+        status_stats::total_time_tracked(project_id, projects, tasks, false) as i64;
+
+    // Estimated time left: estimated minutes minus tracked for incomplete tasks
+    let estimated_time_left_mins =
+        status_stats::estimated_time_left(project_id, tasks, settings) as i64;
+
+    ProjectScoreboard {
+        tasks_done,
+        tasks_remaining,
+        total_time_tracked_mins,
+        estimated_time_left_mins,
+    }
+}
+
+fn build_project_health_pulse(
+    project_id: &str,
+    projects: &[Project],
+    tasks: &[Task],
+    settings: &Settings,
+) -> ProjectHealthPulse {
+    let today = chrono::Local::now().date_naive();
+    let today_str = today.format("%Y-%m-%d").to_string();
+    let tomorrow_str = (today + chrono::Duration::days(1))
+        .format("%Y-%m-%d")
+        .to_string();
+
+    let project = projects.iter().find(|p| p.id == project_id);
+
+    let estimated_time_left_minutes =
+        status_stats::estimated_time_left(project_id, tasks, settings);
+
+    let effective_rules = project.map_or_else(
+        || {
+            status_tier::effective_status_tier_rules(
+                &settings.default_status_tier_rules,
+                None,
+            )
+        },
+        |p| {
+            status_tier::effective_status_tier_rules(
+                &settings.default_status_tier_rules,
+                p.board.status_tier_rule_overrides.as_deref(),
+            )
+        },
+    );
+
+    let project_tasks: Vec<&Task> = tasks
+        .iter()
+        .filter(|t| {
+            !t.hidden
+                && t.project_id.as_deref() == Some(project_id)
+                && t.scheduled
+                    .as_deref()
+                    .map_or(true, |d| d <= today_str.as_str())
+        })
+        .collect();
+
+    let tier = status_tier::evaluate_status_tier(
+        &effective_rules,
+        &project_tasks,
+        settings,
+        estimated_time_left_minutes,
+        today,
+    );
+
+    let (tier_label, tier_color) = match tier {
+        StatusTier::Great => ("Great", "#22c55e"),
+        StatusTier::OnTrack => ("On Track", "#3b82f6"),
+        StatusTier::NeedsAttention => ("Needs Attention", "#f59e0b"),
+        StatusTier::Critical => ("Critical", "#ef4444"),
+        StatusTier::Severe => ("Severe", "#9333ea"),
+    };
+
+    let due_today = tasks
+        .iter()
+        .filter(|t| {
+            !t.hidden
+                && t.project_id.as_deref() == Some(project_id)
+                && t.due.as_deref() == Some(today_str.as_str())
+                && !is_done_status(t, settings)
+        })
+        .count() as u32;
+
+    let due_tomorrow = tasks
+        .iter()
+        .filter(|t| {
+            !t.hidden
+                && t.project_id.as_deref() == Some(project_id)
+                && t.due.as_deref() == Some(tomorrow_str.as_str())
+                && !is_done_status(t, settings)
+        })
+        .count() as u32;
+
+    ProjectHealthPulse {
+        tier: tier_label.to_string(),
+        tier_color: tier_color.to_string(),
+        due_today,
+        due_tomorrow,
+    }
+}
+
+fn build_project_velocity(
+    project_id: &str,
+    tasks: &[Task],
+    settings: &Settings,
+) -> ProjectVelocity {
+    use chrono::Datelike;
+
+    let today = chrono::Local::now().date_naive();
+    // Window 1: last 4 weeks (days -28 to -1 inclusive)
+    let window1_start = today - chrono::Duration::days(28);
+    let window1_end = today - chrono::Duration::days(1);
+    // Window 2: prior 4 weeks (days -56 to -29 inclusive)
+    let window2_start = today - chrono::Duration::days(56);
+    let window2_end = today - chrono::Duration::days(29);
+
+    let next_7_end = today + chrono::Duration::days(7);
+    let next_7_end_str = next_7_end.format("%Y-%m-%d").to_string();
+    let today_str = today.format("%Y-%m-%d").to_string();
+
+    // Use canonical pool: hidden-excluded, series-deduplicated.
+    let pool = widget_filters::project_task_pool(project_id, tasks);
+    let completed_tasks: Vec<&Task> = pool
+        .iter()
+        .copied()
+        .filter(|t| widget_filters::is_completed(t, settings))
+        .collect();
+
+    let w1_start_str = window1_start.format("%Y-%m-%d").to_string();
+    let w1_end_str = window1_end.format("%Y-%m-%d").to_string();
+    let w2_start_str = window2_start.format("%Y-%m-%d").to_string();
+    let w2_end_str = window2_end.format("%Y-%m-%d").to_string();
+
+    // Two-pass velocity: use completed_at timestamps if any task has one (i.e.
+    // the new system has been running), otherwise fall back to proxy dates for
+    // backward compatibility with pre-existing task data.
+    let any_has_completed_at = completed_tasks.iter().any(|t| t.completed_at.is_some());
+
+    let (done_window1, done_window2) = if any_has_completed_at {
+        let w1 = widget_filters::tasks_completed_in_range(&completed_tasks, &w1_start_str, &w1_end_str)
+            .len() as u32;
+        let w2 = widget_filters::tasks_completed_in_range(&completed_tasks, &w2_start_str, &w2_end_str)
+            .len() as u32;
+        (w1, w2)
+    } else {
+        // Proxy-date fallback for tasks that pre-date the completed_at field.
+        let proxy_date = |task: &Task| -> Option<chrono::NaiveDate> {
+            let date_str = task
+                .due
+                .as_deref()
+                .or(task.scheduled.as_deref())
+                .or_else(|| task.created.get(..10))?;
+            chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d").ok()
+        };
+        let count_in = |start: chrono::NaiveDate, end: chrono::NaiveDate| -> u32 {
+            completed_tasks
+                .iter()
+                .filter(|t| proxy_date(t).map_or(false, |d| d >= start && d <= end))
+                .count() as u32
+        };
+        (count_in(window1_start, window1_end), count_in(window2_start, window2_end))
+    };
+
+    let done_per_week_avg = done_window1 as f64 / 4.0;
+    let done_per_week_prev_avg = done_window2 as f64 / 4.0;
+
+    let due_next_7_days = pool
+        .iter()
+        .filter(|t| {
+            !widget_filters::is_terminal(t, settings)
+                && (t.due.as_deref().map_or(false, |d| d > today_str.as_str() && d <= next_7_end_str.as_str())
+                    || t.scheduled.as_deref().map_or(false, |d| d > today_str.as_str() && d <= next_7_end_str.as_str()))
+        })
+        .count() as u32;
+
+    // Suppress unused import warning
+    let _ = today.year();
+
+    ProjectVelocity {
+        done_per_week_avg,
+        done_per_week_prev_avg,
+        due_next_7_days,
+    }
+}
+
+fn build_project_completion_dial(
+    project_id: &str,
+    tasks: &[Task],
+    settings: &Settings,
+) -> ProjectCompletionDial {
+    // Use canonical pool: hidden-excluded, series-deduplicated.
+    let pool = widget_filters::project_task_pool(project_id, tasks);
+    let total = pool.len();
+    if total == 0 {
+        return ProjectCompletionDial {
+            completion_pct: 0.0,
+            weighted_pct: 0.0,
+        };
+    }
+
+    let done_count = pool
+        .iter()
+        .filter(|t| widget_filters::is_completed(t, settings))
+        .count();
+    let completion_pct = (done_count as f64 / total as f64) * 100.0;
+
+    // Weighted by estimated time: sum of done-task estimates / sum of all estimates
+    let total_estimated: u32 = pool.iter().filter_map(|t| t.estimated_minutes).sum();
+    let done_estimated: u32 = pool
+        .iter()
+        .filter(|t| widget_filters::is_completed(t, settings))
+        .filter_map(|t| t.estimated_minutes)
+        .sum();
+    let weighted_pct = if total_estimated == 0 {
+        completion_pct // fall back to count-based
+    } else {
+        (done_estimated as f64 / total_estimated as f64) * 100.0
+    };
+
+    ProjectCompletionDial {
+        completion_pct,
+        weighted_pct,
+    }
+}
+
+fn build_project_fuel_gauge(
+    project_id: &str,
+    tasks: &[Task],
+    settings: &Settings,
+) -> ProjectFuelGauge {
+    // Use canonical pool: hidden-excluded, series-deduplicated.
+    let pool = widget_filters::project_task_pool(project_id, tasks);
+
+    // Total estimated minutes across all tasks in the pool.
+    let estimated_total_mins: i64 = pool
+        .iter()
+        .filter_map(|t| t.estimated_minutes)
+        .map(|m| m as i64)
+        .sum();
+
+    // Remaining = estimated time left (for incomplete tasks, est minus tracked).
+    // Uses status_stats which reads from the full task list, so we keep using `tasks`.
+    let estimated_remaining_mins =
+        status_stats::estimated_time_left(project_id, tasks, settings) as i64;
+
+    ProjectFuelGauge {
+        estimated_remaining_mins,
+        estimated_total_mins,
+    }
+}
+
+fn build_project_effort_balance(
+    project_id: &str,
+    projects: &[Project],
+    tasks: &[Task],
+) -> ProjectEffortBalance {
+    // Estimated minutes: use canonical pool (hidden-excluded, series-deduplicated)
+    // so each recurring series is represented only once — the chosen representative
+    // carries the shared estimate for the entire series.
+    let estimated_total_mins: i64 = widget_filters::project_task_pool(project_id, tasks)
+        .iter()
+        .filter_map(|t| t.estimated_minutes)
+        .map(|m| m as i64)
+        .sum();
+
+    // Tracked minutes: use status_stats which queries the SQLite time-entry log
+    // and correctly sums across ALL occurrences of a recurring series as well as
+    // the hidden tracker task — no series deduplication needed here.
+    let tracked_total_mins =
+        status_stats::total_time_tracked(project_id, projects, tasks, false) as i64;
+
+    ProjectEffortBalance {
+        estimated_total_mins,
+        tracked_total_mins,
+    }
+}
+
+// ── Phase B project widget helper functions ──────────────────────────────────
+
+/// Computes the depth of `project` relative to `root_id` by walking the
+/// parent chain.  Returns `1` for a direct child of `root_id`, `2` for a
+/// grandchild, etc.  Guards against cycles with a 32-hop limit.
+fn compute_depth_from_root(project: &Project, root_id: &str, projects: &[Project]) -> u32 {
+    let mut depth = 0u32;
+    let mut current_parent = project.parent_id.as_deref();
+    let mut guard = 32u32;
+    while let Some(pid) = current_parent {
+        depth += 1;
+        if pid == root_id || guard == 0 {
+            break;
+        }
+        guard -= 1;
+        current_parent = projects
+            .iter()
+            .find(|p| p.id == pid)
+            .and_then(|p| p.parent_id.as_deref());
+    }
+    depth
+}
+
+/// Returns the health-tier label string for `project` using the same logic as
+/// `build_project_health_pulse`.
+fn health_tier_string_for_project(
+    project: &Project,
+    tasks: &[Task],
+    settings: &Settings,
+    today: NaiveDate,
+) -> String {
+    let today_str = today.format("%Y-%m-%d").to_string();
+    let estimated_time_left_minutes =
+        status_stats::estimated_time_left(&project.id, tasks, settings);
+    let effective_rules = status_tier::effective_status_tier_rules(
+        &settings.default_status_tier_rules,
+        project.board.status_tier_rule_overrides.as_deref(),
+    );
+    let project_tasks: Vec<&Task> = tasks
+        .iter()
+        .filter(|t| {
+            !t.hidden
+                && t.project_id.as_deref() == Some(project.id.as_str())
+                && t.scheduled
+                    .as_deref()
+                    .map_or(true, |d| d <= today_str.as_str())
+        })
+        .collect();
+    let tier = status_tier::evaluate_status_tier(
+        &effective_rules,
+        &project_tasks,
+        settings,
+        estimated_time_left_minutes,
+        today,
+    );
+    match tier {
+        StatusTier::Great => "Great",
+        StatusTier::OnTrack => "On Track",
+        StatusTier::NeedsAttention => "Needs Attention",
+        StatusTier::Critical => "Critical",
+        StatusTier::Severe => "Severe",
+    }
+    .to_string()
+}
+
+/// Sort-order for health urgency: higher value = more urgent (Severe first).
+fn health_tier_urgency(tier: &str) -> u32 {
+    match tier {
+        "Severe" => 5,
+        "Critical" => 4,
+        "Needs Attention" => 3,
+        "On Track" => 2,
+        _ => 1, // "Great" or unknown
+    }
+}
+
+// ── Phase B project widget builder functions ─────────────────────────────────
+
+/// Builds W7 — Weekly Rhythm: average tracked hours per weekday.
+fn build_project_weekly_rhythm(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    projects: &[Project],
+    tasks: &[Task],
+) -> Result<ProjectWeeklyRhythm, String> {
+    use chrono::Datelike;
+
+    let today = chrono::Local::now().date_naive();
+    let today_weekday = today.weekday().num_days_from_monday() as usize;
+    let now = Utc::now();
+
+    let task_ids = task_ids_for_project_time(project_id, projects, tasks, false);
+    if task_ids.is_empty() {
+        return Ok(ProjectWeeklyRhythm {
+            weekday_hours: [0.0; 7],
+            today_weekday,
+        });
+    }
+
+    // Query full history from 2020-01-01 up to (but not including) tomorrow
+    let range_start = NaiveDate::from_ymd_opt(2020, 1, 1)
+        .expect("2020-01-01 is always valid")
+        .and_hms_opt(0, 0, 0)
+        .expect("midnight is valid")
+        .and_utc();
+    let range_end = (today + chrono::Duration::days(1))
+        .and_hms_opt(0, 0, 0)
+        .expect("midnight is valid")
+        .and_utc();
+
+    let buckets =
+        time_storage::tracked_seconds_per_day(conn, &task_ids, range_start, range_end, now)
+            .map_err(|e| e.to_string())?;
+
+    if buckets.is_empty() {
+        return Ok(ProjectWeeklyRhythm {
+            weekday_hours: [0.0; 7],
+            today_weekday,
+        });
+    }
+
+    // Accumulate seconds per weekday
+    let mut weekday_seconds = [0i64; 7];
+    for (date, &seconds) in &buckets {
+        let wd = date.weekday().num_days_from_monday() as usize;
+        weekday_seconds[wd] += seconds;
+    }
+
+    // Compute denominator per weekday: how many times each weekday appears in
+    // [earliest_date, today] using the closed-form formula (avoids iteration).
+    let earliest_date = *buckets.keys().min().expect("non-empty bucket");
+    let n_days = (today - earliest_date).num_days() + 1; // i64
+    let full_weeks = n_days / 7;
+    let remainder = (n_days % 7) as u64;
+    let earliest_wd = earliest_date.weekday().num_days_from_monday() as i64;
+
+    let weekday_count_in_range: [u64; 7] = std::array::from_fn(|i| {
+        let offset = ((i as i64 - earliest_wd).rem_euclid(7)) as u64;
+        full_weeks as u64 + if offset < remainder { 1 } else { 0 }
+    });
+
+    let weekday_hours: [f64; 7] = std::array::from_fn(|i| {
+        if weekday_count_in_range[i] == 0 {
+            0.0
+        } else {
+            (weekday_seconds[i] as f64 / weekday_count_in_range[i] as f64) / 3600.0
+        }
+    });
+
+    Ok(ProjectWeeklyRhythm {
+        weekday_hours,
+        today_weekday,
+    })
+}
+
+/// Builds W9 — Time Breakdown Donut: by subproject (or tag fallback).
+fn build_project_time_breakdown(
+    project_id: &str,
+    projects: &[Project],
+    tasks: &[Task],
+) -> ProjectTimeBreakdown {
+    // Try direct-subproject breakdown first
+    let children = project_tree::children_of(projects, Some(project_id));
+
+    if !children.is_empty() {
+        let slices: Vec<ProjectTimeBreakdownSlice> = children
+            .iter()
+            .map(|child| {
+                let mins =
+                    status_stats::total_time_tracked(&child.id, projects, tasks, true) as i64;
+                ProjectTimeBreakdownSlice {
+                    name: child.name.clone(),
+                    color: child.color.clone(),
+                    tracked_minutes: mins,
+                }
+            })
+            .filter(|s| s.tracked_minutes > 0)
+            .collect();
+
+        if !slices.is_empty() {
+            let total = slices.iter().map(|s| s.tracked_minutes).sum();
+            return ProjectTimeBreakdown {
+                slices,
+                total_tracked_minutes: total,
+                by_subproject: true,
+            };
+        }
+    }
+
+    // Tag fallback
+    let pool = widget_filters::project_task_pool(project_id, tasks);
+    let mut tag_minutes: std::collections::HashMap<String, i64> =
+        std::collections::HashMap::new();
+    for task in &pool {
+        if task.tags.is_empty() {
+            continue;
+        }
+        let mins = task.tracked_minutes as i64;
+        for tag in &task.tags {
+            *tag_minutes.entry(tag.clone()).or_insert(0) += mins;
+        }
+    }
+
+    let mut slices: Vec<ProjectTimeBreakdownSlice> = tag_minutes
+        .into_iter()
+        .filter(|(_, m)| *m > 0)
+        .map(|(tag, mins)| ProjectTimeBreakdownSlice {
+            name: tag,
+            color: "#6b7280".to_string(),
+            tracked_minutes: mins,
+        })
+        .collect();
+
+    slices.sort_by(|a, b| b.tracked_minutes.cmp(&a.tracked_minutes));
+
+    let total = slices.iter().map(|s| s.tracked_minutes).sum();
+    ProjectTimeBreakdown {
+        slices,
+        total_tracked_minutes: total,
+        by_subproject: false,
+    }
+}
+
+/// Builds W10 — Status Radial: task count per status.
+fn build_project_status_radial(
+    project_id: &str,
+    tasks: &[Task],
+    settings: &Settings,
+) -> Vec<ProjectStatusSlice> {
+    let pool = widget_filters::project_task_pool(project_id, tasks);
+
+    let mut counts: std::collections::HashMap<&str, u32> =
+        std::collections::HashMap::new();
+    for task in &pool {
+        *counts.entry(task.status.as_str()).or_insert(0) += 1;
+    }
+
+    settings
+        .statuses
+        .iter()
+        .filter_map(|sd| {
+            let count = *counts.get(sd.id.as_str()).unwrap_or(&0);
+            if count == 0 {
+                return None;
+            }
+            Some(ProjectStatusSlice {
+                status_id: sd.id.clone(),
+                label: sd.label.clone(),
+                color: sd.color.clone(),
+                count,
+            })
+        })
+        .collect()
+}
+
+/// Builds W12 — Due-Date Timeline: past + future due dates.
+fn build_project_due_timeline(
+    project_id: &str,
+    projects: &[Project],
+    tasks: &[Task],
+    settings: &Settings,
+) -> ProjectDueDateTimeline {
+    use std::collections::BTreeMap;
+
+    let today = chrono::Local::now().date_naive();
+    let today_str = today.format("%Y-%m-%d").to_string();
+
+    let project = projects.iter().find(|p| p.id == project_id);
+    let deadline = project.and_then(|p| p.board.deadline.clone());
+
+    let pool = widget_filters::project_task_pool(project_id, tasks);
+
+    // BTreeMap keeps dates sorted chronologically (YYYY-MM-DD is lexicographically ordered).
+    let mut by_date: BTreeMap<String, (u32, u32, u32)> = BTreeMap::new(); // (count, overdue, done)
+
+    for task in &pool {
+        let Some(due) = task.due.as_deref() else {
+            continue;
+        };
+        let entry = by_date.entry(due.to_string()).or_insert((0, 0, 0));
+        entry.0 += 1;
+        if widget_filters::is_completed(task, settings) {
+            entry.2 += 1;
+        } else if due < today_str.as_str() && !widget_filters::is_terminal(task, settings) {
+            entry.1 += 1;
+        }
+    }
+
+    let points: Vec<ProjectDueDatePoint> = by_date
+        .into_iter()
+        .map(|(date, (count, overdue_count, done_count))| ProjectDueDatePoint {
+            date,
+            count,
+            overdue_count,
+            done_count,
+        })
+        .collect();
+
+    ProjectDueDateTimeline {
+        points,
+        today: today_str,
+        deadline,
+    }
+}
+
+/// Builds W13 — Burndown Chart: remaining estimated hours over time.
+fn build_project_burndown(
+    project_id: &str,
+    projects: &[Project],
+    tasks: &[Task],
+    settings: &Settings,
+) -> ProjectBurndown {
+    let today = chrono::Local::now().date_naive();
+    let pool = widget_filters::project_task_pool(project_id, tasks);
+
+    let empty = |has_deadline: bool| {
+        let today_str = today.format("%Y-%m-%d").to_string();
+        ProjectBurndown {
+            points: vec![],
+            start_date: today_str.clone(),
+            end_date: today_str,
+            has_deadline,
+        }
+    };
+
+    if pool.is_empty() {
+        return empty(false);
+    }
+
+    let total_estimated_hours: f64 = pool
+        .iter()
+        .filter_map(|t| t.estimated_minutes)
+        .map(|m| m as f64 / 60.0)
+        .sum();
+
+    if total_estimated_hours <= 0.0 {
+        return empty(false);
+    }
+
+    // start_date = earliest task created date
+    let start_date_str = pool
+        .iter()
+        .filter_map(|t| t.created.get(..10))
+        .min()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| today.format("%Y-%m-%d").to_string());
+
+    let project = projects.iter().find(|p| p.id == project_id);
+    let has_deadline = project.and_then(|p| p.board.deadline.as_deref()).is_some();
+
+    // end_date = deadline > latest due > today
+    let end_date_str = project
+        .and_then(|p| p.board.deadline.as_deref())
+        .map(|s| s.to_string())
+        .or_else(|| {
+            pool.iter()
+                .filter_map(|t| t.due.as_deref())
+                .max()
+                .map(|s| s.to_string())
+        })
+        .unwrap_or_else(|| today.format("%Y-%m-%d").to_string());
+
+    let Ok(start_date) = NaiveDate::parse_from_str(&start_date_str, "%Y-%m-%d") else {
+        return empty(has_deadline);
+    };
+    let Ok(end_date) = NaiveDate::parse_from_str(&end_date_str, "%Y-%m-%d") else {
+        return empty(has_deadline);
+    };
+
+    if start_date >= end_date {
+        return ProjectBurndown {
+            points: vec![],
+            start_date: start_date_str,
+            end_date: end_date_str,
+            has_deadline,
+        };
+    }
+
+    // Build sorted completion events: (NaiveDate, hours_completed)
+    let mut completion_events: std::collections::HashMap<NaiveDate, f64> =
+        std::collections::HashMap::new();
+    for task in &pool {
+        if !widget_filters::is_completed(task, settings) {
+            continue;
+        }
+        let Some(cat) = &task.completed_at else { continue };
+        let date_str = &cat[..10.min(cat.len())];
+        let Ok(date) = NaiveDate::parse_from_str(date_str, "%Y-%m-%d") else { continue };
+        let hours = task.estimated_minutes.unwrap_or(0) as f64 / 60.0;
+        *completion_events.entry(date).or_insert(0.0) += hours;
+    }
+
+    let mut sorted_completions: Vec<(NaiveDate, f64)> =
+        completion_events.into_iter().collect();
+    sorted_completions.sort_by_key(|(d, _)| *d);
+
+    let total_days = (end_date - start_date).num_days();
+    let stride = if total_days > 365 {
+        7i64
+    } else if total_days > 90 {
+        3i64
+    } else {
+        1i64
+    };
+
+    let mut remaining = total_estimated_hours;
+    let mut completion_idx = 0usize;
+    let mut points = Vec::new();
+    let mut cursor = start_date;
+
+    loop {
+        // Apply all completions up to and including cursor
+        while completion_idx < sorted_completions.len()
+            && sorted_completions[completion_idx].0 <= cursor
+        {
+            remaining -= sorted_completions[completion_idx].1;
+            completion_idx += 1;
+        }
+        remaining = remaining.max(0.0);
+
+        let elapsed_days = (cursor - start_date).num_days() as f64;
+        let ideal_hours =
+            (total_estimated_hours * (1.0 - elapsed_days / total_days as f64)).max(0.0);
+
+        points.push(ProjectBurndownPoint {
+            date: cursor.format("%Y-%m-%d").to_string(),
+            remaining_hours: remaining,
+            ideal_hours,
+        });
+
+        if cursor >= end_date {
+            break;
+        }
+        let next = cursor + chrono::Duration::days(stride);
+        cursor = if next > end_date { end_date } else { next };
+    }
+
+    ProjectBurndown {
+        points,
+        start_date: start_date_str,
+        end_date: end_date_str,
+        has_deadline,
+    }
+}
+
+/// Builds W14 — Completion Trend: tasks completed per week for the last 12
+/// complete weeks plus the current partial week.
+fn build_project_completion_trend(
+    project_id: &str,
+    tasks: &[Task],
+    settings: &Settings,
+) -> Vec<ProjectCompletionWeek> {
+    use chrono::Datelike;
+
+    let today = chrono::Local::now().date_naive();
+    let days_since_monday = today.weekday().num_days_from_monday() as i64;
+    let this_monday = today - chrono::Duration::days(days_since_monday);
+
+    let mut week_counts = [0u32; 13]; // index 0 = 12 weeks ago, index 12 = current
+
+    let pool = widget_filters::project_task_pool(project_id, tasks);
+
+    for task in &pool {
+        if !widget_filters::is_completed(task, settings) {
+            continue;
+        }
+
+        // Use completed_at if available, else fall back to due date
+        let date_str = task
+            .completed_at
+            .as_deref()
+            .and_then(|s| s.get(..10))
+            .or_else(|| task.due.as_deref());
+        let Some(date_str) = date_str else { continue };
+        let Ok(date) = NaiveDate::parse_from_str(date_str, "%Y-%m-%d") else {
+            continue;
+        };
+
+        // Find which Monday-week this date belongs to
+        let date_days_since_monday = date.weekday().num_days_from_monday() as i64;
+        let date_monday = date - chrono::Duration::days(date_days_since_monday);
+
+        let weeks_ago = (this_monday - date_monday).num_days() / 7;
+        if weeks_ago < 0 || weeks_ago > 12 {
+            continue;
+        }
+        let idx = (12 - weeks_ago) as usize;
+        week_counts[idx] += 1;
+    }
+
+    (0usize..13)
+        .map(|i| {
+            let week_monday = this_monday - chrono::Duration::weeks((12 - i) as i64);
+            ProjectCompletionWeek {
+                week_label: week_monday.format("%b %-d").to_string(),
+                count: week_counts[i],
+                is_current: i == 12,
+            }
+        })
+        .collect()
+}
+
+/// Builds W16 — Subproject Tree: root + all descendants as a flat list.
+fn build_project_subproject_tree(
+    project_id: &str,
+    projects: &[Project],
+    tasks: &[Task],
+    settings: &Settings,
+) -> Vec<ProjectTreeNode> {
+    let today = chrono::Local::now().date_naive();
+
+    let Some(root) = projects.iter().find(|p| p.id == project_id) else {
+        return vec![];
+    };
+
+    let root_pool = widget_filters::project_task_pool(&root.id, tasks);
+    let root_done = root_pool
+        .iter()
+        .filter(|t| widget_filters::is_completed(t, settings))
+        .count() as u32;
+    let root_total = root_pool.len() as u32;
+    let root_pct = if root_total == 0 {
+        0.0
+    } else {
+        root_done as f64 / root_total as f64 * 100.0
+    };
+    let root_health = health_tier_string_for_project(root, tasks, settings, today);
+
+    let mut nodes = vec![ProjectTreeNode {
+        project_id: root.id.clone(),
+        name: root.name.clone(),
+        color: root.color.clone(),
+        parent_id: None,
+        task_count: root_total,
+        completion_pct: root_pct,
+        health_tier: root_health,
+        depth: 0,
+    }];
+
+    let descendants = project_tree::descendants_of(projects, project_id);
+    for descendant in &descendants {
+        let depth = compute_depth_from_root(descendant, project_id, projects);
+        let pool = widget_filters::project_task_pool(&descendant.id, tasks);
+        let done = pool
+            .iter()
+            .filter(|t| widget_filters::is_completed(t, settings))
+            .count() as u32;
+        let total = pool.len() as u32;
+        let pct = if total == 0 {
+            0.0
+        } else {
+            done as f64 / total as f64 * 100.0
+        };
+        let health_tier = health_tier_string_for_project(descendant, tasks, settings, today);
+
+        nodes.push(ProjectTreeNode {
+            project_id: descendant.id.clone(),
+            name: descendant.name.clone(),
+            color: descendant.color.clone(),
+            parent_id: descendant.parent_id.clone(),
+            task_count: total,
+            completion_pct: pct,
+            health_tier,
+            depth,
+        });
+    }
+
+    nodes
+}
+
+/// Builds W17 — Subproject Progress Bars: all descendants sorted by urgency.
+fn build_project_subproject_bars(
+    project_id: &str,
+    projects: &[Project],
+    tasks: &[Task],
+    settings: &Settings,
+) -> Vec<ProjectSubprojectBar> {
+    let today = chrono::Local::now().date_naive();
+    let descendants = project_tree::descendants_of(projects, project_id);
+
+    let mut bars: Vec<ProjectSubprojectBar> = descendants
+        .iter()
+        .map(|descendant| {
+            let depth = compute_depth_from_root(descendant, project_id, projects);
+            let pool = widget_filters::project_task_pool(&descendant.id, tasks);
+            let done = pool
+                .iter()
+                .filter(|t| widget_filters::is_completed(t, settings))
+                .count() as u32;
+            let total = pool.len() as u32;
+            let pct = if total == 0 {
+                0.0
+            } else {
+                done as f64 / total as f64 * 100.0
+            };
+            let health_tier = health_tier_string_for_project(descendant, tasks, settings, today);
+
+            ProjectSubprojectBar {
+                project_id: descendant.id.clone(),
+                name: descendant.name.clone(),
+                color: descendant.color.clone(),
+                depth,
+                completion_pct: pct,
+                done,
+                total,
+                health_tier,
+            }
+        })
+        .collect();
+
+    bars.sort_by(|a, b| {
+        let urg = health_tier_urgency(&b.health_tier).cmp(&health_tier_urgency(&a.health_tier));
+        if urg != std::cmp::Ordering::Equal {
+            urg
+        } else {
+            a.name.cmp(&b.name)
+        }
+    });
+
+    bars
+}
+
+/// Builds W18 — Subproject Sunburst: depth-1 and depth-2 descendants.
+fn build_project_subproject_sunburst(
+    project_id: &str,
+    projects: &[Project],
+    tasks: &[Task],
+) -> Vec<ProjectSunburstSlice> {
+    let descendants = project_tree::descendants_of(projects, project_id);
+
+    let mut slices: Vec<ProjectSunburstSlice> = descendants
+        .iter()
+        .filter_map(|descendant| {
+            let depth = compute_depth_from_root(descendant, project_id, projects);
+            if depth > 2 {
+                return None;
+            }
+            let own_tasks = widget_filters::project_task_pool(&descendant.id, tasks);
+            let task_count = own_tasks.len() as u32;
+            let tracked_minutes =
+                status_stats::total_time_tracked(&descendant.id, projects, tasks, false) as i64;
+
+            Some(ProjectSunburstSlice {
+                project_id: descendant.id.clone(),
+                name: descendant.name.clone(),
+                color: descendant.color.clone(),
+                parent_id: descendant.parent_id.clone(),
+                depth,
+                tracked_minutes,
+                task_count,
+            })
+        })
+        .collect();
+
+    slices.sort_by(|a, b| {
+        let d = a.depth.cmp(&b.depth);
+        if d != std::cmp::Ordering::Equal {
+            d
+        } else {
+            b.tracked_minutes.cmp(&a.tracked_minutes)
+        }
+    });
+
+    slices
+}
+
+// ---- Project widget Tauri commands ----
+
+/// Returns KPI scoreboard data for the project dashboard W1 widget.
+#[tauri::command]
+pub fn get_project_scoreboard(
+    project_id: String,
+    state: State<AppState>,
+) -> Result<ProjectScoreboard, String> {
+    let settings =
+        settings_storage::load_settings(&state.settings_file).map_err(|e| e.to_string())?;
+    let projects =
+        project_storage::list_projects(&state.projects_file).map_err(|e| e.to_string())?;
+    let tasks = storage::list_tasks(&state.tasks_dir).map_err(|e| e.to_string())?;
+    Ok(build_project_scoreboard(&project_id, &projects, &tasks, &settings))
+}
+
+/// Returns health-pulse data for the project dashboard W2 widget.
+#[tauri::command]
+pub fn get_project_health_pulse(
+    project_id: String,
+    state: State<AppState>,
+) -> Result<ProjectHealthPulse, String> {
+    let settings =
+        settings_storage::load_settings(&state.settings_file).map_err(|e| e.to_string())?;
+    let projects =
+        project_storage::list_projects(&state.projects_file).map_err(|e| e.to_string())?;
+    let tasks = storage::list_tasks(&state.tasks_dir).map_err(|e| e.to_string())?;
+    Ok(build_project_health_pulse(&project_id, &projects, &tasks, &settings))
+}
+
+/// Returns velocity data for the project dashboard W3 widget.
+#[tauri::command]
+pub fn get_project_velocity(
+    project_id: String,
+    state: State<AppState>,
+) -> Result<ProjectVelocity, String> {
+    let settings =
+        settings_storage::load_settings(&state.settings_file).map_err(|e| e.to_string())?;
+    let tasks = storage::list_tasks(&state.tasks_dir).map_err(|e| e.to_string())?;
+    Ok(build_project_velocity(&project_id, &tasks, &settings))
+}
+
+/// Returns completion-dial data for the project dashboard W4 widget.
+#[tauri::command]
+pub fn get_project_completion_dial(
+    project_id: String,
+    state: State<AppState>,
+) -> Result<ProjectCompletionDial, String> {
+    let settings =
+        settings_storage::load_settings(&state.settings_file).map_err(|e| e.to_string())?;
+    let tasks = storage::list_tasks(&state.tasks_dir).map_err(|e| e.to_string())?;
+    Ok(build_project_completion_dial(&project_id, &tasks, &settings))
+}
+
+/// Returns fuel-gauge data for the project dashboard W5 widget.
+#[tauri::command]
+pub fn get_project_fuel_gauge(
+    project_id: String,
+    state: State<AppState>,
+) -> Result<ProjectFuelGauge, String> {
+    let settings =
+        settings_storage::load_settings(&state.settings_file).map_err(|e| e.to_string())?;
+    let tasks = storage::list_tasks(&state.tasks_dir).map_err(|e| e.to_string())?;
+    Ok(build_project_fuel_gauge(&project_id, &tasks, &settings))
+}
+
+/// Returns effort-balance data for the project dashboard W6 widget.
+#[tauri::command]
+pub fn get_project_effort_balance(
+    project_id: String,
+    state: State<AppState>,
+) -> Result<ProjectEffortBalance, String> {
+    let projects =
+        project_storage::list_projects(&state.projects_file).map_err(|e| e.to_string())?;
+    let tasks = storage::list_tasks(&state.tasks_dir).map_err(|e| e.to_string())?;
+    Ok(build_project_effort_balance(&project_id, &projects, &tasks))
+}
+
+/// Returns the saved `project_dashboard` `StatLayout` for `project_id`, or
+/// `None` if no layout has been saved yet (the frontend falls back to its
+/// built-in default).
+#[tauri::command]
+pub fn get_project_dashboard_layout(
+    project_id: String,
+    state: State<AppState>,
+) -> Result<Option<StatLayout>, String> {
+    let layouts =
+        layout_storage::list_layouts(&state.layouts_file).map_err(|e| e.to_string())?;
+    Ok(layouts.into_iter().find(|l| {
+        l.kind == layout::PROJECT_DASHBOARD_LAYOUT_KIND
+            && l.project_id.as_deref() == Some(project_id.as_str())
+    }))
+}
+
+/// Saves (upsert) a `project_dashboard` `StatLayout`: updates in-place if a
+/// layout with the same `project_id` already exists, otherwise appends a new
+/// one.
+#[tauri::command]
+pub fn save_project_dashboard_layout(
+    layout: StatLayout,
+    state: State<AppState>,
+) -> Result<(), String> {
+    layout::validate_project_dashboard_layout(&layout)?;
+    let project_id = layout
+        .project_id
+        .as_deref()
+        .ok_or("layout must have a project_id")?
+        .to_string();
+
+    let mut layouts =
+        layout_storage::list_layouts(&state.layouts_file).map_err(|e| e.to_string())?;
+
+    let pos = layouts.iter().position(|l| {
+        l.kind == layout::PROJECT_DASHBOARD_LAYOUT_KIND
+            && l.project_id.as_deref() == Some(project_id.as_str())
+    });
+
+    match pos {
+        Some(i) => layouts[i] = layout,
+        None => layouts.push(layout),
+    }
+
+    layout_storage::save_layouts(&state.layouts_file, &layouts).map_err(|e| e.to_string())
+}
+
+// ── Phase B project widget Tauri commands ────────────────────────────────────
+
+/// W7 — Weekly Rhythm: average tracked hours per weekday over full history.
+#[tauri::command]
+pub fn get_project_weekly_rhythm(
+    project_id: String,
+    state: State<AppState>,
+) -> Result<ProjectWeeklyRhythm, String> {
+    let conn = state.time_db.lock().map_err(|e| e.to_string())?;
+    let projects =
+        project_storage::list_projects(&state.projects_file).map_err(|e| e.to_string())?;
+    let tasks = storage::list_tasks(&state.tasks_dir).map_err(|e| e.to_string())?;
+    build_project_weekly_rhythm(&conn, &project_id, &projects, &tasks)
+}
+
+/// W9 — Time Breakdown Donut: by subproject or tag fallback.
+#[tauri::command]
+pub fn get_project_time_breakdown(
+    project_id: String,
+    state: State<AppState>,
+) -> Result<ProjectTimeBreakdown, String> {
+    let projects =
+        project_storage::list_projects(&state.projects_file).map_err(|e| e.to_string())?;
+    let tasks = storage::list_tasks(&state.tasks_dir).map_err(|e| e.to_string())?;
+    Ok(build_project_time_breakdown(&project_id, &projects, &tasks))
+}
+
+/// W10 — Status Radial: task count per status bucket.
+#[tauri::command]
+pub fn get_project_status_radial(
+    project_id: String,
+    state: State<AppState>,
+) -> Result<Vec<ProjectStatusSlice>, String> {
+    let settings =
+        settings_storage::load_settings(&state.settings_file).map_err(|e| e.to_string())?;
+    let tasks = storage::list_tasks(&state.tasks_dir).map_err(|e| e.to_string())?;
+    Ok(build_project_status_radial(&project_id, &tasks, &settings))
+}
+
+/// W12 — Due-Date Timeline: task counts bucketed by due date.
+#[tauri::command]
+pub fn get_project_due_timeline(
+    project_id: String,
+    state: State<AppState>,
+) -> Result<ProjectDueDateTimeline, String> {
+    let settings =
+        settings_storage::load_settings(&state.settings_file).map_err(|e| e.to_string())?;
+    let projects =
+        project_storage::list_projects(&state.projects_file).map_err(|e| e.to_string())?;
+    let tasks = storage::list_tasks(&state.tasks_dir).map_err(|e| e.to_string())?;
+    Ok(build_project_due_timeline(&project_id, &projects, &tasks, &settings))
+}
+
+/// W13 — Burndown Chart: remaining vs ideal estimated hours over time.
+#[tauri::command]
+pub fn get_project_burndown(
+    project_id: String,
+    state: State<AppState>,
+) -> Result<ProjectBurndown, String> {
+    let settings =
+        settings_storage::load_settings(&state.settings_file).map_err(|e| e.to_string())?;
+    let projects =
+        project_storage::list_projects(&state.projects_file).map_err(|e| e.to_string())?;
+    let tasks = storage::list_tasks(&state.tasks_dir).map_err(|e| e.to_string())?;
+    Ok(build_project_burndown(&project_id, &projects, &tasks, &settings))
+}
+
+/// W14 — Completion Trend: tasks completed per week for the last 13 weeks.
+#[tauri::command]
+pub fn get_project_completion_trend(
+    project_id: String,
+    state: State<AppState>,
+) -> Result<Vec<ProjectCompletionWeek>, String> {
+    let settings =
+        settings_storage::load_settings(&state.settings_file).map_err(|e| e.to_string())?;
+    let tasks = storage::list_tasks(&state.tasks_dir).map_err(|e| e.to_string())?;
+    Ok(build_project_completion_trend(&project_id, &tasks, &settings))
+}
+
+/// W16 — Subproject Tree: root + all descendant nodes.
+#[tauri::command]
+pub fn get_project_subproject_tree(
+    project_id: String,
+    state: State<AppState>,
+) -> Result<Vec<ProjectTreeNode>, String> {
+    let settings =
+        settings_storage::load_settings(&state.settings_file).map_err(|e| e.to_string())?;
+    let projects =
+        project_storage::list_projects(&state.projects_file).map_err(|e| e.to_string())?;
+    let tasks = storage::list_tasks(&state.tasks_dir).map_err(|e| e.to_string())?;
+    Ok(build_project_subproject_tree(&project_id, &projects, &tasks, &settings))
+}
+
+/// W17 — Subproject Progress Bars: descendant bars sorted by urgency.
+#[tauri::command]
+pub fn get_project_subproject_bars(
+    project_id: String,
+    state: State<AppState>,
+) -> Result<Vec<ProjectSubprojectBar>, String> {
+    let settings =
+        settings_storage::load_settings(&state.settings_file).map_err(|e| e.to_string())?;
+    let projects =
+        project_storage::list_projects(&state.projects_file).map_err(|e| e.to_string())?;
+    let tasks = storage::list_tasks(&state.tasks_dir).map_err(|e| e.to_string())?;
+    Ok(build_project_subproject_bars(&project_id, &projects, &tasks, &settings))
+}
+
+/// W18 — Subproject Sunburst: depth-1 and depth-2 slices by tracked time.
+#[tauri::command]
+pub fn get_project_subproject_sunburst(
+    project_id: String,
+    state: State<AppState>,
+) -> Result<Vec<ProjectSunburstSlice>, String> {
+    let projects =
+        project_storage::list_projects(&state.projects_file).map_err(|e| e.to_string())?;
+    let tasks = storage::list_tasks(&state.tasks_dir).map_err(|e| e.to_string())?;
+    Ok(build_project_subproject_sunburst(&project_id, &projects, &tasks))
 }
 
 #[cfg(test)]
@@ -8077,6 +9532,418 @@ mod tests {
             assert_eq!(result.len(), 1);
             let valid_tiers = ["great", "on_track", "needs_attention", "critical", "severe"];
             assert!(valid_tiers.contains(&result[0].tier.as_str()));
+        }
+    }
+
+    // ── Phase B project widget builder tests ─────────────────────────────────
+
+    mod phase_b_project_widget_tests {
+        use super::*;
+
+        // ── helpers ──────────────────────────────────────────────────────────
+
+        fn project_with_id(id: &str) -> Project {
+            let mut p = Project::new(id.to_string(), "#6366f1".to_string(), 1);
+            p.id = id.to_string();
+            p
+        }
+
+        /// Creates a task belonging to `project_id` with the given `status`
+        /// and optional `due` date (`"YYYY-MM-DD"`).
+        fn make_task_in_project(project_id: &str, status: &str, due: Option<&str>) -> Task {
+            let mut t = Task::new("Test task".to_string());
+            t.project_id = Some(project_id.to_string());
+            t.status = status.to_string();
+            t.due = due.map(|s| s.to_string());
+            t
+        }
+
+        fn done_settings() -> Settings {
+            Settings {
+                done_status: "done".to_string(),
+                cancelled_status: None,
+                statuses: vec![
+                    crate::settings::StatusDefinition {
+                        id: "todo".to_string(),
+                        label: "Todo".to_string(),
+                        color: "#6b7280".to_string(),
+                        order: 0,
+                    },
+                    crate::settings::StatusDefinition {
+                        id: "done".to_string(),
+                        label: "Done".to_string(),
+                        color: "#22c55e".to_string(),
+                        order: 1,
+                    },
+                ],
+                ..Settings::default()
+            }
+        }
+
+        fn project(id: &str) -> Project {
+            project_with_id(id)
+        }
+
+        fn project_child(id: &str, parent: &str) -> Project {
+            let mut p = project_with_id(id);
+            p.parent_id = Some(parent.to_string());
+            p
+        }
+
+        fn task_due(project_id: &str, status: &str, due: Option<&str>) -> Task {
+            make_task_in_project(project_id, status, due)
+        }
+
+        fn task_completed(project_id: &str, due: Option<&str>) -> Task {
+            let mut t = make_task_in_project(project_id, "done", due);
+            t.completed_at = due.map(|d| format!("{d}T12:00:00Z"));
+            t
+        }
+
+        // ── build_project_time_breakdown ─────────────────────────────────────
+
+        #[test]
+        fn time_breakdown_empty_project_returns_empty_slices() {
+            let projects = vec![project("p1")];
+            let tasks: Vec<Task> = vec![];
+
+            let result = build_project_time_breakdown("p1", &projects, &tasks);
+
+            assert!(result.slices.is_empty());
+            assert_eq!(result.total_tracked_minutes, 0);
+        }
+
+        #[test]
+        fn time_breakdown_no_subprojects_falls_back_to_tags() {
+            let projects = vec![project("p1")];
+            let mut t = task_due("p1", "todo", None);
+            t.tracked_minutes = 60;
+            t.tags = vec!["frontend".to_string()];
+            let tasks = vec![t];
+
+            let result = build_project_time_breakdown("p1", &projects, &tasks);
+
+            assert!(!result.by_subproject);
+            // Only tasks with tracked > 0 produce slices
+            assert_eq!(result.slices.len(), 1);
+            assert_eq!(result.slices[0].name, "frontend");
+        }
+
+        #[test]
+        fn time_breakdown_wrong_project_returns_empty() {
+            let projects = vec![project("p1")];
+            let tasks = vec![task_due("p1", "todo", None)];
+
+            let result = build_project_time_breakdown("does-not-exist", &projects, &tasks);
+
+            assert!(result.slices.is_empty());
+        }
+
+        // ── build_project_status_radial ───────────────────────────────────────
+
+        #[test]
+        fn status_radial_empty_project_returns_empty() {
+            let settings = done_settings();
+            let tasks: Vec<Task> = vec![];
+
+            let result = build_project_status_radial("p1", &tasks, &settings);
+
+            assert!(result.is_empty());
+        }
+
+        #[test]
+        fn status_radial_counts_tasks_per_status() {
+            let settings = done_settings();
+            let tasks = vec![
+                task_due("p1", "todo", None),
+                task_due("p1", "todo", None),
+                task_due("p1", "done", None),
+            ];
+
+            let result = build_project_status_radial("p1", &tasks, &settings);
+
+            assert_eq!(result.len(), 2);
+            let todo_slice = result.iter().find(|s| s.status_id == "todo").unwrap();
+            let done_slice = result.iter().find(|s| s.status_id == "done").unwrap();
+            assert_eq!(todo_slice.count, 2);
+            assert_eq!(done_slice.count, 1);
+        }
+
+        #[test]
+        fn status_radial_excludes_hidden_tasks() {
+            let settings = done_settings();
+            let mut hidden = task_due("p1", "todo", None);
+            hidden.hidden = true;
+            let tasks = vec![hidden, task_due("p1", "done", None)];
+
+            let result = build_project_status_radial("p1", &tasks, &settings);
+
+            // Only "done" (1 task) — hidden is excluded by project_task_pool
+            assert_eq!(result.len(), 1);
+            assert_eq!(result[0].status_id, "done");
+        }
+
+        // ── build_project_due_timeline ────────────────────────────────────────
+
+        #[test]
+        fn due_timeline_no_tasks_with_due_date_returns_empty_points() {
+            let settings = done_settings();
+            let projects = vec![project("p1")];
+            let tasks = vec![task_due("p1", "todo", None)]; // no due date
+
+            let result = build_project_due_timeline("p1", &projects, &tasks, &settings);
+
+            assert!(result.points.is_empty());
+        }
+
+        #[test]
+        fn due_timeline_single_task_produces_one_point() {
+            let settings = done_settings();
+            let projects = vec![project("p1")];
+            let tasks = vec![task_due("p1", "todo", Some("2030-12-01"))];
+
+            let result = build_project_due_timeline("p1", &projects, &tasks, &settings);
+
+            assert_eq!(result.points.len(), 1);
+            assert_eq!(result.points[0].date, "2030-12-01");
+            assert_eq!(result.points[0].count, 1);
+        }
+
+        #[test]
+        fn due_timeline_completed_task_increments_done_count() {
+            let settings = done_settings();
+            let projects = vec![project("p1")];
+            let tasks = vec![task_completed("p1", Some("2030-12-01"))];
+
+            let result = build_project_due_timeline("p1", &projects, &tasks, &settings);
+
+            assert_eq!(result.points[0].done_count, 1);
+            assert_eq!(result.points[0].overdue_count, 0);
+        }
+
+        // ── build_project_burndown ────────────────────────────────────────────
+
+        #[test]
+        fn burndown_empty_project_returns_empty_points() {
+            let settings = done_settings();
+            let projects = vec![project("p1")];
+            let tasks: Vec<Task> = vec![];
+
+            let result = build_project_burndown("p1", &projects, &tasks, &settings);
+
+            assert!(result.points.is_empty());
+        }
+
+        #[test]
+        fn burndown_tasks_without_estimates_return_empty_points() {
+            let settings = done_settings();
+            let projects = vec![project("p1")];
+            let mut t = task_due("p1", "todo", Some("2030-12-01"));
+            t.estimated_minutes = None;
+            let tasks = vec![t];
+
+            let result = build_project_burndown("p1", &projects, &tasks, &settings);
+
+            assert!(result.points.is_empty());
+        }
+
+        #[test]
+        fn burndown_produces_points_when_estimate_and_due_date_provided() {
+            let settings = done_settings();
+            let projects = vec![project("p1")];
+            let mut t = task_due("p1", "todo", Some("2030-06-01"));
+            t.estimated_minutes = Some(60);
+            t.created = "2030-01-01T00:00:00Z".to_string();
+            let tasks = vec![t];
+
+            let result = build_project_burndown("p1", &projects, &tasks, &settings);
+
+            assert!(!result.points.is_empty());
+            // First point should equal total estimated hours
+            let first = &result.points[0];
+            assert!((first.remaining_hours - 1.0).abs() < 0.001);
+        }
+
+        // ── build_project_completion_trend ────────────────────────────────────
+
+        #[test]
+        fn completion_trend_returns_thirteen_buckets() {
+            let settings = done_settings();
+            let tasks: Vec<Task> = vec![];
+
+            let result = build_project_completion_trend("p1", &tasks, &settings);
+
+            assert_eq!(result.len(), 13);
+        }
+
+        #[test]
+        fn completion_trend_last_bucket_is_marked_current() {
+            let settings = done_settings();
+            let tasks: Vec<Task> = vec![];
+
+            let result = build_project_completion_trend("p1", &tasks, &settings);
+
+            assert!(result.last().unwrap().is_current);
+            assert!(!result[0].is_current);
+        }
+
+        #[test]
+        fn completion_trend_counts_only_completed_tasks() {
+            let settings = done_settings();
+            let total_count: u32 = {
+                // Place a completed task in the current week (use a date far future
+                // that is always "current week" relative to the test's "today").
+                // Instead, check that non-completed tasks don't inflate the count.
+                let tasks = vec![task_due("p1", "todo", Some("2030-01-01"))];
+                let result = build_project_completion_trend("p1", &tasks, &settings);
+                result.iter().map(|b| b.count).sum()
+            };
+            assert_eq!(total_count, 0); // no completed tasks → all buckets zero
+        }
+
+        // ── build_project_subproject_tree ─────────────────────────────────────
+
+        #[test]
+        fn subproject_tree_no_descendants_returns_root_only() {
+            let settings = done_settings();
+            let projects = vec![project("p1")];
+            let tasks: Vec<Task> = vec![];
+
+            let result = build_project_subproject_tree("p1", &projects, &tasks, &settings);
+
+            assert_eq!(result.len(), 1);
+            assert_eq!(result[0].project_id, "p1");
+            assert_eq!(result[0].depth, 0);
+        }
+
+        #[test]
+        fn subproject_tree_child_has_depth_one() {
+            let settings = done_settings();
+            let projects = vec![project("p1"), project_child("p2", "p1")];
+            let tasks: Vec<Task> = vec![];
+
+            let result = build_project_subproject_tree("p1", &projects, &tasks, &settings);
+
+            assert_eq!(result.len(), 2);
+            let child = result.iter().find(|n| n.project_id == "p2").unwrap();
+            assert_eq!(child.depth, 1);
+        }
+
+        #[test]
+        fn subproject_tree_unknown_project_returns_empty() {
+            let settings = done_settings();
+            let projects = vec![project("p1")];
+            let tasks: Vec<Task> = vec![];
+
+            let result =
+                build_project_subproject_tree("does-not-exist", &projects, &tasks, &settings);
+
+            assert!(result.is_empty());
+        }
+
+        // ── build_project_subproject_bars ─────────────────────────────────────
+
+        #[test]
+        fn subproject_bars_no_descendants_returns_empty() {
+            let settings = done_settings();
+            let projects = vec![project("p1")];
+            let tasks: Vec<Task> = vec![];
+
+            let result = build_project_subproject_bars("p1", &projects, &tasks, &settings);
+
+            assert!(result.is_empty()); // root is excluded from bars
+        }
+
+        #[test]
+        fn subproject_bars_includes_direct_child() {
+            let settings = done_settings();
+            let projects = vec![project("p1"), project_child("p2", "p1")];
+            let tasks: Vec<Task> = vec![];
+
+            let result = build_project_subproject_bars("p1", &projects, &tasks, &settings);
+
+            assert_eq!(result.len(), 1);
+            assert_eq!(result[0].project_id, "p2");
+            assert_eq!(result[0].depth, 1);
+        }
+
+        #[test]
+        fn subproject_bars_completion_pct_is_zero_when_no_tasks() {
+            let settings = done_settings();
+            let projects = vec![project("p1"), project_child("p2", "p1")];
+            let tasks: Vec<Task> = vec![];
+
+            let result = build_project_subproject_bars("p1", &projects, &tasks, &settings);
+
+            assert!((result[0].completion_pct - 0.0).abs() < 0.001);
+        }
+
+        // ── build_project_subproject_sunburst ─────────────────────────────────
+
+        #[test]
+        fn subproject_sunburst_no_descendants_returns_empty() {
+            let projects = vec![project("p1")];
+            let tasks: Vec<Task> = vec![];
+
+            let result = build_project_subproject_sunburst("p1", &projects, &tasks);
+
+            assert!(result.is_empty());
+        }
+
+        #[test]
+        fn subproject_sunburst_includes_depth_1_and_2_only() {
+            // p1 → p2 (depth 1) → p3 (depth 2) → p4 (depth 3, excluded)
+            let projects = vec![
+                project("p1"),
+                project_child("p2", "p1"),
+                project_child("p3", "p2"),
+                project_child("p4", "p3"),
+            ];
+            let tasks: Vec<Task> = vec![];
+
+            let result = build_project_subproject_sunburst("p1", &projects, &tasks);
+
+            // Only p2 (depth 1) and p3 (depth 2) should appear
+            assert_eq!(result.len(), 2);
+            assert!(result.iter().all(|s| s.depth <= 2));
+            assert!(result.iter().all(|s| s.project_id != "p4"));
+        }
+
+        #[test]
+        fn subproject_sunburst_depth_field_correct() {
+            let projects = vec![project("p1"), project_child("p2", "p1")];
+            let tasks: Vec<Task> = vec![];
+
+            let result = build_project_subproject_sunburst("p1", &projects, &tasks);
+
+            assert_eq!(result.len(), 1);
+            assert_eq!(result[0].depth, 1);
+        }
+
+        // ── compute_depth_from_root helper ────────────────────────────────────
+
+        #[test]
+        fn depth_helper_returns_one_for_direct_child() {
+            let projects = vec![project("p1"), project_child("p2", "p1")];
+            let child = projects.iter().find(|p| p.id == "p2").unwrap();
+
+            let depth = compute_depth_from_root(child, "p1", &projects);
+
+            assert_eq!(depth, 1);
+        }
+
+        #[test]
+        fn depth_helper_returns_two_for_grandchild() {
+            let projects = vec![
+                project("p1"),
+                project_child("p2", "p1"),
+                project_child("p3", "p2"),
+            ];
+            let grandchild = projects.iter().find(|p| p.id == "p3").unwrap();
+
+            let depth = compute_depth_from_root(grandchild, "p1", &projects);
+
+            assert_eq!(depth, 2);
         }
     }
 }

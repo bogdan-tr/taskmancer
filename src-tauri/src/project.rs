@@ -77,6 +77,10 @@ pub struct ProjectBoard {
     pub status_bar_enabled_override: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dashboard_layout_id: Option<String>,
+    /// ISO date string `"YYYY-MM-DD"` for this project's deadline, or `None`
+    /// when no deadline has been set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

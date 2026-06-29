@@ -1,6 +1,6 @@
 import type { StatusLineStatId } from "./statusLineDisplay";
 
-/** Every stat id offered in the layout editor's toggle list, in a fixed catalog order — independent of any one layout's current `stat_ids` ordering. Mirrors the backend's `layout::KNOWN_STATUS_LINE_STAT_IDS` set (see `statusLineDisplay.ts`'s `StatusLineStatId`). */
+/** Every stat id offered in the layout editor's toggle list, in a fixed catalog order — independent of any one layout's current `stat_ids` ordering. Mirrors the backend's `layout::KNOWN_STATUS_LINE_STAT_IDS` set (see `statusLineDisplay.ts`'s `StatusLineStatId`). Mini widget ids (Phase C) appear at the end. */
 export const ALL_STATUS_LINE_STAT_IDS: StatusLineStatId[] = [
   "status_badge",
   "estimated_time_left",
@@ -9,6 +9,10 @@ export const ALL_STATUS_LINE_STAT_IDS: StatusLineStatId[] = [
   "completion_pct",
   "weighted_completion_pct",
   "active_completion_pct",
+  "mini_health",
+  "mini_completion",
+  "mini_fuel",
+  "mini_sparkline",
 ];
 
 /**

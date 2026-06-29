@@ -1,17 +1,25 @@
 <script lang="ts">
   import { listStatusLayouts } from "$lib/api";
   import { displayState } from "$lib/displaySettings.svelte";
+  import { projectsState } from "$lib/projects.svelte";
   import { settingsState } from "$lib/settings.svelte";
   import { statusLineState } from "$lib/statusLine.svelte";
   import {
     formattedStatValue,
     isKnownStatusLineStatId,
+    MINI_WIDGET_LABELS,
+    MINI_WIDGET_STAT_IDS,
     statLabel,
     tierLabel,
     tierTintColor,
     type StatusLineStatId,
+    type TextStatId,
   } from "$lib/statusLineDisplay";
   import type { StatLayout } from "$lib/types";
+  import MiniCompletionWidget from "./MiniCompletionWidget.svelte";
+  import MiniHealthWidget from "./MiniHealthWidget.svelte";
+  import MiniFuelWidget from "./MiniFuelWidget.svelte";
+  import MiniSparklineWidget from "./MiniSparklineWidget.svelte";
 
   interface Props {
     /** The currently-viewed project's id — stats and the resolved layout are always scoped to exactly one project. */
@@ -82,6 +90,12 @@
 
   /** Whether to apply the tint background to the tiles (keyed to the current tier color). */
   let tilesTint = $derived(settingsState.current?.status_bar_tile_tint ?? false);
+
+  /** The project record for this status line — used to resolve `project.color` for mini widget fills. */
+  let project = $derived(projectsState.items.find((p) => p.id === projectId));
+
+  /** Fallback project color when the project record hasn't loaded yet. */
+  const FALLBACK_COLOR = "#6366f1";
 </script>
 
 {#if barEnabled}
@@ -106,10 +120,27 @@
           </div>
         {/if}
         {#each displayedStatIds as statId (statId)}
-          <div class="stat-tile" class:tint-tile={tilesTint}>
-            <span class="stat-tile-label">{statLabel(statId)}</span>
-            <span class="stat-tile-value">{formattedStatValue(statId, stats)}</span>
-          </div>
+          {#if MINI_WIDGET_STAT_IDS.has(statId)}
+            <div class="stat-tile mini-tile" class:tint-tile={tilesTint}>
+              <span class="stat-tile-label">{MINI_WIDGET_LABELS[statId]}</span>
+              <div class="mini-visual">
+                {#if statId === "mini_health" && stats}
+                  <MiniHealthWidget {stats} projectColor={project?.color ?? FALLBACK_COLOR} />
+                {:else if statId === "mini_completion" && stats}
+                  <MiniCompletionWidget {stats} projectColor={project?.color ?? FALLBACK_COLOR} />
+                {:else if statId === "mini_fuel" && stats}
+                  <MiniFuelWidget {stats} projectColor={project?.color ?? FALLBACK_COLOR} />
+                {:else if statId === "mini_sparkline"}
+                  <MiniSparklineWidget {projectId} projectColor={project?.color ?? FALLBACK_COLOR} />
+                {/if}
+              </div>
+            </div>
+          {:else}
+            <div class="stat-tile" class:tint-tile={tilesTint}>
+              <span class="stat-tile-label">{statLabel(statId as TextStatId)}</span>
+              <span class="stat-tile-value">{formattedStatValue(statId, stats)}</span>
+            </div>
+          {/if}
         {/each}
       </div>
     {/if}
@@ -151,6 +182,19 @@
   .stat-tile.tint-tile {
     background: color-mix(in oklch, var(--tier-tint) 10%, var(--color-canvas));
     border-color: color-mix(in oklch, var(--tier-tint) 25%, var(--color-border));
+  }
+
+  .mini-tile {
+    min-width: 5rem;
+    align-items: center;
+  }
+
+  .mini-visual {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 24px;
+    width: 100%;
   }
 
   /* Badge tile: same box shape as other tiles but colored by tier */

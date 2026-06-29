@@ -1,93 +1,107 @@
 <script lang="ts">
-  import type { DashboardDateRange } from "$lib/api";
-  import { listStatusLayouts, updateStatusLayout } from "$lib/api";
-  import { projectsState } from "$lib/projects.svelte";
-  import { settingsState } from "$lib/settings.svelte";
+  import { getProjectDashboardLayout, saveProjectDashboardLayout } from "$lib/api";
   import type { DashboardWidget, StatLayout } from "$lib/types";
   import { GridStack, type GridStackNode } from "gridstack";
   import "gridstack/dist/gridstack.min.css";
-  import CompletionOverviewWidget from "./CompletionOverviewWidget.svelte";
-  import ProductivityWidget from "./ProductivityWidget.svelte";
-  import ProjectHealthWidget from "./ProjectHealthWidget.svelte";
-  import ProjectScaleWidget from "./ProjectScaleWidget.svelte";
-  import StatusByProjectWidget from "./StatusByProjectWidget.svelte";
+  import W1ScoreboardWidget from "./W1ScoreboardWidget.svelte";
+  import W2HealthPulseWidget from "./W2HealthPulseWidget.svelte";
+  import W3VelocityWidget from "./W3VelocityWidget.svelte";
+  import W4CompletionDialWidget from "./W4CompletionDialWidget.svelte";
+  import W5FuelGaugeWidget from "./W5FuelGaugeWidget.svelte";
+  import W6EffortBalanceWidget from "./W6EffortBalanceWidget.svelte";
+  import W7WeeklyRhythmWidget from "./W7WeeklyRhythmWidget.svelte";
+  import W9TimeBreakdownWidget from "./W9TimeBreakdownWidget.svelte";
+  import W10StatusRadialWidget from "./W10StatusRadialWidget.svelte";
+  import W12DueTimelineWidget from "./W12DueTimelineWidget.svelte";
+  import W13BurndownWidget from "./W13BurndownWidget.svelte";
+  import W14CompletionTrendWidget from "./W14CompletionTrendWidget.svelte";
+  import W16SubprojectTreeWidget from "./W16SubprojectTreeWidget.svelte";
+  import W17SubprojectBarsWidget from "./W17SubprojectBarsWidget.svelte";
+  import W18SubprojectSunburstWidget from "./W18SubprojectSunburstWidget.svelte";
 
   interface Props {
-    projectId: string | null;
+    projectId: string;
+    projectColor: string;
+    projectName: string;
   }
-  let { projectId }: Props = $props();
+  let { projectId, projectColor, projectName }: Props = $props();
 
-  // ── Date range ───────────────────────────────────────────────────────────
-  let dateRange = $state<DashboardDateRange>("last_30_days");
-
-  const DATE_RANGE_LABELS: Record<DashboardDateRange, string> = {
-    last_7_days:   "Last 7 days",
-    last_30_days:  "Last 30 days",
-    this_month:    "This month",
-    last_3_months: "Last 3 months",
-    all_time:      "All time",
-  };
-
-  // ── Layout resolution ────────────────────────────────────────────────────
-  let project = $derived(
-    projectId ? projectsState.items.find((p) => p.id === projectId) : undefined,
-  );
-
-  let resolvedLayoutId = $derived(
-    (project?.board.dashboard_layout_id ??
-      settingsState.current?.default_dashboard_layout_id) ?? "",
-  );
-
-  let layouts = $state<StatLayout[]>([]);
+  // ── Layout load ─────────────────────────────────────────────────────────
+  let layout = $state<StatLayout | null>(null);
 
   $effect(() => {
-    listStatusLayouts()
-      .then((all) => { layouts = all.filter((l) => l.kind === "dashboard"); })
+    if (!projectId) return;
+    layout = null;
+    getProjectDashboardLayout(projectId)
+      .then((l) => { layout = l; })
       .catch(() => {});
   });
 
-  let resolvedLayout = $derived(
-    layouts.find((l) => l.id === resolvedLayoutId) ?? layouts[0] ?? null,
-  );
-
   // ── Defaults ─────────────────────────────────────────────────────────────
-  const DEFAULT_WIDGETS: DashboardWidget[] = [
-    { widget_type: "completion_overview", x: 0, y: 0, w: 6, h: 4 },
-    { widget_type: "project_scale",       x: 6, y: 0, w: 6, h: 4 },
-    { widget_type: "status_by_project",   x: 0, y: 4, w: 4, h: 4 },
-    { widget_type: "project_health",      x: 4, y: 4, w: 3, h: 4, include_subprojects: false },
-    { widget_type: "productivity",        x: 7, y: 4, w: 5, h: 4 },
+  const DEFAULT_PROJECT_WIDGETS: DashboardWidget[] = [
+    { widget_type: "p_scoreboard",      x: 0, y: 0, w: 6, h: 3 },
+    { widget_type: "p_health_pulse",    x: 6, y: 0, w: 3, h: 3 },
+    { widget_type: "p_completion_dial", x: 9, y: 0, w: 3, h: 3 },
+    { widget_type: "p_velocity",        x: 0, y: 3, w: 5, h: 3 },
   ];
 
   const WIDGET_LABELS: Partial<Record<DashboardWidget["widget_type"], string>> = {
-    completion_overview: "Completion Overview",
-    project_scale:       "Project Time & Scale",
-    status_by_project:   "Status by Project",
-    project_health:      "Project Health",
-    productivity:        "Productivity",
+    p_scoreboard:         "Scoreboard",
+    p_health_pulse:       "Health Pulse",
+    p_velocity:           "Velocity",
+    p_completion_dial:    "Completion Dial",
+    p_fuel_gauge:         "Fuel Gauge",
+    p_effort_balance:     "Effort Balance",
+    p_weekly_rhythm:      "Weekly Rhythm",
+    p_time_donut:         "Time Breakdown",
+    p_status_radial:      "Status Radial",
+    p_due_timeline:       "Due Timeline",
+    p_burndown:           "Burndown",
+    p_completion_trend:   "Completion Trend",
+    p_subproject_tree:    "Subproject Tree",
+    p_subproject_bars:    "Subproject Bars",
+    p_subproject_sunburst:"Subproject Sunburst",
   };
 
-  const WIDGET_DEFAULTS: Partial<Record<
-    DashboardWidget["widget_type"],
-    Omit<DashboardWidget, "widget_type">
-  >> = {
-    completion_overview: { x: 0, y: 100, w: 6, h: 4 },
-    project_scale:       { x: 6, y: 100, w: 6, h: 4 },
-    status_by_project:   { x: 0, y: 100, w: 4, h: 4 },
-    project_health:      { x: 4, y: 100, w: 3, h: 4, include_subprojects: false },
-    productivity:        { x: 7, y: 100, w: 5, h: 4 },
+  type ProjectWidgetPos = { x: number; y: number; w: number; h: number };
+  const PROJECT_WIDGET_DEFAULTS: Partial<Record<DashboardWidget["widget_type"], ProjectWidgetPos>> = {
+    p_scoreboard:          { x: 0, y: 100, w: 6, h: 3 },
+    p_health_pulse:        { x: 0, y: 100, w: 3, h: 3 },
+    p_velocity:            { x: 0, y: 100, w: 4, h: 3 },
+    p_completion_dial:     { x: 0, y: 100, w: 4, h: 3 },
+    p_fuel_gauge:          { x: 0, y: 100, w: 2, h: 4 },
+    p_effort_balance:      { x: 0, y: 100, w: 5, h: 3 },
+    p_weekly_rhythm:       { x: 0, y: 100, w: 6, h: 4 },
+    p_time_donut:          { x: 0, y: 100, w: 4, h: 4 },
+    p_status_radial:       { x: 0, y: 100, w: 4, h: 4 },
+    p_due_timeline:        { x: 0, y: 100, w: 8, h: 3 },
+    p_burndown:            { x: 0, y: 100, w: 8, h: 4 },
+    p_completion_trend:    { x: 0, y: 100, w: 6, h: 4 },
+    p_subproject_tree:     { x: 0, y: 100, w: 6, h: 6 },
+    p_subproject_bars:     { x: 0, y: 100, w: 4, h: 5 },
+    p_subproject_sunburst: { x: 0, y: 100, w: 4, h: 4 },
   };
 
-  const ALL_WIDGET_TYPES: DashboardWidget["widget_type"][] = [
-    "completion_overview",
-    "project_scale",
-    "status_by_project",
-    "project_health",
-    "productivity",
+  const ALL_PROJECT_WIDGET_TYPES: DashboardWidget["widget_type"][] = [
+    "p_scoreboard",
+    "p_health_pulse",
+    "p_velocity",
+    "p_completion_dial",
+    "p_fuel_gauge",
+    "p_effort_balance",
+    "p_weekly_rhythm",
+    "p_time_donut",
+    "p_status_radial",
+    "p_due_timeline",
+    "p_burndown",
+    "p_completion_trend",
+    "p_subproject_tree",
+    "p_subproject_bars",
+    "p_subproject_sunburst",
   ];
 
   // ── View-mode derived values ─────────────────────────────────────────────
-  let widgets = $derived(resolvedLayout?.dashboard_widgets ?? DEFAULT_WIDGETS);
+  let widgets = $derived(layout?.dashboard_widgets ?? DEFAULT_PROJECT_WIDGETS);
 
   function gridStyle(w: DashboardWidget): string {
     return [
@@ -96,33 +110,34 @@
     ].join("; ");
   }
 
+  function viewConfig(wt: DashboardWidget["widget_type"]): Record<string, unknown> | undefined {
+    return widgets.find((w) => w.widget_type === wt)?.config as Record<string, unknown> | undefined;
+  }
+
   // ── Edit mode state ──────────────────────────────────────────────────────
   let editMode = $state(false);
   let localWidgetTypes = $state<DashboardWidget["widget_type"][]>([]);
   let localTheme = $state<"dark" | "app" | "glass" | "aurora">("dark");
-  let healthSubprojectsDraft = $state(false);
+  // Configs keyed by widget_type — tracked as plain object so reassignment is reactive.
+  let widgetConfigs = $state<Record<string, Record<string, unknown>>>({});
   let isSaving = $state(false);
   let saveError = $state<string | null>(null);
 
-  // Non-reactive position store — updated by gridstack events, no Svelte re-renders
-  const positions = new Map<
-    DashboardWidget["widget_type"],
-    { x: number; y: number; w: number; h: number; include_subprojects?: boolean }
-  >();
+  // Non-reactive position store — gridstack events write here; Svelte never reads it directly.
+  const positions = new Map<DashboardWidget["widget_type"], ProjectWidgetPos>();
 
   function enterEditMode() {
-    const src = resolvedLayout?.dashboard_widgets ?? DEFAULT_WIDGETS;
+    const src = layout?.dashboard_widgets ?? DEFAULT_PROJECT_WIDGETS;
     localWidgetTypes = src.map((w) => w.widget_type);
-    localTheme = resolvedLayout?.dashboard_theme ?? "dark";
+    localTheme = layout?.dashboard_theme ?? "dark";
     positions.clear();
+    const cfgs: Record<string, Record<string, unknown>> = {};
     for (const w of src) {
-      positions.set(w.widget_type, {
-        x: w.x, y: w.y, w: w.w, h: w.h,
-        include_subprojects: w.include_subprojects,
-      });
+      positions.set(w.widget_type, { x: w.x, y: w.y, w: w.w, h: w.h });
+      if (w.config) cfgs[w.widget_type] = w.config as Record<string, unknown>;
     }
-    healthSubprojectsDraft =
-      src.find((w) => w.widget_type === "project_health")?.include_subprojects ?? false;
+    widgetConfigs = cfgs;
+    saveError = null;
     editMode = true;
   }
 
@@ -136,18 +151,16 @@
     isSaving = true;
     saveError = null;
 
-    // Read final positions from gridstack DOM attributes — reliable after any drag/resize
     if (grid) {
       for (const el of grid.getGridItems()) {
         const type = el.dataset.widgetType as DashboardWidget["widget_type"] | undefined;
         if (!type) continue;
-        const prev = positions.get(type) ?? { x: 0, y: 0, w: 4, h: 4 };
+        const prev = positions.get(type) ?? { x: 0, y: 0, w: 4, h: 3 };
         const x = parseInt(el.getAttribute("gs-x") ?? "");
         const y = parseInt(el.getAttribute("gs-y") ?? "");
         const w = parseInt(el.getAttribute("gs-w") ?? "");
         const h = parseInt(el.getAttribute("gs-h") ?? "");
         positions.set(type, {
-          ...prev,
           x: isNaN(x) ? prev.x : x,
           y: isNaN(y) ? prev.y : y,
           w: isNaN(w) ? prev.w : w,
@@ -156,31 +169,31 @@
       }
     }
 
-    // Sync health subprojects toggle into positions
-    const hPos = positions.get("project_health");
-    if (hPos) positions.set("project_health", { ...hPos, include_subprojects: healthSubprojectsDraft });
-
     const newWidgets: DashboardWidget[] = localWidgetTypes.map((type) => {
-      const pos = positions.get(type) ?? WIDGET_DEFAULTS[type] ?? { x: 0, y: 100, w: 4, h: 4 };
-      return { widget_type: type, ...pos };
+      const pos = positions.get(type) ?? PROJECT_WIDGET_DEFAULTS[type] ?? { x: 0, y: 100, w: 4, h: 3 };
+      const cfg = widgetConfigs[type];
+      return {
+        widget_type: type,
+        ...pos,
+        ...(cfg ? { config: cfg } : {}),
+      };
     });
 
-    const baseLayout = resolvedLayout ?? layouts[0] ?? null;
-    if (!baseLayout) {
-      saveError = "No dashboard layout found.";
-      isSaving = false;
-      return;
-    }
+    const toSave: StatLayout = layout
+      ? { ...layout, dashboard_widgets: newWidgets, dashboard_theme: localTheme }
+      : {
+          id: crypto.randomUUID(),
+          name: `${projectName} Dashboard`,
+          kind: "project_dashboard",
+          project_id: projectId,
+          stat_ids: [],
+          dashboard_widgets: newWidgets,
+          dashboard_theme: localTheme,
+        };
 
-    const updated: StatLayout = {
-      ...baseLayout,
-      dashboard_widgets: newWidgets,
-      dashboard_theme: localTheme,
-    };
     try {
-      await updateStatusLayout(updated);
-      const all = await listStatusLayouts();
-      layouts = all.filter((l) => l.kind === "dashboard");
+      await saveProjectDashboardLayout(toSave);
+      layout = toSave;
       if (grid) { grid.destroy(false); grid = null; }
       editMode = false;
     } catch (e) {
@@ -192,35 +205,33 @@
 
   function addWidget(wt: DashboardWidget["widget_type"]) {
     if (localWidgetTypes.includes(wt)) return;
-    const def = WIDGET_DEFAULTS[wt] ?? { x: 0, y: 100, w: 4, h: 4 };
-    positions.set(wt, { x: def.x, y: def.y, w: def.w, h: def.h, include_subprojects: (def as { include_subprojects?: boolean }).include_subprojects });
-    if (wt === "project_health") healthSubprojectsDraft = (def as { include_subprojects?: boolean }).include_subprojects ?? false;
-    localWidgetTypes = [...localWidgetTypes, wt]; // triggers re-init via editKey
+    const def = PROJECT_WIDGET_DEFAULTS[wt] ?? { x: 0, y: 100, w: 4, h: 3 };
+    positions.set(wt, def);
+    localWidgetTypes = [...localWidgetTypes, wt];
   }
 
   function removeWidget(wt: DashboardWidget["widget_type"]) {
     positions.delete(wt);
-    localWidgetTypes = localWidgetTypes.filter((t) => t !== wt); // triggers re-init
+    const { [wt]: _removed, ...rest } = widgetConfigs;
+    widgetConfigs = rest;
+    localWidgetTypes = localWidgetTypes.filter((t) => t !== wt);
   }
 
-  function toggleHealthSub() {
-    healthSubprojectsDraft = !healthSubprojectsDraft;
-    const pos = positions.get("project_health");
-    if (pos) positions.set("project_health", { ...pos, include_subprojects: healthSubprojectsDraft });
+  function handleWidgetConfigChange(wt: DashboardWidget["widget_type"], cfg: Record<string, unknown>) {
+    widgetConfigs = { ...widgetConfigs, [wt]: cfg };
   }
 
   // ── Theme: optimistic in edit mode ───────────────────────────────────────
-  let theme = $derived(editMode ? localTheme : (resolvedLayout?.dashboard_theme ?? "dark"));
+  let theme = $derived(editMode ? localTheme : (layout?.dashboard_theme ?? "dark"));
 
   // ── GridStack ────────────────────────────────────────────────────────────
   let grid: GridStack | null = null;
   let gridEl = $state<HTMLElement | null>(null);
 
-  // Re-init gridstack only when widget types change (add/remove), NOT on position changes
   let editKey = $derived(editMode ? localWidgetTypes.join(",") : "");
 
   $effect(() => {
-    const _key = editKey; // track dependency
+    const _key = editKey;
     if (!editMode || !gridEl || !_key) return;
 
     const g = GridStack.init(
@@ -235,9 +246,8 @@
         const el = item.el as HTMLElement | undefined;
         const type = el?.dataset?.widgetType as DashboardWidget["widget_type"] | undefined;
         if (!type) continue;
-        const prev = positions.get(type) ?? { x: 0, y: 0, w: 4, h: 4 };
+        const prev = positions.get(type) ?? { x: 0, y: 0, w: 4, h: 3 };
         positions.set(type, {
-          ...prev,
           x: item.x ?? prev.x,
           y: item.y ?? prev.y,
           w: item.w ?? prev.w,
@@ -253,19 +263,14 @@
   });
 </script>
 
-<div class="dashboard-shell {`theme-${theme}`}">
+<div
+  class="dashboard-shell {`theme-${theme}`}"
+  style="--project-accent: {projectColor}"
+>
   <!-- ── Top bar ──────────────────────────────────────────────────────────── -->
   <div class="top-bar">
-    <h1 class="dash-title">{projectId ? "Project Dashboard" : "Dashboard"}</h1>
+    <h1 class="dash-title">Dashboard</h1>
     <div class="controls">
-      {#if !editMode}
-        <label class="range-label" for="db-date-range">Date range</label>
-        <select id="db-date-range" class="range-select" bind:value={dateRange}>
-          {#each Object.entries(DATE_RANGE_LABELS) as [value, label] (value)}
-            <option {value}>{label}</option>
-          {/each}
-        </select>
-      {/if}
       {#if editMode}
         <button class="edit-btn cancel-btn" type="button" onclick={cancelEdit}>
           Cancel
@@ -286,16 +291,44 @@
       <div class="view-grid">
         {#each widgets as w (w.widget_type)}
           <div class="widget-card" style={gridStyle(w)}>
-            {#if w.widget_type === "completion_overview"}
-              <CompletionOverviewWidget />
-            {:else if w.widget_type === "project_scale"}
-              <ProjectScaleWidget {dateRange} />
-            {:else if w.widget_type === "status_by_project"}
-              <StatusByProjectWidget />
-            {:else if w.widget_type === "project_health"}
-              <ProjectHealthWidget includeSubprojects={w.include_subprojects ?? false} />
-            {:else if w.widget_type === "productivity"}
-              <ProductivityWidget {dateRange} />
+            {#if w.widget_type === "p_scoreboard"}
+              <W1ScoreboardWidget {projectId} {projectColor} />
+            {:else if w.widget_type === "p_health_pulse"}
+              <W2HealthPulseWidget
+                {projectId}
+                {projectColor}
+                config={w.config as { style?: "static" | "ecg" | "pulse" } | undefined}
+              />
+            {:else if w.widget_type === "p_velocity"}
+              <W3VelocityWidget {projectId} {projectColor} />
+            {:else if w.widget_type === "p_completion_dial"}
+              <W4CompletionDialWidget {projectId} {projectColor} />
+            {:else if w.widget_type === "p_fuel_gauge"}
+              <W5FuelGaugeWidget {projectId} {projectColor} />
+            {:else if w.widget_type === "p_effort_balance"}
+              <W6EffortBalanceWidget {projectId} {projectColor} />
+            {:else if w.widget_type === "p_weekly_rhythm"}
+              <W7WeeklyRhythmWidget {projectId} {projectColor} />
+            {:else if w.widget_type === "p_time_donut"}
+              <W9TimeBreakdownWidget {projectId} {projectColor} />
+            {:else if w.widget_type === "p_status_radial"}
+              <W10StatusRadialWidget {projectId} {projectColor} />
+            {:else if w.widget_type === "p_due_timeline"}
+              <W12DueTimelineWidget {projectId} {projectColor} />
+            {:else if w.widget_type === "p_burndown"}
+              <W13BurndownWidget {projectId} {projectColor} />
+            {:else if w.widget_type === "p_completion_trend"}
+              <W14CompletionTrendWidget {projectId} {projectColor} />
+            {:else if w.widget_type === "p_subproject_tree"}
+              <W16SubprojectTreeWidget {projectId} {projectColor} />
+            {:else if w.widget_type === "p_subproject_bars"}
+              <W17SubprojectBarsWidget {projectId} {projectColor} />
+            {:else if w.widget_type === "p_subproject_sunburst"}
+              <W18SubprojectSunburstWidget
+                {projectId}
+                {projectColor}
+                config={w.config as Record<string, unknown> | undefined}
+              />
             {/if}
           </div>
         {/each}
@@ -309,7 +342,7 @@
       <div class="gs-grid-wrapper">
         <div class="grid-stack" bind:this={gridEl}>
           {#each localWidgetTypes as wt (wt)}
-            {@const pos = positions.get(wt) ?? WIDGET_DEFAULTS[wt] ?? { x: 0, y: 0, w: 4, h: 4 }}
+            {@const pos = positions.get(wt) ?? PROJECT_WIDGET_DEFAULTS[wt] ?? { x: 0, y: 0, w: 4, h: 3 }}
             <div
               class="grid-stack-item"
               {...{ "gs-x": pos.x, "gs-y": pos.y, "gs-w": pos.w, "gs-h": pos.h }}
@@ -319,16 +352,6 @@
                 <div class="edit-handle">
                   <span class="handle-icon" aria-hidden="true">⠿</span>
                   <span class="handle-label">{WIDGET_LABELS[wt] ?? wt}</span>
-                  {#if wt === "project_health"}
-                    <button
-                      class="sub-toggle"
-                      type="button"
-                      onclick={toggleHealthSub}
-                      title="Toggle subproject inclusion"
-                    >
-                      Sub: {healthSubprojectsDraft ? "On" : "Off"}
-                    </button>
-                  {/if}
                   <button
                     class="remove-btn"
                     type="button"
@@ -338,16 +361,47 @@
                   >✕</button>
                 </div>
                 <div class="edit-preview">
-                  {#if wt === "completion_overview"}
-                    <CompletionOverviewWidget />
-                  {:else if wt === "project_scale"}
-                    <ProjectScaleWidget {dateRange} />
-                  {:else if wt === "status_by_project"}
-                    <StatusByProjectWidget />
-                  {:else if wt === "project_health"}
-                    <ProjectHealthWidget includeSubprojects={healthSubprojectsDraft} />
-                  {:else if wt === "productivity"}
-                    <ProductivityWidget {dateRange} />
+                  {#if wt === "p_scoreboard"}
+                    <W1ScoreboardWidget {projectId} {projectColor} />
+                  {:else if wt === "p_health_pulse"}
+                    <W2HealthPulseWidget
+                      {projectId}
+                      {projectColor}
+                      editMode={true}
+                      config={widgetConfigs[wt] as { style?: "static" | "ecg" | "pulse" } | undefined}
+                      onConfigChange={(cfg) => handleWidgetConfigChange(wt, cfg)}
+                    />
+                  {:else if wt === "p_velocity"}
+                    <W3VelocityWidget {projectId} {projectColor} />
+                  {:else if wt === "p_completion_dial"}
+                    <W4CompletionDialWidget {projectId} {projectColor} />
+                  {:else if wt === "p_fuel_gauge"}
+                    <W5FuelGaugeWidget {projectId} {projectColor} />
+                  {:else if wt === "p_effort_balance"}
+                    <W6EffortBalanceWidget {projectId} {projectColor} />
+                  {:else if wt === "p_weekly_rhythm"}
+                    <W7WeeklyRhythmWidget {projectId} {projectColor} />
+                  {:else if wt === "p_time_donut"}
+                    <W9TimeBreakdownWidget {projectId} {projectColor} />
+                  {:else if wt === "p_status_radial"}
+                    <W10StatusRadialWidget {projectId} {projectColor} />
+                  {:else if wt === "p_due_timeline"}
+                    <W12DueTimelineWidget {projectId} {projectColor} />
+                  {:else if wt === "p_burndown"}
+                    <W13BurndownWidget {projectId} {projectColor} />
+                  {:else if wt === "p_completion_trend"}
+                    <W14CompletionTrendWidget {projectId} {projectColor} />
+                  {:else if wt === "p_subproject_tree"}
+                    <W16SubprojectTreeWidget {projectId} {projectColor} />
+                  {:else if wt === "p_subproject_bars"}
+                    <W17SubprojectBarsWidget {projectId} {projectColor} />
+                  {:else if wt === "p_subproject_sunburst"}
+                    <W18SubprojectSunburstWidget
+                      {projectId}
+                      {projectColor}
+                      config={widgetConfigs[wt] as Record<string, unknown> | undefined}
+                      editMode={true}
+                    />
                   {/if}
                 </div>
               </div>
@@ -379,7 +433,7 @@
         <section class="sidebar-section">
           <h3 class="sidebar-heading">Widgets</h3>
           <div class="widget-library">
-            {#each ALL_WIDGET_TYPES as wt (wt)}
+            {#each ALL_PROJECT_WIDGET_TYPES as wt (wt)}
               {@const isAdded = localWidgetTypes.includes(wt)}
               <div class="widget-lib-card" class:is-added={isAdded}>
                 <span class="lib-name">{WIDGET_LABELS[wt] ?? wt}</span>
@@ -442,7 +496,6 @@
     --db-grid-line: var(--color-border);
   }
 
-  /* Glass: aurora-style but all deep-blue tones */
   .theme-glass {
     --db-bg: #000000;
     --db-card: rgba(0, 10, 30, 0.55);
@@ -453,7 +506,6 @@
     --db-grid-line: rgba(56, 189, 248, 0.06);
   }
 
-  /* Aurora: true northern lights — blue, green, purple on black */
   .theme-aurora {
     --db-bg: #000000;
     --db-card: rgba(0, 10, 5, 0.60);
@@ -474,7 +526,6 @@
     overflow: hidden;
   }
 
-  /* Glass: deep-blue aurora radials, frosted cards */
   .theme-glass {
     background: #000000;
     position: relative;
@@ -506,7 +557,6 @@
     box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.06) inset;
   }
 
-  /* Aurora: true northern lights — three-color patches on black */
   .theme-aurora {
     background: #000000;
     position: relative;
@@ -558,32 +608,22 @@
     color: var(--db-ink);
   }
 
+  /* Project accent underline on title */
+  .dash-title::after {
+    content: "";
+    display: block;
+    margin-top: 3px;
+    height: 2px;
+    width: 40px;
+    border-radius: 999px;
+    background: var(--project-accent);
+    opacity: 0.8;
+  }
+
   .controls {
     display: flex;
     align-items: center;
     gap: 8px;
-  }
-
-  .range-label {
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--db-ink-muted);
-  }
-
-  .range-select {
-    padding: 4px 8px;
-    border-radius: 6px;
-    border: 1px solid var(--db-border);
-    background: var(--db-card);
-    color: var(--db-ink);
-    font: inherit;
-    font-size: 13px;
-    cursor: pointer;
-  }
-
-  .range-select:focus-visible {
-    outline: 2px solid var(--db-accent);
-    outline-offset: 1px;
   }
 
   .edit-btn {
@@ -601,7 +641,7 @@
   .edit-btn:hover {
     background: var(--db-card);
     color: var(--db-ink);
-    border-color: var(--db-accent);
+    border-color: var(--project-accent);
   }
 
   .cancel-btn {
@@ -711,23 +751,6 @@
     white-space: nowrap;
   }
 
-  .sub-toggle {
-    padding: 2px 8px;
-    border-radius: 999px;
-    border: 1px solid var(--db-border);
-    background: transparent;
-    color: var(--db-ink-muted);
-    font-size: 10px;
-    cursor: pointer;
-    flex-shrink: 0;
-    transition: background 150ms;
-  }
-
-  .sub-toggle:hover {
-    background: var(--db-card);
-    color: var(--db-ink);
-  }
-
   .remove-btn {
     padding: 2px 6px;
     border-radius: 4px;
@@ -812,9 +835,9 @@
   }
 
   .theme-btn.active {
-    background: var(--db-accent);
+    background: var(--project-accent);
     color: #fff;
-    border-color: var(--db-accent);
+    border-color: var(--project-accent);
   }
 
   /* ── Widget library ────────────────────────────────────────────────────── */
@@ -848,9 +871,9 @@
   .add-btn {
     padding: 3px 10px;
     border-radius: 6px;
-    border: 1px solid var(--db-accent);
+    border: 1px solid var(--project-accent);
     background: transparent;
-    color: var(--db-accent);
+    color: var(--project-accent);
     font: inherit;
     font-size: 11px;
     font-weight: 600;
@@ -861,7 +884,7 @@
   }
 
   .add-btn:hover {
-    background: var(--db-accent);
+    background: var(--project-accent);
     color: #fff;
   }
 
@@ -909,7 +932,7 @@
     padding: 9px 0;
     border-radius: 8px;
     border: none;
-    background: var(--db-accent);
+    background: var(--project-accent);
     color: #fff;
     font: inherit;
     font-size: 14px;

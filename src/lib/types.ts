@@ -41,6 +41,19 @@ export interface Task {
    * addressable tasks.
    */
   hidden: boolean;
+  /**
+   * ISO 8601 datetime when this task entered the done status. Set automatically
+   * when a task transitions to `Settings.done_status`; cleared when it leaves.
+   * `undefined` for tasks that have never been completed.
+   */
+  completed_at?: string;
+  /**
+   * ISO 8601 datetime when this task entered the cancelled status. Set
+   * automatically when a task transitions to `Settings.cancelled_status`;
+   * cleared when it leaves. `undefined` for tasks that have never been
+   * cancelled.
+   */
+  cancelled_at?: string;
   notes: string;
 }
 
@@ -86,6 +99,8 @@ export interface ProjectBoard {
    * when the global default is off; `false` forces it off.
    */
   status_bar_enabled_override?: boolean;
+  /** Optional project deadline as an ISO date string `"YYYY-MM-DD"`. `undefined` means no deadline set. */
+  deadline?: string;
 }
 
 /**
@@ -112,7 +127,7 @@ export interface StatusTierRule {
 export interface StatLayout {
   id: string;
   name: string;
-  kind: "status_line" | "dashboard";
+  kind: "status_line" | "dashboard" | "project_dashboard";
   /** Ordered stat ids for status-line layouts (e.g. `"estimated_time_left"`, `"status_badge"`). Empty for dashboard layouts. */
   stat_ids: string[];
   /** Per-widget grid position, size, and config for dashboard layouts. Empty for status-line layouts. */
@@ -121,17 +136,176 @@ export interface StatLayout {
   dashboard_theme?: "dark" | "app" | "glass" | "aurora";
   /** @deprecated Superseded by `dashboard_widgets`. Kept for backward-compatible deserialization. */
   widget_widths?: Record<string, "half" | "full">;
+  /** For `"project_dashboard"` layouts: the id of the project this layout belongs to. */
+  project_id?: string;
 }
 
 /** One widget's position, size, and optional config in a dashboard grid. */
 export interface DashboardWidget {
-  widget_type: "completion_overview" | "project_scale" | "status_by_project" | "project_health" | "productivity";
+  /** Widget type — global widgets or project-scoped widgets (prefixed `p_`). */
+  widget_type: "completion_overview" | "project_scale" | "status_by_project" | "project_health" | "productivity"
+    | "p_scoreboard" | "p_health_pulse" | "p_velocity" | "p_completion_dial"
+    | "p_fuel_gauge" | "p_effort_balance" | "p_weekly_rhythm"
+    | "p_time_donut" | "p_status_radial" | "p_due_timeline" | "p_burndown"
+    | "p_completion_trend" | "p_subproject_tree" | "p_subproject_bars" | "p_subproject_sunburst";
   x: number;
   y: number;
   w: number;
   h: number;
   /** Only meaningful for the `"project_health"` widget. */
   include_subprojects?: boolean;
+  /** Freeform per-widget config (e.g. `{ style: "pulse" }` for `"p_health_pulse"`). */
+  config?: Record<string, unknown>;
+}
+
+// ── Project widget API response types ─────────────────────────────────────────
+
+/** KPI scoreboard for a project's dashboard (W1). */
+export interface ProjectScoreboard {
+  tasks_done: number;
+  tasks_remaining: number;
+  total_time_tracked_mins: number;
+  estimated_time_left_mins: number;
+}
+
+/** Health pulse for a project's dashboard (W2). */
+export interface ProjectHealthPulse {
+  /** `"Great"` | `"On Track"` | `"Needs Attention"` | `"Critical"` | `"Severe"` */
+  tier: string;
+  /** Hex color for the tier. */
+  tier_color: string;
+  due_today: number;
+  due_tomorrow: number;
+}
+
+/** Velocity data for a project's dashboard (W3). */
+export interface ProjectVelocity {
+  done_per_week_avg: number;
+  done_per_week_prev_avg: number;
+  due_next_7_days: number;
+}
+
+/** Completion dial data for a project's dashboard (W4). */
+export interface ProjectCompletionDial {
+  /** 0.0–100.0 completion percentage by task count. */
+  completion_pct: number;
+  /** 0.0–100.0 completion percentage weighted by estimated time. */
+  weighted_pct: number;
+}
+
+/** Fuel gauge data for a project's dashboard (W5). */
+export interface ProjectFuelGauge {
+  estimated_remaining_mins: number;
+  estimated_total_mins: number;
+}
+
+/** Effort balance data for a project's dashboard (W6). */
+export interface ProjectEffortBalance {
+  estimated_total_mins: number;
+  tracked_total_mins: number;
+}
+
+/** Weekly rhythm data for a project's dashboard (W7). */
+export interface ProjectWeeklyRhythm {
+  /** Average tracked hours per weekday. Index 0 = Mon, 6 = Sun. */
+  weekday_hours: [number, number, number, number, number, number, number];
+  /** 0=Mon … 6=Sun – which bar to highlight as "today". */
+  today_weekday: number;
+}
+
+/** One slice in the time-breakdown donut (W9). */
+export interface ProjectTimeBreakdownSlice {
+  name: string;
+  color: string;
+  tracked_minutes: number;
+}
+
+/** Time breakdown donut data for W9. */
+export interface ProjectTimeBreakdown {
+  slices: ProjectTimeBreakdownSlice[];
+  total_tracked_minutes: number;
+  /** true = slices are direct subprojects; false = tag fallback */
+  by_subproject: boolean;
+}
+
+/** One wedge in the status radial (W10). */
+export interface ProjectStatusSlice {
+  status_id: string;
+  label: string;
+  color: string;
+  count: number;
+}
+
+/** One date bucket on the due-date timeline (W12). */
+export interface ProjectDueDatePoint {
+  date: string;
+  count: number;
+  overdue_count: number;
+  done_count: number;
+}
+
+/** Due-date timeline data for W12. */
+export interface ProjectDueDateTimeline {
+  points: ProjectDueDatePoint[];
+  today: string;
+  deadline: string | null;
+}
+
+/** One point on the burndown chart (W13). */
+export interface ProjectBurndownPoint {
+  date: string;
+  remaining_hours: number;
+  ideal_hours: number;
+}
+
+/** Burndown chart data for W13. */
+export interface ProjectBurndown {
+  points: ProjectBurndownPoint[];
+  start_date: string;
+  end_date: string;
+  has_deadline: boolean;
+}
+
+/** One week bucket in the completion trend (W14). */
+export interface ProjectCompletionWeek {
+  week_label: string;
+  count: number;
+  is_current: boolean;
+}
+
+/** One node in the subproject tree (W16). */
+export interface ProjectTreeNode {
+  project_id: string;
+  name: string;
+  color: string;
+  parent_id: string | null;
+  task_count: number;
+  completion_pct: number;
+  health_tier: string;
+  depth: number;
+}
+
+/** One bar in the subproject progress list (W17). */
+export interface ProjectSubprojectBar {
+  project_id: string;
+  name: string;
+  color: string;
+  depth: number;
+  completion_pct: number;
+  done: number;
+  total: number;
+  health_tier: string;
+}
+
+/** One slice in the subproject sunburst (W18). */
+export interface ProjectSunburstSlice {
+  project_id: string;
+  name: string;
+  color: string;
+  parent_id: string | null;
+  depth: number;
+  tracked_minutes: number;
+  task_count: number;
 }
 
 /**
@@ -238,6 +412,19 @@ export interface StatusDefinition {
   color: string;
 }
 
+/** One action → zero-or-more key-combo mapping for vim navigation. */
+export interface VimKeybinding {
+  action_id: string;
+  combos: string[];
+}
+
+/** Global vim navigation settings. `enabled` is the master switch. */
+export interface VimSettings {
+  enabled: boolean;
+  keybindings: VimKeybinding[];
+  status_keybindings: VimKeybinding[];
+}
+
 /**
  * Global, app-wide settings: the available priority levels, the global list
  * of statuses (from which each project's board is configured), and the
@@ -309,6 +496,12 @@ export interface Settings {
   status_bar_enabled: boolean;
   /** When `true`, status-line tiles show a tinted background keyed to the project's current `StatusTier` color. `false` by default. */
   status_bar_tile_tint: boolean;
+  /**
+   * Vim navigation settings: master enable switch and optional per-action keybinding overrides.
+   * Optional here because test fixtures predate this field; the backend always supplies it via
+   * `#[serde(default)]` so runtime values are always present.
+   */
+  vim?: VimSettings;
 }
 
 /**

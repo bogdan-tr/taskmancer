@@ -3,6 +3,7 @@
   import "../styles/global.css";
   import OrphanedSessionsDialog from "$lib/components/OrphanedSessionsDialog.svelte";
   import Sidebar from "$lib/components/Sidebar.svelte";
+  import VimModeIndicator from "$lib/components/VimModeIndicator.svelte";
   import { initDisplay } from "$lib/displaySettings.svelte";
   import { initGeneral } from "$lib/generalSettings.svelte";
   import { initProjectTree } from "$lib/projectTree.svelte";
@@ -59,6 +60,8 @@
     {@render children()}
   </div>
 </div>
+
+<VimModeIndicator />
 
 <OrphanedSessionsDialog
   open={orphanedDialogOpen}

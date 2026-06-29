@@ -13,6 +13,33 @@ pub const STATUS_LINE_LAYOUT_KIND: &str = "status_line";
 /// by [`validate_dashboard_layout`].
 pub const DASHBOARD_LAYOUT_KIND: &str = "dashboard";
 
+/// The `StatLayout.kind` value for project-scoped dashboard layouts — one
+/// per project, stored in the same `layouts.json` file, identified by the
+/// `project_id` field. Validated by [`validate_project_dashboard_layout`].
+pub const PROJECT_DASHBOARD_LAYOUT_KIND: &str = "project_dashboard";
+
+/// The fixed set of widget ids a `"project_dashboard"` `StatLayout` entry
+/// may reference — see the project-widgets feature spec for each widget's role.
+/// Phase A implements W1–W6; Phase B slots are reserved here for validation
+/// but not yet implemented in the frontend.
+pub const KNOWN_PROJECT_WIDGET_IDS: &[&str] = &[
+    "p_scoreboard",          // W1
+    "p_health_pulse",        // W2
+    "p_velocity",            // W3
+    "p_completion_dial",     // W4
+    "p_fuel_gauge",          // W5
+    "p_effort_balance",      // W6
+    "p_weekly_rhythm",       // W7 (Phase B)
+    "p_time_donut",          // W9 (Phase B)
+    "p_status_radial",       // W10 (Phase B)
+    "p_due_timeline",        // W12 (Phase B)
+    "p_burndown",            // W13 (Phase B)
+    "p_completion_trend",    // W14 (Phase B)
+    "p_subproject_tree",     // W16 (Phase B)
+    "p_subproject_bars",     // W17 (Phase B)
+    "p_subproject_sunburst", // W18 (Phase B)
+];
+
 /// The fixed set of widget ids a `"dashboard"` `StatLayout.stat_ids` entry
 /// may reference — see the analytics dashboard feature spec for each widget's
 /// role.  Order here matches the spec's catalog listing order and is also the
@@ -38,6 +65,10 @@ pub const KNOWN_STATUS_LINE_STAT_IDS: &[&str] = &[
     "avg_time_per_week",
     "completion_pct",
     "weighted_completion_pct",
+    "mini_health",
+    "mini_completion",
+    "mini_fuel",
+    "mini_sparkline",
 ];
 
 /// A named, reusable arrangement of stats: today only the project status
@@ -72,12 +103,18 @@ pub struct StatLayout {
     /// `None` on status-line layouts and on dashboard layouts using the default theme.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dashboard_theme: Option<String>,
+    /// For `kind == "project_dashboard"` layouts: the id of the project this
+    /// layout belongs to. `None` on status-line and global dashboard layouts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
 }
 
 /// One widget's position, size, and optional config in a dashboard grid.
 /// `x` and `y` are zero-based column/row indices; `w` and `h` are the column-
 /// span and row-span.  `include_subprojects` is only used by the
-/// `"project_health"` widget (ignored by all others).
+/// `"project_health"` widget (ignored by all others). `config` holds optional
+/// per-widget settings (e.g. animation style for `"p_health_pulse"`), stored
+/// as raw JSON so new fields don't require schema changes.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DashboardWidget {
     pub widget_type: String,
@@ -87,6 +124,10 @@ pub struct DashboardWidget {
     pub h: i32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub include_subprojects: Option<bool>,
+    /// Free-form per-widget config. Currently only used by `"p_health_pulse"`
+    /// (`{"style":"static"|"ecg"|"pulse"}`). `None` means use defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<serde_json::Value>,
 }
 
 impl StatLayout {
@@ -100,6 +141,7 @@ impl StatLayout {
             widget_widths: HashMap::new(),
             dashboard_widgets: Vec::new(),
             dashboard_theme: None,
+            project_id: None,
         }
     }
 
@@ -113,6 +155,27 @@ impl StatLayout {
             widget_widths: HashMap::new(),
             dashboard_widgets: widgets,
             dashboard_theme: None,
+            project_id: None,
+        }
+    }
+
+    /// Creates a new project-dashboard layout for `project_id` with a freshly
+    /// generated id and the Phase A default four-widget arrangement.
+    pub fn new_project_dashboard(project_id: &str) -> Self {
+        StatLayout {
+            id: Uuid::new_v4().to_string(),
+            name: "Project Dashboard".to_string(),
+            kind: PROJECT_DASHBOARD_LAYOUT_KIND.to_string(),
+            stat_ids: Vec::new(),
+            widget_widths: HashMap::new(),
+            dashboard_widgets: vec![
+                DashboardWidget { widget_type: "p_completion_dial".to_string(), x: 0, y: 0, w: 4, h: 4, include_subprojects: None, config: None },
+                DashboardWidget { widget_type: "p_health_pulse".to_string(),    x: 4, y: 0, w: 4, h: 4, include_subprojects: None, config: None },
+                DashboardWidget { widget_type: "p_scoreboard".to_string(),      x: 8, y: 0, w: 4, h: 4, include_subprojects: None, config: None },
+                DashboardWidget { widget_type: "p_weekly_rhythm".to_string(),   x: 0, y: 4, w: 6, h: 4, include_subprojects: None, config: None },
+            ],
+            dashboard_theme: None,
+            project_id: Some(project_id.to_string()),
         }
     }
 }
@@ -210,11 +273,11 @@ fn default_dashboard_layout() -> StatLayout {
     StatLayout::new_dashboard(
         "Default".to_string(),
         vec![
-            DashboardWidget { widget_type: "completion_overview".to_string(), x: 0, y: 0, w: 6, h: 4, include_subprojects: None },
-            DashboardWidget { widget_type: "project_scale".to_string(), x: 6, y: 0, w: 6, h: 4, include_subprojects: None },
-            DashboardWidget { widget_type: "status_by_project".to_string(), x: 0, y: 4, w: 4, h: 4, include_subprojects: None },
-            DashboardWidget { widget_type: "project_health".to_string(), x: 4, y: 4, w: 3, h: 4, include_subprojects: Some(false) },
-            DashboardWidget { widget_type: "productivity".to_string(), x: 7, y: 4, w: 5, h: 4, include_subprojects: None },
+            DashboardWidget { widget_type: "completion_overview".to_string(), x: 0, y: 0, w: 6, h: 4, include_subprojects: None, config: None },
+            DashboardWidget { widget_type: "project_scale".to_string(), x: 6, y: 0, w: 6, h: 4, include_subprojects: None, config: None },
+            DashboardWidget { widget_type: "status_by_project".to_string(), x: 0, y: 4, w: 4, h: 4, include_subprojects: None, config: None },
+            DashboardWidget { widget_type: "project_health".to_string(), x: 4, y: 4, w: 3, h: 4, include_subprojects: Some(false), config: None },
+            DashboardWidget { widget_type: "productivity".to_string(), x: 7, y: 4, w: 5, h: 4, include_subprojects: None, config: None },
         ],
     )
 }
@@ -242,6 +305,54 @@ pub fn ensure_default_dashboard_layout(
     settings.default_dashboard_layout_id = layout.id.clone();
     layouts.push(layout);
     Some((layouts, settings))
+}
+
+/// Returns `Ok(())` if `layout` is internally well-formed as a project
+/// dashboard layout: `kind` must be [`PROJECT_DASHBOARD_LAYOUT_KIND`],
+/// `project_id` must be `Some`, and every entry in `dashboard_widgets` must
+/// have a `widget_type` that is one of [`KNOWN_PROJECT_WIDGET_IDS`].
+pub fn validate_project_dashboard_layout(layout: &StatLayout) -> Result<(), String> {
+    if layout.kind != PROJECT_DASHBOARD_LAYOUT_KIND {
+        return Err(format!(
+            "'{}' is not a project_dashboard layout kind",
+            layout.kind
+        ));
+    }
+    if layout.project_id.is_none() {
+        return Err("project_dashboard layout must have a project_id".to_string());
+    }
+    if let Some(unknown) = layout
+        .dashboard_widgets
+        .iter()
+        .find(|w| !KNOWN_PROJECT_WIDGET_IDS.contains(&w.widget_type.as_str()))
+    {
+        return Err(format!(
+            "'{}' is not a recognized project widget type",
+            unknown.widget_type
+        ));
+    }
+    Ok(())
+}
+
+/// Ensures a `project_dashboard` layout exists in `layouts` for `project_id`,
+/// creating the default four-widget layout (see [`StatLayout::new_project_dashboard`])
+/// if none is found. Returns the layout's `id` (whether pre-existing or freshly
+/// created). If a new layout is created, it is pushed onto `layouts` so the
+/// caller can persist the updated list.
+pub fn ensure_default_project_dashboard_layout(
+    project_id: &str,
+    layouts: &mut Vec<StatLayout>,
+) -> String {
+    if let Some(existing) = layouts.iter().find(|l| {
+        l.kind == PROJECT_DASHBOARD_LAYOUT_KIND
+            && l.project_id.as_deref() == Some(project_id)
+    }) {
+        return existing.id.clone();
+    }
+    let layout = StatLayout::new_project_dashboard(project_id);
+    let id = layout.id.clone();
+    layouts.push(layout);
+    id
 }
 
 #[cfg(test)]
@@ -328,6 +439,7 @@ mod tests {
             widget_widths: HashMap::new(),
             dashboard_widgets: Vec::new(),
             dashboard_theme: None,
+            project_id: None,
         };
 
         let err = validate_status_layout(&layout).unwrap_err();
@@ -447,6 +559,7 @@ mod tests {
                 w: 2,
                 h: 4,
                 include_subprojects: None,
+                config: None,
             })
             .collect();
         let layout = StatLayout::new_dashboard("Full".to_string(), widgets);
@@ -471,6 +584,7 @@ mod tests {
             widget_widths: HashMap::new(),
             dashboard_widgets: Vec::new(),
             dashboard_theme: None,
+            project_id: None,
         };
 
         let err = validate_dashboard_layout(&layout).unwrap_err();
@@ -488,6 +602,7 @@ mod tests {
                 w: 2,
                 h: 2,
                 include_subprojects: None,
+                config: None,
             }],
         );
 
@@ -521,5 +636,92 @@ mod tests {
         let result = ensure_default_dashboard_layout(layouts, settings);
 
         assert!(result.is_none());
+    }
+
+    // --- Project dashboard layout tests ---
+
+    #[test]
+    fn new_project_dashboard_has_project_dashboard_kind_and_project_id() {
+        let layout = StatLayout::new_project_dashboard("proj-1");
+
+        assert!(!layout.id.is_empty());
+        assert_eq!(layout.kind, PROJECT_DASHBOARD_LAYOUT_KIND);
+        assert_eq!(layout.project_id, Some("proj-1".to_string()));
+        assert_eq!(layout.dashboard_widgets.len(), 4);
+    }
+
+    #[test]
+    fn validate_project_dashboard_layout_accepts_a_well_formed_layout() {
+        let layout = StatLayout::new_project_dashboard("proj-1");
+
+        assert!(validate_project_dashboard_layout(&layout).is_ok());
+    }
+
+    #[test]
+    fn validate_project_dashboard_layout_rejects_wrong_kind() {
+        let mut layout = StatLayout::new_project_dashboard("proj-1");
+        layout.kind = "dashboard".to_string();
+
+        let err = validate_project_dashboard_layout(&layout).unwrap_err();
+        assert!(err.contains("project_dashboard"));
+    }
+
+    #[test]
+    fn validate_project_dashboard_layout_rejects_missing_project_id() {
+        let mut layout = StatLayout::new_project_dashboard("proj-1");
+        layout.project_id = None;
+
+        let err = validate_project_dashboard_layout(&layout).unwrap_err();
+        assert!(err.contains("project_id"));
+    }
+
+    #[test]
+    fn validate_project_dashboard_layout_rejects_unknown_widget_type() {
+        let mut layout = StatLayout::new_project_dashboard("proj-1");
+        layout.dashboard_widgets.push(DashboardWidget {
+            widget_type: "unknown_widget".to_string(),
+            x: 0, y: 0, w: 4, h: 4,
+            include_subprojects: None,
+            config: None,
+        });
+
+        let err = validate_project_dashboard_layout(&layout).unwrap_err();
+        assert!(err.contains("unknown_widget"));
+    }
+
+    #[test]
+    fn ensure_default_project_dashboard_layout_creates_one_when_none_exists() {
+        let mut layouts: Vec<StatLayout> = Vec::new();
+
+        let id = ensure_default_project_dashboard_layout("proj-1", &mut layouts);
+
+        assert_eq!(layouts.len(), 1);
+        assert_eq!(layouts[0].kind, PROJECT_DASHBOARD_LAYOUT_KIND);
+        assert_eq!(layouts[0].project_id, Some("proj-1".to_string()));
+        assert_eq!(id, layouts[0].id);
+    }
+
+    #[test]
+    fn ensure_default_project_dashboard_layout_returns_existing_without_creating() {
+        let existing = StatLayout::new_project_dashboard("proj-1");
+        let existing_id = existing.id.clone();
+        let mut layouts = vec![existing];
+
+        let id = ensure_default_project_dashboard_layout("proj-1", &mut layouts);
+
+        assert_eq!(layouts.len(), 1);
+        assert_eq!(id, existing_id);
+    }
+
+    #[test]
+    fn ensure_default_project_dashboard_layout_creates_separately_per_project() {
+        let layout_a = StatLayout::new_project_dashboard("proj-a");
+        let mut layouts = vec![layout_a];
+
+        ensure_default_project_dashboard_layout("proj-b", &mut layouts);
+
+        assert_eq!(layouts.len(), 2);
+        assert!(layouts.iter().any(|l| l.project_id.as_deref() == Some("proj-a")));
+        assert!(layouts.iter().any(|l| l.project_id.as_deref() == Some("proj-b")));
     }
 }

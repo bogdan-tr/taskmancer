@@ -13,7 +13,13 @@
   import { getErrorMessage } from "$lib/errors";
   import { refreshProjects } from "$lib/projects.svelte";
   import { refreshProjectStatusStats } from "$lib/statusLine.svelte";
-  import { isKnownStatusLineStatId, statLabel } from "$lib/statusLineDisplay";
+  import {
+    isKnownStatusLineStatId,
+    MINI_WIDGET_LABELS,
+    MINI_WIDGET_STAT_IDS,
+    statLabel,
+    type TextStatId,
+  } from "$lib/statusLineDisplay";
   import { ALL_STATUS_LINE_STAT_IDS, reorderStatIds, toggleStatId } from "$lib/statusLineLayoutEditor";
   import type { StatLayout } from "$lib/types";
 
@@ -158,11 +164,12 @@
     draftStatIds = event.detail.items;
   }
 
-  /** Display label for a `stat_ids` entry that may be a stale/unrecognized id (a layout edited by a future version, or a since-removed stat) — degrades to the raw id rather than throwing, mirroring `ProjectStatusLine.svelte`'s own `isKnownStatusLineStatId` filtering. `"status_badge"` is handled first since `statLabel` only accepts the other 5 stat ids (see `StatusLineStatId`'s own doc comment). */
+  /** Display label for a `stat_ids` entry that may be a stale/unrecognized id (a layout edited by a future version, or a since-removed stat) — degrades to the raw id rather than throwing, mirroring `ProjectStatusLine.svelte`'s own `isKnownStatusLineStatId` filtering. `"status_badge"` and mini widget ids are handled first since `statLabel` only accepts text-value stat ids. */
   function displayLabelFor(statId: string): string {
     if (statId === "status_badge") return "Status badge";
+    if (MINI_WIDGET_STAT_IDS.has(statId as never)) return MINI_WIDGET_LABELS[statId] ?? statId;
     if (!isKnownStatusLineStatId(statId)) return statId;
-    return statLabel(statId as Exclude<typeof statId, "status_badge">);
+    return statLabel(statId as TextStatId);
   }
 
   /** Commits the draft back to the currently-applied layout *in place* — every other project or the global default pointing at this same layout id sees the change immediately, per `StatLayout`'s shared-edit semantics. */
@@ -296,7 +303,19 @@
 
     <h3 id="other-stats-heading">Other stats</h3>
     <ul class="stat-list">
-      {#each ALL_STATUS_LINE_STAT_IDS.filter((id) => !draftStatIds.some((item) => item.id === id)) as statId (statId)}
+      {#each ALL_STATUS_LINE_STAT_IDS.filter((id) => !draftStatIds.some((item) => item.id === id) && !MINI_WIDGET_STAT_IDS.has(id as never)) as statId (statId)}
+        <li class="stat-row">
+          <label class="stat-toggle">
+            <input type="checkbox" checked={false} onchange={() => handleToggleStat(statId, true)} />
+            {displayLabelFor(statId)}
+          </label>
+        </li>
+      {/each}
+    </ul>
+
+    <h3>Mini widgets</h3>
+    <ul class="stat-list">
+      {#each ALL_STATUS_LINE_STAT_IDS.filter((id) => !draftStatIds.some((item) => item.id === id) && MINI_WIDGET_STAT_IDS.has(id as never)) as statId (statId)}
         <li class="stat-row">
           <label class="stat-toggle">
             <input type="checkbox" checked={false} onchange={() => handleToggleStat(statId, true)} />

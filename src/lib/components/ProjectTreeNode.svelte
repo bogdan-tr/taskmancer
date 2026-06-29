@@ -2,6 +2,7 @@
   import { dndzone, type DndEvent } from "svelte-dnd-action";
   import { page } from "$app/state";
   import { updateProject } from "$lib/api";
+  import { vimState } from "$lib/vim.svelte";
   import { getErrorMessage } from "$lib/errors";
   import { projectsState, refreshProjects } from "$lib/projects.svelte";
   import { childrenOf, computeZoneOrderUpdates } from "$lib/projectTree";
@@ -102,6 +103,7 @@
       href="/projects/{project.id}"
       class="nav-link"
       class:active={page.url.pathname === `/projects/${project.id}`}
+      class:vim-sidebar-cursor={vimState.sidebarCursorRoute === `/projects/${project.id}`}
       title={sidebarState.collapsed ? project.name : undefined}
     >
       <span class="color-dot" style="background: {project.color}" aria-hidden="true"></span>

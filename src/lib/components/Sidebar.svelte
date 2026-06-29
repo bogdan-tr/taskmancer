@@ -2,6 +2,7 @@
   import { dndzone, type DndEvent } from "svelte-dnd-action";
   import { page } from "$app/state";
   import { updateProject } from "$lib/api";
+  import { vimState } from "$lib/vim.svelte";
   import NewProjectModal from "./NewProjectModal.svelte";
   import ProjectTreeNode from "./ProjectTreeNode.svelte";
   import { getErrorMessage } from "$lib/errors";
@@ -116,6 +117,7 @@
       href="/"
       class="nav-link"
       class:active={page.url.pathname === "/"}
+      class:vim-sidebar-cursor={vimState.sidebarCursorRoute === "/"}
       title={sidebarState.collapsed ? "All Tasks" : undefined}
     >
       <svg
@@ -140,6 +142,7 @@
       href="/dashboard"
       class="nav-link"
       class:active={page.url.pathname === "/dashboard"}
+      class:vim-sidebar-cursor={vimState.sidebarCursorRoute === "/dashboard"}
       title={sidebarState.collapsed ? "Dashboard" : undefined}
     >
       <svg
@@ -256,6 +259,8 @@
     transition: width var(--duration-normal) var(--ease-out-expo);
     overflow-y: auto;
     overflow-x: hidden;
+    position: relative;
+    z-index: 50;
   }
 
   .sidebar.collapsed {
@@ -450,5 +455,11 @@
 
   .settings-link {
     margin-top: auto;
+  }
+
+  :global(.vim-sidebar-cursor) {
+    outline: 2px solid var(--color-accent);
+    outline-offset: -2px;
+    background: color-mix(in oklch, var(--color-accent) 10%, transparent) !important;
   }
 </style>
