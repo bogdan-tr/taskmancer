@@ -480,6 +480,43 @@
       isTrackingPending = false;
     }
   }
+
+  /**
+   * Vim-friendly keyboard shortcuts while the edit dialog is open.
+   * Ctrl+S / Ctrl+Enter → save  |  Ctrl+D → delete  |  Escape blurs the active
+   * input first (so a second Escape reaches the dialog's native onclose handler).
+   */
+  function handleDialogKeydown(event: KeyboardEvent) {
+    if (!open || !task) return;
+
+    // Ctrl+S or Ctrl+Enter — save
+    if (event.ctrlKey && (event.key === "s" || event.key === "Enter")) {
+      event.preventDefault();
+      saveEdit(event);
+      return;
+    }
+
+    // Ctrl+D — delete
+    if (event.ctrlKey && event.key === "d") {
+      event.preventDefault();
+      handleDelete();
+      return;
+    }
+
+    // j/k inside a focused <select> → move option down/up (vim-style)
+    if (!event.ctrlKey && !event.altKey && (event.key === "j" || event.key === "k")) {
+      const focused = document.activeElement;
+      if (focused instanceof HTMLSelectElement) {
+        event.preventDefault();
+        const delta = event.key === "j" ? 1 : -1;
+        const next = focused.selectedIndex + delta;
+        if (next >= 0 && next < focused.options.length) {
+          focused.selectedIndex = next;
+          focused.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+      }
+    }
+  }
 </script>
 
 <dialog
@@ -488,6 +525,7 @@
   aria-labelledby="task-edit-heading"
   onclose={onCancel}
   onclick={handleBackdropClick}
+  onkeydown={handleDialogKeydown}
 >
   {#if task}
     <div class="dialog-heading-row">
@@ -720,9 +758,9 @@
         </button>
       {/if}
       <div class="edit-actions">
-        <button type="submit">Save</button>
-        <button type="button" class="secondary" onclick={onCancel}>Cancel</button>
-        <button type="button" class="danger" onclick={handleDelete}>Delete</button>
+        <button type="submit" title="Save (Ctrl+S)">Save</button>
+        <button type="button" class="secondary" onclick={onCancel} title="Cancel (Esc)">Cancel</button>
+        <button type="button" class="danger" onclick={handleDelete} title="Delete (Ctrl+D)">Delete</button>
       </div>
     </form>
     <TimeLogSection {task} />

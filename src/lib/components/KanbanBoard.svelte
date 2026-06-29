@@ -1,5 +1,6 @@
 <script lang="ts">
   import { goto } from "$app/navigation";
+  import { page } from "$app/state";
   import { onMount } from "svelte";
   import type { DndEvent } from "svelte-dnd-action";
   import {
@@ -23,10 +24,13 @@
   import CalendarView from "$lib/components/CalendarView.svelte";
   import ConfirmDialog from "$lib/components/ConfirmDialog.svelte";
   import DashboardView from "$lib/components/DashboardView.svelte";
+  import ProjectDashboardView from "$lib/components/ProjectDashboardView.svelte";
   import KanbanGrid from "$lib/components/KanbanGrid.svelte";
   import GlobalStatusBar from "$lib/components/GlobalStatusBar.svelte";
   import ProjectStatusLine from "$lib/components/ProjectStatusLine.svelte";
+  import TaskEditDialog from "$lib/components/TaskEditDialog.svelte";
   import WeekView from "$lib/components/WeekView.svelte";
+  import { vimState } from "$lib/vim.svelte";
   import { displayState } from "$lib/displaySettings.svelte";
   import { getErrorMessage } from "$lib/errors";
   import { formatFinishDayResult } from "$lib/finishDay";
@@ -46,7 +50,9 @@
   import { FALLBACK_PRIORITIES } from "$lib/priorities.svelte";
   import { effectiveBoardStatuses } from "$lib/projectBoardSettings";
   import { projectsState, refreshProjects } from "$lib/projects.svelte";
-  import { descendantsOf, selfAndAncestors } from "$lib/projectTree";
+  import { childrenOf, descendantsOf, selfAndAncestors } from "$lib/projectTree";
+  import { isExpanded, toggleExpanded } from "$lib/projectTree.svelte";
+  import type { Project } from "$lib/types";
   import type { DueRule, RecurrenceFrequency, SeriesEditScope } from "$lib/recurrence";
   import { settingsState } from "$lib/settings.svelte";
   import {
@@ -71,7 +77,9 @@
     isTaskActive,
     liveDisplaySecondsFor,
     startProjectTracking,
+    startTaskTracking,
     stopProjectTracking,
+    stopTaskTracking,
   } from "$lib/tracking.svelte";
   import type { Task } from "$lib/types";
   import { formatDateISO } from "$lib/weekRange";
@@ -89,6 +97,24 @@
 
   /** Spacing between sequential `order` values when a bucket is renumbered after a drag. */
   const ORDER_STEP = 1000;
+
+  /** Returns all projects in sidebar display order (depth-first tree), excluding subtask containers. */
+  /** Depth-first visible project order, respecting sidebar expand/collapse state. */
+  function sidebarProjectOrder(projects: Project[]): Project[] {
+    const excluded = new Set(
+      projects.filter((p) => containerOwner(p.id, tasksState.items) !== undefined).map((p) => p.id),
+    );
+    const result: Project[] = [];
+    function traverse(parentId: string | undefined) {
+      for (const child of childrenOf(projects, parentId)) {
+        if (excluded.has(child.id)) continue;
+        result.push(child);
+        if (isExpanded(child.id)) traverse(child.id);
+      }
+    }
+    traverse(undefined);
+    return result;
+  }
 
   let priorities = $derived(settingsState.current?.priorities ?? FALLBACK_PRIORITIES);
   let statuses = $derived(sortedStatuses(settingsState.current?.statuses ?? FALLBACK_STATUSES));
@@ -207,9 +233,14 @@
   let finishDayConfirmOpen = $state(false);
   let finishDayMessage = $state("");
   let isFinishingDay = $state(false);
+  let vimDeleteOpen = $state(false);
+  let vimDeletePendingId = $state<string | null>(null);
 
   /** Which view this board shows: the Kanban grid or the calendar week view. */
   let activeView: "board" | "week" | "calendar" | "dashboard" = $state("board");
+
+  /** The task opened for editing via the vim `e` key. `undefined` when the dialog is closed. */
+  let vimEditTask: Task | undefined = $state(undefined);
 
   /**
    * Every task visible on this board (project-filtered, but not subject to
@@ -231,6 +262,40 @@
    */
   let weekCalendarTasks = $derived(
     visibleTasks.filter((task) => !task.hidden && !isHiddenAsSubtask(task, visibleTasks, projectFilter)),
+  );
+
+  /** All `{ date, taskIds }` entries across every dated task — the full global list. */
+  let weekDays = $derived(
+    (() => {
+      const map = new Map<string, string[]>();
+      for (const t of weekCalendarTasks) {
+        const date = t.due?.slice(0, 10) ?? t.scheduled?.slice(0, 10);
+        if (!date) continue;
+        if (!map.has(date)) map.set(date, []);
+        map.get(date)!.push(t.id);
+      }
+      return [...map.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([date, taskIds]) => ({ date, taskIds }));
+    })(),
+  );
+
+  /** Date strings currently visible in WeekView — set via onDateStringsChange callback. */
+  let weekViewDateStrings = $state<string[]>([]);
+  /** Date strings currently visible in CalendarView — set via onDateStringsChange callback. */
+  let calendarViewDateStrings = $state<string[]>([]);
+
+  /** weekDays filtered to only dates visible in the current WeekView. */
+  let weekViewVisibleDays = $derived(
+    weekViewDateStrings.length > 0
+      ? weekDays.filter((d) => weekViewDateStrings.includes(d.date))
+      : [],
+  );
+  /** weekDays filtered to only dates visible in the current CalendarView. */
+  let calendarViewVisibleDays = $derived(
+    calendarViewDateStrings.length > 0
+      ? weekDays.filter((d) => calendarViewDateStrings.includes(d.date))
+      : [],
   );
 
   /** Opens the add-task modal, optionally pre-marking it as creating a subtask of the given task (the "Create Subtask" entry points). */
@@ -539,6 +604,71 @@
     }
   }
 
+  /** Toggles the timer for a task via vim `s` — mirrors TaskCard's `handleTrackingToggle`. */
+  async function handleVimTimerToggle(taskId: string) {
+    const task = visibleTasks.find((t) => t.id === taskId);
+    if (!task) return;
+    try {
+      if (isTaskActive(taskId)) {
+        const trackedMinutes = await stopTaskTracking(taskId);
+        upsertCachedTask({ ...task, tracked_minutes: trackedMinutes });
+      } else {
+        const autoTransitioned = await startTaskTracking(taskId);
+        if (autoTransitioned) await handleUpdate(autoTransitioned);
+      }
+    } catch (error) {
+      errorMessage = getErrorMessage(error, "Failed to update tracking");
+    }
+  }
+
+  /** Changes the status of one or more tasks via vim status shortcuts. */
+  async function handleVimStatusChange(taskIds: string[], statusId: string) {
+    for (const taskId of taskIds) {
+      const task = visibleTasks.find((t) => t.id === taskId);
+      if (task) await handleUpdate({ ...task, status: statusId });
+    }
+  }
+
+  /** Deletes a task via vim `D`, showing a ConfirmDialog instead of window.confirm. */
+  function handleVimDeleteTask(taskId: string) {
+    vimDeletePendingId = taskId;
+    vimDeleteOpen = true;
+  }
+
+  /** Moves a batch of selected tasks one calendar day left or right (week/calendar view visual mode). */
+  async function handleVimMoveTasksToAdjacentDay(taskIds: string[], direction: "left" | "right") {
+    const delta = direction === "left" ? -1 : 1;
+    const updates: Task[] = [];
+    for (const taskId of taskIds) {
+      const task = visibleTasks.find((t) => t.id === taskId);
+      if (!task) continue;
+      const dateStr = task.scheduled ?? task.due;
+      if (!dateStr) continue;
+      const d = new Date(dateStr + "T00:00:00");
+      d.setDate(d.getDate() + delta);
+      const newDate = d.toISOString().slice(0, 10);
+      updates.push(task.scheduled ? { ...task, scheduled: newDate } : { ...task, due: newDate });
+    }
+    await Promise.all(updates.map((t) => handleUpdate(t)));
+  }
+
+  /** Moves a batch of selected tasks one status column left or right. */
+  async function handleVimMoveTasksToAdjacentStatus(taskIds: string[], direction: "left" | "right") {
+    const focusedTask = visibleTasks.find((t) => t.id === vimState.focusedTaskId);
+    if (!focusedTask) return;
+    const currentColIdx = boardColumns.findIndex((col) => col.id === focusedTask.status);
+    if (currentColIdx === -1) return;
+    const targetColIdx = direction === "left" ? currentColIdx - 1 : currentColIdx + 1;
+    if (targetColIdx < 0 || targetColIdx >= boardColumns.length) return;
+    const targetStatusId = boardColumns[targetColIdx].id;
+    if (!targetStatusId) return; // "Other" column has no fixed status
+    const updates = taskIds
+      .map((id) => visibleTasks.find((t) => t.id === id))
+      .filter((t): t is Task => t !== undefined)
+      .map((t) => ({ ...t, status: targetStatusId }));
+    await Promise.all(updates.map((t) => handleUpdate(t)));
+  }
+
   /**
    * `scope: "future"` can delete an unbounded number of other occurrences
    * at once, so rather than track which ids those were, a full `refresh()`
@@ -750,23 +880,129 @@
   }
 
   /**
-   * Opens the add-task modal with Ctrl+T, from anywhere on the page.
-   * Skipped while focus is in an editable field (e.g. a task's title edit
-   * input) so the shortcut doesn't yank the user out of an in-progress edit.
+   * Opens the add-task modal with Ctrl+T (always works, even in vim mode — it
+   * uses a modifier key so there is no conflict with single-letter vim bindings).
+   * Also delegates to `vimState.handleKeydown` for all vim navigation: Escape
+   * activates/deactivates vim mode; hjkl/G/gg/v/vv/Space navigate and select;
+   * e/s/n/D/d/i/b/c trigger task actions and status changes.
    */
   function handleGlobalKeydown(event: KeyboardEvent) {
     const target = event.target as HTMLElement | null;
-    if (target?.matches("input, textarea, [contenteditable='true']")) return;
+    const inEditField = target?.matches("input, textarea, [contenteditable='true']") ?? false;
 
-    if (event.ctrlKey && event.key.toLowerCase() === "t") {
-      event.preventDefault();
-      openAddTaskModal();
+    // While the vim delete confirm dialog is open, intercept keyboard so board vim keys
+    // don't fire. h/l move focus between Cancel/Delete buttons; Escape closes the dialog.
+    if (vimDeleteOpen) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        vimDeleteOpen = false;
+        vimDeletePendingId = null;
+      } else if (event.key === "h" || event.key === "ArrowLeft") {
+        event.preventDefault();
+        const dialog = document.querySelector("dialog[open]");
+        const buttons = dialog?.querySelectorAll("button");
+        if (buttons?.length) (buttons[0] as HTMLButtonElement).focus();
+      } else if (event.key === "l" || event.key === "ArrowRight") {
+        event.preventDefault();
+        const dialog = document.querySelector("dialog[open]");
+        const buttons = dialog?.querySelectorAll("button");
+        if (buttons?.length) (buttons[buttons.length - 1] as HTMLButtonElement).focus();
+      }
+      return;
     }
+
+    // Ctrl+T: open add-task modal. Skip if typing in an input to avoid conflict.
+    if (event.ctrlKey && event.key.toLowerCase() === "t") {
+      if (!inEditField) {
+        event.preventDefault();
+        openAddTaskModal();
+      }
+      return;
+    }
+
+    // Vim handler: called for all non-Ctrl+T keys. The handler internally
+    // checks `suspended` state (skips non-Escape when an input has focus)
+    // and `vimEnabled` (returns false when vim is off).
+    const consumed = vimState.handleKeydown(event, {
+      boardColumns,
+      activeView,
+      vimEnabled: settingsState.current?.vim?.enabled ?? false,
+      userBindings: settingsState.current?.vim?.keybindings ?? [],
+      statusBindings: settingsState.current?.vim?.status_keybindings ?? [],
+      statuses,
+      sidebarItems: [
+        { route: "/" },
+        { route: "/dashboard" },
+        ...sidebarProjectOrder(projectsState.items).map((p) => ({ route: `/projects/${p.id}` })),
+      ],
+      currentPageRoute: page.url.pathname,
+      currentProjectId: projectFilter ?? null,
+      editDialogOpen: vimEditTask !== undefined,
+      onEditTask: (id) => {
+        vimEditTask = visibleTasks.find((t) => t.id === id);
+      },
+      onToggleTimer: (id) => {
+        void handleVimTimerToggle(id);
+      },
+      onNewTask: () => openAddTaskModal(),
+      onDeleteTask: (id) => {
+        handleVimDeleteTask(id);
+      },
+      onChangeStatus: (ids, statusId) => {
+        void handleVimStatusChange(ids, statusId);
+      },
+      onMoveTasksToAdjacentStatus: (ids, dir) => {
+        void handleVimMoveTasksToAdjacentStatus(ids, dir);
+      },
+      onMoveTasksToAdjacentDay: (ids, dir) => {
+        void handleVimMoveTasksToAdjacentDay(ids, dir);
+      },
+      onToggleSidebarExpand: (projectId) => toggleExpanded(projectId),
+      weekDays:
+        activeView === "week"
+          ? weekViewVisibleDays
+          : activeView === "calendar"
+            ? calendarViewVisibleDays
+            : weekDays,
+    });
+    if (consumed) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  }
+
+  /** Suspends vim navigation while the user types in an input, textarea, or select. */
+  function handleFocusIn(e: FocusEvent) {
+    const target = e.target as HTMLElement | null;
+    if (target?.matches("input, textarea, select, [contenteditable='true']")) vimState.suspend();
+  }
+
+  /** Resumes vim navigation when focus leaves an editable field or select. */
+  function handleFocusOut(e: FocusEvent) {
+    const target = e.target as HTMLElement | null;
+    if (target?.matches("input, textarea, select, [contenteditable='true']")) vimState.resume();
   }
 
   onMount(() => {
     window.addEventListener("keydown", handleGlobalKeydown);
-    return () => window.removeEventListener("keydown", handleGlobalKeydown);
+    window.addEventListener("focusin", handleFocusIn);
+    window.addEventListener("focusout", handleFocusOut);
+
+    // vim:set-tab is dispatched by vimState when ArrowLeft/ArrowRight are pressed
+    function handleVimSetTab(e: Event) {
+      const tab = (e as CustomEvent<string>).detail;
+      if (tab === "board" || tab === "week" || tab === "calendar" || tab === "dashboard") {
+        activeView = tab;
+      }
+    }
+    document.addEventListener("vim:set-tab", handleVimSetTab);
+
+    return () => {
+      window.removeEventListener("keydown", handleGlobalKeydown);
+      window.removeEventListener("focusin", handleFocusIn);
+      window.removeEventListener("focusout", handleFocusOut);
+      document.removeEventListener("vim:set-tab", handleVimSetTab);
+    };
   });
 
   /**
@@ -786,6 +1022,36 @@
     void boardStatusIds;
     void groupByPriority;
     void refresh();
+  });
+
+  // Auto-focus: select the first board task when vim is active and either no task is focused
+  // or the focused task is no longer visible (e.g. after switching projects).
+  $effect(() => {
+    if (vimState.active && activeView === "board") {
+      const focusedId = vimState.focusedTaskId;
+      const cols = boardColumns;
+      const isVisible =
+        focusedId !== null &&
+        cols.some((col) => col.buckets.some((b) => b.tasks.some((t) => t.id === focusedId)));
+      if (!isVisible) {
+        vimState.setInitialFocus(cols);
+      }
+    }
+  });
+
+  // Auto-select first task in week/calendar view when vim activates, view switches, or period changes.
+  // Uses only the dates currently visible in the child component so the cursor is always on-screen.
+  // The guard `visibleDays.length > 0` also waits for the child's onDateStringsChange to fire on mount.
+  $effect(() => {
+    if (vimState.active && (activeView === "week" || activeView === "calendar")) {
+      const visibleDays = activeView === "week" ? weekViewVisibleDays : calendarViewVisibleDays;
+      if (visibleDays.length === 0) return;
+      const focusedId = vimState.weekFocusedTaskId;
+      const isVisible = focusedId !== null && visibleDays.some((d) => d.taskIds.includes(focusedId));
+      if (!isVisible) {
+        vimState.setWeekInitialFocus(visibleDays);
+      }
+    }
   });
 </script>
 
@@ -982,6 +1248,24 @@
     onCancel={() => (finishDayConfirmOpen = false)}
   />
 
+  <ConfirmDialog
+    open={vimDeleteOpen}
+    title="Delete task?"
+    message="This will permanently delete the task. This cannot be undone."
+    confirmLabel="Delete"
+    onConfirm={() => {
+      vimDeleteOpen = false;
+      if (vimDeletePendingId) {
+        void handleDelete(vimDeletePendingId);
+        vimDeletePendingId = null;
+      }
+    }}
+    onCancel={() => {
+      vimDeleteOpen = false;
+      vimDeletePendingId = null;
+    }}
+  />
+
   <AllSubtasksDoneDialog
     open={allDoneDialogTask !== undefined}
     task={allDoneDialogTask}
@@ -1004,6 +1288,7 @@
       {showPreviousWeeksColumn}
       onEnsureOccurrences={ensureOccurrencesThrough}
       onCreateSubtask={openCreateSubtask}
+      onDateStringsChange={(ds) => { weekViewDateStrings = ds; }}
     />
   {:else if activeView === "calendar"}
     <CalendarView
@@ -1015,22 +1300,54 @@
       onUpdateRecurrence={handleUpdateRecurrence}
       onEnsureOccurrences={ensureOccurrencesThrough}
       onCreateSubtask={openCreateSubtask}
+      onDateStringsChange={(ds) => { calendarViewDateStrings = ds; }}
     />
   {:else if activeView === "dashboard"}
-    <DashboardView projectId={projectFilter ?? null} />
+    {#if projectFilter && project}
+      <ProjectDashboardView
+        projectId={projectFilter}
+        projectColor={project.color}
+        projectName={project.name}
+      />
+    {:else}
+      <DashboardView projectId={null} />
+    {/if}
   {:else}
-    <KanbanGrid
-      {boardColumns}
-      {groupByPriority}
-      onConsider={handleConsider}
-      onFinalize={handleFinalize}
-      onUpdate={handleUpdate}
-      onDelete={handleDelete}
-      onRemoveRecurrence={handleRemoveRecurrence}
-      allTasks={tasksState.items}
-      onCreateSubtask={openCreateSubtask}
-    />
+    <div class="board-view-wrapper">
+      <KanbanGrid
+        {boardColumns}
+        {groupByPriority}
+        onConsider={handleConsider}
+        onFinalize={handleFinalize}
+        onUpdate={handleUpdate}
+        onDelete={handleDelete}
+        onRemoveRecurrence={handleRemoveRecurrence}
+        allTasks={tasksState.items}
+        onCreateSubtask={openCreateSubtask}
+      />
+    </div>
   {/if}
+
+  <TaskEditDialog
+    open={vimEditTask !== undefined}
+    task={vimEditTask}
+    onSave={(task, scope) => {
+      void handleUpdate(task, scope);
+      vimEditTask = undefined;
+    }}
+    onDelete={(id, scope) => {
+      void handleDelete(id, scope);
+      vimEditTask = undefined;
+    }}
+    onRemoveRecurrence={(id) => {
+      void handleRemoveRecurrence(id);
+      vimEditTask = undefined;
+    }}
+    onUpdateRecurrence={handleUpdateRecurrence}
+    onCancel={() => (vimEditTask = undefined)}
+    allTasks={tasksState.items}
+    onCreateSubtask={openCreateSubtask}
+  />
 </main>
 
 <style>
@@ -1049,6 +1366,11 @@
     padding-bottom: var(--space-lg);
     margin-bottom: var(--space-xl);
     border-bottom: 1px solid var(--color-border);
+  }
+
+  /* Positioned wrapper for the board view so VimModeIndicator can use position: absolute */
+  .board-view-wrapper {
+    position: relative;
   }
 
   .brand {

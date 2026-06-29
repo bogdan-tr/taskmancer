@@ -56,6 +56,7 @@
   import type { Task } from "$lib/types";
   import { formatDateISO } from "$lib/weekRange";
   import { formatHms } from "$lib/liveTimer";
+  import { vimState } from "$lib/vim.svelte";
   import Autocomplete from "./Autocomplete.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
   import DatePickerPopover from "./DatePickerPopover.svelte";
@@ -451,6 +452,11 @@
   /** `true` while this task has a currently-active tracking session — toggles the play/pause icon and the live ticker chip. */
   const isTracking = $derived(isTaskActive(task.id));
 
+  /** `true` when this task is the vim cursor's focused card. Renders an accent outline ring. */
+  const vimFocused = $derived(vimState.focusedTaskId === task.id);
+  /** `true` when this task is part of the vim visual/sparse-visual selection. Renders a tinted selection highlight. */
+  const vimSelected = $derived(vimState.selectedTaskIds.has(task.id));
+
   /** Set while a tracking toggle call is in flight, so a second click can't fire an overlapping request. */
   let isTrackingPending = $state(false);
   /** Set when a tracking toggle call fails, so the click isn't silently swallowed. Cleared on the next attempt. */
@@ -511,6 +517,8 @@
   class:due-glow={showDueGlow}
   class:task-done={isDone}
   class:task-cancelled={isCancelled}
+  class:vim-focused={vimFocused}
+  class:vim-selected={vimSelected}
   style="--task-priority-color: {priorityColor(priorities, task.priority)}; --task-project-color: {projectColor}; --task-color-code-bg: {colorCodeBackground}; --task-color-code-text: {colorCodeTextColor}; --task-status-color: {taskStatusColor}"
 >
   {#if isEditing}
@@ -1454,5 +1462,28 @@
     text-transform: none;
     letter-spacing: normal;
     color: var(--color-ink-faint);
+  }
+
+  /* Vim navigation focus and selection indicators */
+  .vim-focused {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+
+  .vim-selected {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+    box-shadow: 0 0 0 4px color-mix(in oklch, var(--color-accent) 20%, transparent);
+  }
+
+  .vim-selected::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 3px;
+    background: var(--color-accent);
+    border-radius: 3px 0 0 3px;
   }
 </style>

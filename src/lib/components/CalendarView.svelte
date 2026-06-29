@@ -10,6 +10,7 @@
   import type { Task } from "$lib/types";
   import { dedupeFinishedTaskBars, groupTasksByWeek, type WeekBar } from "$lib/weekGrouping";
   import { formatDateISO } from "$lib/weekRange";
+  import { vimState } from "$lib/vim.svelte";
   import TaskEditDialog from "./TaskEditDialog.svelte";
   import WeekBarItem from "./WeekBarItem.svelte";
 
@@ -49,6 +50,8 @@
     onEnsureOccurrences?: (through: string) => void;
     /** Opens the Add Task modal pre-filled to create a subtask of the given task. */
     onCreateSubtask?: (task: Task) => void;
+    /** Called whenever the set of visible date strings changes (month navigation, setting change). Used by KanbanBoard to keep vim cursor within the visible window. */
+    onDateStringsChange?: (dateStrings: string[]) => void;
   }
 
   let {
@@ -60,6 +63,7 @@
     onUpdateRecurrence,
     onEnsureOccurrences,
     onCreateSubtask,
+    onDateStringsChange,
   }: Props = $props();
 
   const priorities = $derived(settingsState.current?.priorities ?? FALLBACK_PRIORITIES);
@@ -89,6 +93,10 @@
   $effect(() => {
     const lastDate = dateStrings[dateStrings.length - 1];
     if (lastDate) onEnsureOccurrences?.(lastDate);
+  });
+
+  $effect(() => {
+    onDateStringsChange?.(dateStrings);
   });
 
   let todayString = $derived(formatDateISO(new Date()));
@@ -198,8 +206,30 @@
     closeEdit();
   }
 
+  /** Ctrl+click multi-select (non-vim): toggle a task in/out of the local selection set. */
+  let localSelectedIds = $state<Set<string>>(new Set());
+
+  function handleBarCtrlClick(taskId: string, event: MouseEvent) {
+    if (!event.ctrlKey && !event.metaKey) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const next = new Set(localSelectedIds);
+    if (next.has(taskId)) {
+      next.delete(taskId);
+    } else {
+      next.add(taskId);
+    }
+    localSelectedIds = next;
+  }
+
   /** Closes the open popover on a click outside any bar — in-bar clicks are handled by the bar's own button. */
   function handleWindowClick(event: MouseEvent) {
+    if (!(event.target as HTMLElement).closest(".bar") && !event.ctrlKey && !event.metaKey) {
+      if (localSelectedIds.size > 0) {
+        localSelectedIds = new Set();
+        return;
+      }
+    }
     if (openBarKey === undefined) return;
     if ((event.target as HTMLElement).closest(".bar")) return;
     closePopover();
@@ -209,6 +239,9 @@
     if (event.key === "Escape" && openBarKey !== undefined) {
       closePopover();
     }
+    if (event.key === "Escape" && localSelectedIds.size > 0) {
+      localSelectedIds = new Set();
+    }
   }
 
   /** Closes the popover on scroll, mirroring `WeekView.svelte` — see `WeekBarItem.svelte` for why (fixed-position popovers don't scroll with their bar). */
@@ -216,14 +249,21 @@
     if (openBarKey !== undefined) closePopover();
   }
 
+  function handleVimNextPeriod() { goToNextMonth(); }
+  function handleVimPrevPeriod() { goToPreviousMonth(); }
+
   onMount(() => {
     window.addEventListener("click", handleWindowClick);
     window.addEventListener("keydown", handleWindowKeydown);
     window.addEventListener("scroll", handleWindowScroll, { passive: true });
+    document.addEventListener("vim:next-period", handleVimNextPeriod);
+    document.addEventListener("vim:prev-period", handleVimPrevPeriod);
     return () => {
       window.removeEventListener("click", handleWindowClick);
       window.removeEventListener("keydown", handleWindowKeydown);
       window.removeEventListener("scroll", handleWindowScroll);
+      document.removeEventListener("vim:next-period", handleVimNextPeriod);
+      document.removeEventListener("vim:prev-period", handleVimPrevPeriod);
     };
   });
 </script>
@@ -298,20 +338,33 @@
           onfinalize={(event) => handleFinalize(index, event)}
         >
           {#each dayItems as weekBar (weekBar.id)}
-            <WeekBarItem
-              {weekBar}
-              colorCoded={isColorCoded}
-              rightAlignPopover={index % COLUMNS_PER_ROW >= RIGHT_ALIGN_COLUMN_THRESHOLD}
-              {priorities}
-              {statuses}
-              {doneStatus}
-              {cancelledStatus}
-              isOpen={openBarKey === barKey(weekBar)}
-              onToggle={() => toggleBar(barKey(weekBar))}
-              onClosePopover={closePopover}
-              onEdit={openEdit}
-              muted={!inCurrentMonth}
-            />
+            {@const isSelected =
+              (vimState.active &&
+                (vimState.mode === "visual" || vimState.mode === "visual_sparse") &&
+                vimState.selectedTaskIds.has(weekBar.task.id)) ||
+              localSelectedIds.has(weekBar.task.id)}
+            {@const isFocused = vimState.active && weekBar.task.id === vimState.weekFocusedTaskId}
+            <div
+              class:vim-task-focused={isFocused}
+              class:vim-task-selected={isSelected}
+              role="none"
+              onclick={(e) => handleBarCtrlClick(weekBar.task.id, e)}
+            >
+              <WeekBarItem
+                {weekBar}
+                colorCoded={isColorCoded}
+                rightAlignPopover={index % COLUMNS_PER_ROW >= RIGHT_ALIGN_COLUMN_THRESHOLD}
+                {priorities}
+                {statuses}
+                {doneStatus}
+                {cancelledStatus}
+                isOpen={openBarKey === barKey(weekBar)}
+                onToggle={() => toggleBar(barKey(weekBar))}
+                onClosePopover={closePopover}
+                onEdit={openEdit}
+                muted={!inCurrentMonth}
+              />
+            </div>
           {/each}
         </div>
       </div>
@@ -479,5 +532,18 @@
     list-style: none;
     margin: 0;
     padding: 0;
+  }
+
+  .vim-task-focused {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 1px;
+    border-radius: var(--radius-sm);
+  }
+
+  .vim-task-selected {
+    outline: 2px solid color-mix(in oklch, var(--color-accent) 70%, transparent);
+    outline-offset: 1px;
+    border-radius: var(--radius-sm);
+    background: color-mix(in oklch, var(--color-accent) 8%, transparent);
   }
 </style>

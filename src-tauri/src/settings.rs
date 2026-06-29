@@ -313,6 +313,33 @@ pub struct TaskDefaults {
 /// the chips/tint styles were removed — kept in the struct for legacy
 /// round-trip compatibility and migrated to `"tiles"` on load by
 /// [`Settings::normalize`]).
+///
+/// `vim` holds the global vim-navigation settings (master enable switch and
+/// optional per-action keybinding overrides). Absent from settings files
+/// written before this field was added; [`VimSettings::default`] supplies the
+/// correct zero-state (`enabled: false`, no overrides) via `#[serde(default)]`.
+
+/// One action → zero-or-more key-combo mapping for vim navigation.
+/// `action_id` matches the `VimActionId` constants on the frontend.
+/// `combos` format: `"j"`, `"G"`, `"Ctrl+k"`, `"Shift+D"`, `"ArrowLeft"`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct VimKeybinding {
+    pub action_id: String,
+    pub combos: Vec<String>,
+}
+
+/// Global vim navigation settings. `enabled` is the master switch.
+/// Keybindings here OVERRIDE the frontend defaults; absent bindings use defaults.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct VimSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub keybindings: Vec<VimKeybinding>,
+    #[serde(default)]
+    pub status_keybindings: Vec<VimKeybinding>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Settings {
     #[serde(default)]
@@ -361,6 +388,8 @@ pub struct Settings {
     pub status_bar_tile_tint: bool,
     #[serde(default)]
     pub default_dashboard_layout_id: String,
+    #[serde(default)]
+    pub vim: VimSettings,
 }
 
 impl Default for Settings {
@@ -452,6 +481,7 @@ impl Default for Settings {
             status_bar_enabled: default_status_bar_enabled(),
             status_bar_tile_tint: false,
             default_dashboard_layout_id: String::new(),
+            vim: VimSettings::default(),
         }
     }
 }
@@ -2101,5 +2131,87 @@ mod tests {
         let settings = Settings::default();
 
         assert_eq!(settings.default_dashboard_layout_id, "");
+    }
+
+    // ── VimSettings tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn vim_settings_default_is_disabled_with_no_keybindings() {
+        let vim = VimSettings::default();
+
+        assert!(!vim.enabled);
+        assert!(vim.keybindings.is_empty());
+        assert!(vim.status_keybindings.is_empty());
+    }
+
+    #[test]
+    fn deserializing_settings_without_vim_key_supplies_disabled_defaults() {
+        let settings: Settings = serde_json::from_str("{}").unwrap();
+
+        assert!(!settings.vim.enabled);
+        assert!(settings.vim.keybindings.is_empty());
+        assert!(settings.vim.status_keybindings.is_empty());
+    }
+
+    #[test]
+    fn vim_settings_with_enabled_and_keybinding_round_trips_through_serde() {
+        let vim = VimSettings {
+            enabled: true,
+            keybindings: vec![VimKeybinding {
+                action_id: "move_down".to_string(),
+                combos: vec!["j".to_string(), "Ctrl+j".to_string()],
+            }],
+            status_keybindings: vec![],
+        };
+
+        let json = serde_json::to_string(&vim).expect("serialization should succeed");
+        let parsed: VimSettings = serde_json::from_str(&json).expect("parsing should succeed");
+
+        assert_eq!(parsed, vim);
+        assert!(parsed.enabled);
+        assert_eq!(parsed.keybindings.len(), 1);
+        assert_eq!(parsed.keybindings[0].action_id, "move_down");
+        assert_eq!(parsed.keybindings[0].combos, vec!["j", "Ctrl+j"]);
+    }
+
+    #[test]
+    fn vim_keybinding_serializes_with_action_id_and_combos_keys() {
+        let binding = VimKeybinding {
+            action_id: "go_to_top".to_string(),
+            combos: vec!["gg".to_string()],
+        };
+
+        let json = serde_json::to_string(&binding).expect("serialization should succeed");
+
+        assert!(json.contains("\"action_id\""));
+        assert!(json.contains("\"combos\""));
+        assert!(json.contains("\"go_to_top\""));
+        assert!(json.contains("\"gg\""));
+    }
+
+    #[test]
+    fn settings_with_vim_field_round_trips_through_json() {
+        let settings = Settings {
+            vim: VimSettings {
+                enabled: true,
+                keybindings: vec![VimKeybinding {
+                    action_id: "edit_task".to_string(),
+                    combos: vec!["e".to_string()],
+                }],
+                status_keybindings: vec![VimKeybinding {
+                    action_id: "done-status-id".to_string(),
+                    combos: vec!["d".to_string()],
+                }],
+            },
+            ..Settings::default()
+        };
+
+        let json = serde_json::to_string(&settings).expect("serialization should succeed");
+        let parsed: Settings = serde_json::from_str(&json).expect("parsing should succeed");
+
+        assert_eq!(parsed.vim, settings.vim);
+        assert!(parsed.vim.enabled);
+        assert_eq!(parsed.vim.keybindings[0].action_id, "edit_task");
+        assert_eq!(parsed.vim.status_keybindings[0].action_id, "done-status-id");
     }
 }

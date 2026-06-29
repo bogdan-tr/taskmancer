@@ -15,6 +15,7 @@
     groupTasksByWeek,
     type WeekBar,
   } from "$lib/weekGrouping";
+  import { vimState } from "$lib/vim.svelte";
   import TaskEditDialog from "./TaskEditDialog.svelte";
   import WeekBarItem from "./WeekBarItem.svelte";
 
@@ -56,6 +57,8 @@
     onEnsureOccurrences?: (through: string) => void;
     /** Opens the Add Task modal pre-filled to create a subtask of the given task. */
     onCreateSubtask?: (task: Task) => void;
+    /** Called whenever the set of visible date strings changes (week navigation, setting change). Used by KanbanBoard to keep vim cursor within the visible window. */
+    onDateStringsChange?: (dateStrings: string[]) => void;
   }
 
   let {
@@ -68,6 +71,7 @@
     showPreviousWeeksColumn,
     onEnsureOccurrences,
     onCreateSubtask,
+    onDateStringsChange,
   }: Props = $props();
 
   const priorities = $derived(settingsState.current?.priorities ?? FALLBACK_PRIORITIES);
@@ -99,6 +103,10 @@
   let dates = $derived(weekDates(weekStart));
   let dateStrings = $derived(dates.map(formatDateISO));
   let todayString = $derived(formatDateISO(new Date()));
+
+  $effect(() => {
+    onDateStringsChange?.(dateStrings);
+  });
 
   /**
    * Mutable per-day mirror of `groupTasksByWeek`, kept in sync with `tasks`
@@ -224,7 +232,37 @@
   }
 
   /** Closes the open popover on a click outside any bar — in-bar clicks are handled by the bar's own button. */
+  /** Ctrl+click multi-select (non-vim): toggle a task in/out of the local selection set. */
+  let localSelectedIds = $state<Set<string>>(new Set());
+
+  /** The effective selection for visual highlights — vim selection when vim is in visual mode, else local Ctrl+click selection. */
+  let effectiveSelectedIds = $derived(
+    vimState.active && (vimState.mode === "visual" || vimState.mode === "visual_sparse")
+      ? vimState.selectedTaskIds
+      : localSelectedIds,
+  );
+
+  function handleBarCtrlClick(taskId: string, event: MouseEvent) {
+    if (!event.ctrlKey && !event.metaKey) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const next = new Set(localSelectedIds);
+    if (next.has(taskId)) {
+      next.delete(taskId);
+    } else {
+      next.add(taskId);
+    }
+    localSelectedIds = next;
+  }
+
   function handleWindowClick(event: MouseEvent) {
+    // Clear local selection when clicking on empty space (not a bar)
+    if (!(event.target as HTMLElement).closest(".bar") && !event.ctrlKey && !event.metaKey) {
+      if (localSelectedIds.size > 0) {
+        localSelectedIds = new Set();
+        return;
+      }
+    }
     if (openBarKey === undefined) return;
     if ((event.target as HTMLElement).closest(".bar")) return;
     closePopover();
@@ -233,6 +271,10 @@
   function handleWindowKeydown(event: KeyboardEvent) {
     if (event.key === "Escape" && openBarKey !== undefined) {
       closePopover();
+    }
+    // Clear local selection on Escape
+    if (event.key === "Escape" && localSelectedIds.size > 0) {
+      localSelectedIds = new Set();
     }
   }
 
@@ -248,14 +290,21 @@
     if (openBarKey !== undefined) closePopover();
   }
 
+  function handleVimNextPeriod() { goToNextWeek(); }
+  function handleVimPrevPeriod() { goToPreviousWeek(); }
+
   onMount(() => {
     window.addEventListener("click", handleWindowClick);
     window.addEventListener("keydown", handleWindowKeydown);
     window.addEventListener("scroll", handleWindowScroll, { passive: true });
+    document.addEventListener("vim:next-period", handleVimNextPeriod);
+    document.addEventListener("vim:prev-period", handleVimPrevPeriod);
     return () => {
       window.removeEventListener("click", handleWindowClick);
       window.removeEventListener("keydown", handleWindowKeydown);
       window.removeEventListener("scroll", handleWindowScroll);
+      document.removeEventListener("vim:next-period", handleVimNextPeriod);
+      document.removeEventListener("vim:prev-period", handleVimPrevPeriod);
     };
   });
 </script>
@@ -332,7 +381,11 @@
     {/if}
     {#each dates as date, index (dateStrings[index])}
       {@const dayItems = weekColumns[index] ?? []}
-      <div class="day-column" class:is-today={dateStrings[index] === todayString}>
+      <div
+        class="day-column"
+        class:is-today={dateStrings[index] === todayString}
+        class:vim-day-focused={vimState.active && dateStrings[index] === vimState.weekFocusedDate}
+      >
         <div class="day-header">
           <span class="day-name">{dayName(date)}</span>
           <span class="day-number">{date.getDate()}</span>
@@ -349,19 +402,26 @@
           onfinalize={(event) => handleFinalize(index, event)}
         >
           {#each dayItems as weekBar (weekBar.id)}
-            <WeekBarItem
-              {weekBar}
-              colorCoded={isColorCoded}
-              rightAlignPopover={index >= 5}
-              {priorities}
-              {statuses}
-              {doneStatus}
-              {cancelledStatus}
-              isOpen={openBarKey === barKey(weekBar)}
-              onToggle={() => toggleBar(barKey(weekBar))}
-              onClosePopover={closePopover}
-              onEdit={openEdit}
-            />
+            <div
+              class:vim-task-focused={vimState.active && weekBar.task.id === vimState.weekFocusedTaskId}
+              class:vim-task-selected={effectiveSelectedIds.has(weekBar.task.id)}
+              role="none"
+              onclick={(e) => handleBarCtrlClick(weekBar.task.id, e)}
+            >
+              <WeekBarItem
+                {weekBar}
+                colorCoded={isColorCoded}
+                rightAlignPopover={index >= 5}
+                {priorities}
+                {statuses}
+                {doneStatus}
+                {cancelledStatus}
+                isOpen={openBarKey === barKey(weekBar)}
+                onToggle={() => toggleBar(barKey(weekBar))}
+                onClosePopover={closePopover}
+                onEdit={openEdit}
+              />
+            </div>
           {/each}
         </div>
       </div>
@@ -388,6 +448,7 @@
 
 <style>
   .week-view {
+    position: relative;
     display: flex;
     flex-direction: column;
     gap: var(--space-md);
@@ -532,5 +593,23 @@
     list-style: none;
     margin: 0;
     padding: 0;
+  }
+
+  .vim-day-focused {
+    outline: 1px solid color-mix(in oklch, var(--color-accent) 40%, transparent);
+    background: color-mix(in oklch, var(--color-accent) 5%, var(--color-surface));
+  }
+
+  .vim-task-focused {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 1px;
+    border-radius: var(--radius-sm);
+  }
+
+  .vim-task-selected {
+    outline: 2px solid color-mix(in oklch, var(--color-accent) 70%, transparent);
+    outline-offset: 1px;
+    border-radius: var(--radius-sm);
+    background: color-mix(in oklch, var(--color-accent) 8%, transparent);
   }
 </style>
