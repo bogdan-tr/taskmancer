@@ -50,6 +50,7 @@ export async function createTask(input: ParsedTaskInput, projectId?: string): Pr
     due: input.due,
     scheduled: input.scheduled,
     estimatedMinutes: input.estimatedMinutes,
+    notes: input.notes || undefined,
   });
 }
 

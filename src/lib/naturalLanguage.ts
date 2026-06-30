@@ -61,6 +61,12 @@ export interface ParsedTaskInput {
   estimatedMinutes?: number;
   /** From an `every ...` quick-add token. `undefined` if no recurrence token was present. */
   recurrence?: { frequency: RecurrenceFrequency; endDate?: string };
+  /**
+   * Free-form markdown notes from a `;;` separator in the quick-add input.
+   * Everything after the first `;;` becomes the notes body. `undefined` if
+   * no `;;` was present; empty string `""` if `;;` appears with nothing after.
+   */
+  notes?: string;
 }
 
 /** The subset of `PriorityLevel` needed to match quick-add priority tokens. */
@@ -858,6 +864,14 @@ export function parseTaskInput(
   let estimatedMinutes: number | undefined;
   let recurrence: { frequency: RecurrenceFrequency; endDate?: string } | undefined;
 
+  // Split on the first `;;` — everything after is notes, everything before is parsed normally.
+  let notes: string | undefined;
+  const notesSepIndex = input.indexOf(";;");
+  if (notesSepIndex !== -1) {
+    notes = input.slice(notesSepIndex + 2).trim();
+    input = input.slice(0, notesSepIndex).trim();
+  }
+
   const titleTokens: string[] = [];
   const tokens = input.trim().split(/\s+/).filter((token) => token !== "");
   const isRecurring = hasStandaloneRecurrenceToken(tokens, now);
@@ -1007,5 +1021,6 @@ export function parseTaskInput(
     scheduled,
     estimatedMinutes,
     recurrence,
+    notes,
   };
 }

@@ -105,7 +105,12 @@ pub struct Task {
     /// that have never been cancelled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cancelled_at: Option<String>,
-    #[serde(skip)]
+    /// Free-form markdown body of the task file. Stored after the YAML
+    /// frontmatter block (never inside it) — `to_markdown` strips this field
+    /// from the YAML output and writes it as the file body instead.
+    /// `#[serde(default)]` (not `skip`) so notes travel through Tauri's
+    /// JSON IPC in both directions.
+    #[serde(default)]
     pub notes: String,
 }
 
@@ -120,6 +125,35 @@ pub enum TaskError {
     InvalidFrontmatter(#[from] serde_json::Error),
     #[error("failed to serialize task frontmatter: {0}")]
     Serialize(serde_yaml::Error),
+}
+
+/// Removes the `notes:` key (and any continuation lines for block scalars)
+/// from a YAML string produced by `serde_yaml::to_string`. Notes live in the
+/// markdown body after the frontmatter closing `---`, not in the YAML itself.
+fn strip_notes_from_yaml(yaml: &str) -> String {
+    let mut result: Vec<&str> = Vec::new();
+    let mut in_notes_block = false;
+
+    for line in yaml.lines() {
+        if line.starts_with("notes:") {
+            in_notes_block = true;
+            continue;
+        }
+        if in_notes_block {
+            // Continuation lines of a YAML block scalar are indented
+            if line.starts_with(' ') || line.is_empty() {
+                continue;
+            }
+            in_notes_block = false;
+        }
+        result.push(line);
+    }
+
+    let mut out = result.join("\n");
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out
 }
 
 impl Task {
@@ -153,6 +187,9 @@ impl Task {
     /// block followed by the task's free-form notes.
     pub fn to_markdown(&self) -> Result<String, TaskError> {
         let frontmatter = serde_yaml::to_string(self).map_err(TaskError::Serialize)?;
+        // `notes` is included in serde JSON (for Tauri IPC) but must not
+        // appear in the YAML frontmatter — notes live in the file body.
+        let frontmatter = strip_notes_from_yaml(&frontmatter);
         Ok(format!("---\n{frontmatter}---\n\n{}", self.notes))
     }
 
@@ -492,5 +529,72 @@ mod tests {
         let markdown = task.to_markdown().expect("serialization should succeed");
 
         assert!(markdown.contains("status: on-hold\n"));
+    }
+
+    #[test]
+    fn to_markdown_does_not_include_notes_in_yaml_frontmatter() {
+        let mut task = Task::new("Demo".to_string());
+        task.notes = "These are my notes.\nThey span multiple lines.".to_string();
+
+        let markdown = task.to_markdown().expect("serialization should succeed");
+
+        // Extract only the YAML frontmatter block (between the two `---` lines)
+        let frontmatter = markdown
+            .strip_prefix("---\n")
+            .and_then(|s| s.split_once("\n---\n"))
+            .map(|(fm, _)| fm)
+            .expect("markdown should have frontmatter");
+
+        assert!(
+            !frontmatter.contains("notes"),
+            "frontmatter should not contain 'notes' key, but got:\n{frontmatter}"
+        );
+    }
+
+    #[test]
+    fn to_markdown_writes_notes_in_body() {
+        let mut task = Task::new("Demo".to_string());
+        task.notes = "Important note content.".to_string();
+
+        let markdown = task.to_markdown().expect("serialization should succeed");
+
+        // Body is everything after the closing `---`
+        let body = markdown
+            .split_once("\n---\n\n")
+            .map(|(_, body)| body)
+            .expect("markdown should have body section");
+
+        assert_eq!(body.trim(), "Important note content.");
+    }
+
+    #[test]
+    fn notes_survive_serde_json_round_trip() {
+        let mut task = Task::new("Test task".to_string());
+        task.notes = "important notes".to_string();
+
+        let json = serde_json::to_string(&task).expect("should serialize to JSON");
+        let parsed: Task = serde_json::from_str(&json).expect("should deserialize from JSON");
+
+        assert_eq!(parsed.notes, "important notes");
+    }
+
+    #[test]
+    fn to_markdown_strips_multiline_notes_from_frontmatter() {
+        let mut task = Task::new("Demo".to_string());
+        // Use a string with newlines that serde_yaml might render as a block scalar
+        task.notes = "line one\nline two\nline three".to_string();
+
+        let markdown = task.to_markdown().expect("serialization should succeed");
+        let frontmatter = markdown
+            .strip_prefix("---\n")
+            .and_then(|s| s.split_once("\n---\n"))
+            .map(|(fm, _)| fm)
+            .expect("markdown should have frontmatter");
+
+        assert!(
+            !frontmatter.contains("notes"),
+            "frontmatter must not contain notes key even for multiline notes"
+        );
+        assert!(markdown.contains("line one\nline two\nline three"));
     }
 }

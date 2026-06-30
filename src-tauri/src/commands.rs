@@ -292,6 +292,7 @@ pub fn create_task(
     due: Option<String>,
     scheduled: Option<String>,
     estimated_minutes: Option<u32>,
+    notes: Option<String>,
 ) -> Result<Task, String> {
     let title = title.trim().to_string();
     if title.is_empty() {
@@ -337,6 +338,7 @@ pub fn create_task(
 
     let mut task = Task::new(title);
     task.status = status;
+    task.notes = notes.unwrap_or_default();
     apply_create_overrides(
         &mut task,
         Some(resolved_project_id),

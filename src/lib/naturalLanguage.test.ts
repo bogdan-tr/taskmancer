@@ -987,4 +987,53 @@ describe("parseTaskInput with knownStatuses", () => {
     expect(result.title).toBe("Fix bug @");
     expect(result.status).toBeUndefined();
   });
+
+  // --- notes (;;) parsing ---
+
+  test(";; separator splits input into title side and notes", () => {
+    const result = parseTaskInput("Buy milk ;; remember to check the date", NOW);
+
+    expect(result.title).toBe("Buy milk");
+    expect(result.notes).toBe("remember to check the date");
+  });
+
+  test("structured tokens before ;; are still parsed", () => {
+    const result = parseTaskInput(
+      "Fix bug #dev +Work !high ;; repro: open settings, crash on save",
+      NOW,
+    );
+
+    expect(result.title).toBe("Fix bug");
+    expect(result.tags).toContain("dev");
+    expect(result.project).toBe("Work");
+    expect(result.priority).toBe("high");
+    expect(result.notes).toBe("repro: open settings, crash on save");
+  });
+
+  test("input with no ;; produces undefined notes", () => {
+    const result = parseTaskInput("Buy milk", NOW);
+
+    expect(result.notes).toBeUndefined();
+  });
+
+  test(";; at the end with no text after produces empty notes", () => {
+    const result = parseTaskInput("Buy milk ;;", NOW);
+
+    expect(result.title).toBe("Buy milk");
+    expect(result.notes).toBe("");
+  });
+
+  test(";; with leading/trailing whitespace is trimmed", () => {
+    const result = parseTaskInput("Buy milk ;;   some notes here   ", NOW);
+
+    expect(result.title).toBe("Buy milk");
+    expect(result.notes).toBe("some notes here");
+  });
+
+  test("only the first ;; is the separator — later ones stay in notes", () => {
+    const result = parseTaskInput("Buy milk ;; step 1 ;; step 2", NOW);
+
+    expect(result.title).toBe("Buy milk");
+    expect(result.notes).toBe("step 1 ;; step 2");
+  });
 });

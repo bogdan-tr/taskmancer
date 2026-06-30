@@ -173,6 +173,9 @@
   let tagSuggestions: string[] = $state([]);
   let tagSuggestionIndex = $state(0);
 
+  let draftNotes = $state("");
+  let notesManuallySet = $state(false);
+
   function handlePriorityChange() {
     priorityManuallySet = true;
   }
@@ -193,6 +196,18 @@
   function handleTagsInput() {
     tagsManuallySet = true;
     updateTagSuggestions();
+  }
+
+  // Sync the `;;` quick-fill separator → notes textarea, but only while the
+  // user hasn't started typing directly in the textarea itself.
+  $effect(() => {
+    if (!notesManuallySet) {
+      draftNotes = parsed.notes ?? "";
+    }
+  });
+
+  function handleNotesInput() {
+    notesManuallySet = true;
   }
 
   function handleTagsKeydown(event: KeyboardEvent) {
@@ -449,6 +464,7 @@
       : recurrenceManuallySet
         ? draftRecurrenceOverride
         : parsed.recurrence,
+    notes: notesManuallySet ? (draftNotes || undefined) : parsed.notes,
   });
 
   function handleEstimateInput() {
@@ -609,6 +625,8 @@
         recurrenceManuallySet = false;
         draftDueRuleOverride = undefined;
         dueRuleManuallySet = false;
+        draftNotes = "";
+        notesManuallySet = false;
         parentSeriesInfo = undefined;
         loadedParentSeriesId = undefined;
         suggestions = [];
@@ -1049,6 +1067,18 @@
       </div>
     </dl>
 
+    <div class="notes-field">
+      <label for="add-task-notes" class="notes-label">Notes</label>
+      <textarea
+        id="add-task-notes"
+        class="notes-textarea"
+        bind:value={draftNotes}
+        oninput={handleNotesInput}
+        placeholder="Add notes… (or type ;; in the title to prefill)"
+        rows="2"
+      ></textarea>
+    </div>
+
     {#if errorMessage}
       <p class="error" role="alert">{errorMessage}</p>
     {/if}
@@ -1396,6 +1426,46 @@
 
   .due-tomorrow {
     color: var(--color-soon);
+  }
+
+  .notes-field {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3xs);
+  }
+
+  .notes-label {
+    font-size: var(--text-xs);
+    font-weight: 600;
+    color: var(--color-ink-muted);
+    letter-spacing: var(--tracking-wide);
+    text-transform: uppercase;
+  }
+
+  .notes-textarea {
+    width: 100%;
+    min-height: 3.5rem;
+    padding: var(--space-xs) var(--space-sm);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--color-border);
+    background: var(--color-surface);
+    color: var(--color-ink);
+    font: inherit;
+    font-size: var(--text-sm);
+    line-height: 1.5;
+    resize: vertical;
+    box-sizing: border-box;
+  }
+
+  .notes-textarea:focus-visible {
+    border-color: var(--color-accent);
+    box-shadow: 0 0 0 3px var(--color-accent-soft);
+    outline: none;
+  }
+
+  .notes-textarea::placeholder {
+    color: var(--color-ink-muted);
+    opacity: 0.6;
   }
 
   .error {
