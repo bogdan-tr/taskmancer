@@ -28,7 +28,7 @@
   import KanbanGrid from "$lib/components/KanbanGrid.svelte";
   import GlobalStatusBar from "$lib/components/GlobalStatusBar.svelte";
   import ProjectStatusLine from "$lib/components/ProjectStatusLine.svelte";
-  import TaskEditDialog from "$lib/components/TaskEditDialog.svelte";
+  import TaskDetailPanel from "$lib/components/TaskDetailPanel.svelte";
   import WeekView from "$lib/components/WeekView.svelte";
   import { vimState } from "$lib/vim.svelte";
   import { displayState } from "$lib/displaySettings.svelte";
@@ -239,8 +239,13 @@
   /** Which view this board shows: the Kanban grid or the calendar week view. */
   let activeView: "board" | "week" | "calendar" | "dashboard" = $state("board");
 
-  /** The task opened for editing via the vim `e` key. `undefined` when the dialog is closed. */
-  let vimEditTask: Task | undefined = $state(undefined);
+  /** The id of the task whose detail panel is open (via vim `e`/Enter, and —
+   *  in 3c — single-click). `undefined` when the panel is closed. Stored as an
+   *  id (not a snapshot) so the panel reflects live task updates after a save. */
+  let detailTaskId: string | undefined = $state(undefined);
+  const detailTask = $derived(
+    detailTaskId ? tasksState.items.find((t) => t.id === detailTaskId) : undefined,
+  );
 
   /**
    * Every task visible on this board (project-filtered, but not subject to
@@ -890,6 +895,20 @@
     const target = event.target as HTMLElement | null;
     const inEditField = target?.matches("input, textarea, [contenteditable='true']") ?? false;
 
+    // Escape closes the detail panel. Blur first so any focused field's
+    // onblur auto-save flushes before the panel goes away. When a field is
+    // focused, the first Escape only blurs (saves); a second closes.
+    if (event.key === "Escape" && detailTaskId !== undefined) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (inEditField && target) {
+        target.blur();
+      } else {
+        detailTaskId = undefined;
+      }
+      return;
+    }
+
     // While the vim delete confirm dialog is open, intercept keyboard so board vim keys
     // don't fire. h/l move focus between Cancel/Delete buttons; Escape closes the dialog.
     if (vimDeleteOpen) {
@@ -937,9 +956,9 @@
       ],
       currentPageRoute: page.url.pathname,
       currentProjectId: projectFilter ?? null,
-      editDialogOpen: vimEditTask !== undefined,
+      editDialogOpen: detailTaskId !== undefined,
       onEditTask: (id) => {
-        vimEditTask = visibleTasks.find((t) => t.id === id);
+        detailTaskId = id;
       },
       onToggleTimer: (id) => {
         void handleVimTimerToggle(id);
@@ -1328,23 +1347,19 @@
     </div>
   {/if}
 
-  <TaskEditDialog
-    open={vimEditTask !== undefined}
-    task={vimEditTask}
-    onSave={(task, scope) => {
-      void handleUpdate(task, scope);
-      vimEditTask = undefined;
-    }}
+  <TaskDetailPanel
+    open={detailTask !== undefined}
+    task={detailTask}
+    onSave={(task, scope) => handleUpdate(task, scope)}
     onDelete={(id, scope) => {
       void handleDelete(id, scope);
-      vimEditTask = undefined;
+      detailTaskId = undefined;
     }}
     onRemoveRecurrence={(id) => {
       void handleRemoveRecurrence(id);
-      vimEditTask = undefined;
     }}
     onUpdateRecurrence={handleUpdateRecurrence}
-    onCancel={() => (vimEditTask = undefined)}
+    onClose={() => (detailTaskId = undefined)}
     allTasks={tasksState.items}
     onCreateSubtask={openCreateSubtask}
   />
