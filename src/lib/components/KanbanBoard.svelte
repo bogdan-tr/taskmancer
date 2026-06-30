@@ -1308,6 +1308,7 @@
       onEnsureOccurrences={ensureOccurrencesThrough}
       onCreateSubtask={openCreateSubtask}
       onDateStringsChange={(ds) => { weekViewDateStrings = ds; }}
+      onOpenDetail={(task) => { detailTaskId = task.id; }}
     />
   {:else if activeView === "calendar"}
     <CalendarView
@@ -1320,6 +1321,7 @@
       onEnsureOccurrences={ensureOccurrencesThrough}
       onCreateSubtask={openCreateSubtask}
       onDateStringsChange={(ds) => { calendarViewDateStrings = ds; }}
+      onOpenDetail={(task) => { detailTaskId = task.id; }}
     />
   {:else if activeView === "dashboard"}
     {#if projectFilter && project}

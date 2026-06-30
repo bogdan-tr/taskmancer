@@ -16,7 +16,6 @@
     type WeekBar,
   } from "$lib/weekGrouping";
   import { vimState } from "$lib/vim.svelte";
-  import TaskEditDialog from "./TaskEditDialog.svelte";
   import WeekBarItem from "./WeekBarItem.svelte";
 
   const FLIP_DURATION_MS = 150;
@@ -31,7 +30,7 @@
   interface Props {
     /** Tasks to place on the week grid (project-filtered, but not Kanban-visibility-filtered). Excludes subtasks that shouldn't render as standalone bars — see `isHiddenAsSubtask`. */
     tasks: Task[];
-    /** The global task list — for `TaskEditDialog`'s own subtask lookups (gating the "Create Subtask" button, the cascade-delete count, the recurrence read-only state). Must be global, not board-scoped — see `TaskCard.svelte`'s matching prop doc for why. */
+    /** The global task list — passed to `TaskDetailPanel` for subtask lookups (gating the "Create Subtask" button, the cascade-delete count, the recurrence read-only state). Must be global, not board-scoped — see `TaskCard.svelte`'s matching prop doc for why. */
     allTasks?: Task[];
     onUpdate: (task: Task, scope?: SeriesEditScope) => void | Promise<void>;
     onDelete: (id: string, scope?: SeriesEditScope) => void | Promise<void>;
@@ -59,6 +58,8 @@
     onCreateSubtask?: (task: Task) => void;
     /** Called whenever the set of visible date strings changes (week navigation, setting change). Used by KanbanBoard to keep vim cursor within the visible window. */
     onDateStringsChange?: (dateStrings: string[]) => void;
+    /** Opens the TaskDetailPanel for the given task. Provided by KanbanBoard. */
+    onOpenDetail: (task: Task) => void;
   }
 
   let {
@@ -72,6 +73,7 @@
     onEnsureOccurrences,
     onCreateSubtask,
     onDateStringsChange,
+    onOpenDetail,
   }: Props = $props();
 
   const priorities = $derived(settingsState.current?.priorities ?? FALLBACK_PRIORITIES);
@@ -196,9 +198,6 @@
     }
   }
 
-  let editingTask: Task | undefined = $state(undefined);
-  let editDialogOpen = $state(false);
-
   /** The key (see `barKey`) of the bar whose popover is currently open, or `undefined` if none is. */
   let openBarKey: string | undefined = $state(undefined);
 
@@ -208,27 +207,6 @@
 
   function closePopover() {
     openBarKey = undefined;
-  }
-
-  function openEdit(task: Task) {
-    closePopover();
-    editingTask = task;
-    editDialogOpen = true;
-  }
-
-  function closeEdit() {
-    editDialogOpen = false;
-    editingTask = undefined;
-  }
-
-  async function saveEdit(task: Task, scope?: SeriesEditScope) {
-    await onUpdate(task, scope);
-    closeEdit();
-  }
-
-  async function deleteEdit(id: string, scope?: SeriesEditScope) {
-    await onDelete(id, scope);
-    closeEdit();
   }
 
   /** Closes the open popover on a click outside any bar — in-bar clicks are handled by the bar's own button. */
@@ -373,7 +351,7 @@
               isOpen={openBarKey === barKey(weekBar)}
               onToggle={() => toggleBar(barKey(weekBar))}
               onClosePopover={closePopover}
-              onEdit={openEdit}
+              onEdit={(task) => { closePopover(); onOpenDetail(task); }}
             />
           {/each}
         </div>
@@ -419,7 +397,7 @@
                 isOpen={openBarKey === barKey(weekBar)}
                 onToggle={() => toggleBar(barKey(weekBar))}
                 onClosePopover={closePopover}
-                onEdit={openEdit}
+                onEdit={(task) => { closePopover(); onOpenDetail(task); }}
               />
             </div>
           {/each}
@@ -428,23 +406,6 @@
     {/each}
   </div>
 </div>
-
-<TaskEditDialog
-  open={editDialogOpen}
-  task={editingTask}
-  onSave={saveEdit}
-  onDelete={deleteEdit}
-  {onRemoveRecurrence}
-  {onUpdateRecurrence}
-  onCancel={closeEdit}
-  {allTasks}
-  onCreateSubtask={onCreateSubtask
-    ? (task) => {
-        closeEdit();
-        onCreateSubtask(task);
-      }
-    : undefined}
-/>
 
 <style>
   .week-view {

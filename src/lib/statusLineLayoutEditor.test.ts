@@ -12,6 +12,10 @@ describe("statusLineLayoutEditor", () => {
         "completion_pct",
         "weighted_completion_pct",
         "active_completion_pct",
+        "mini_health",
+        "mini_completion",
+        "mini_fuel",
+        "mini_sparkline",
       ]);
       expect(new Set(ALL_STATUS_LINE_STAT_IDS).size).toBe(ALL_STATUS_LINE_STAT_IDS.length);
     });
