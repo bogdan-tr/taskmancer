@@ -11,6 +11,7 @@
     deleteTask,
     ensureOccurrencesUntil,
     finishDay,
+    listArchivedTasks,
     listTasks,
     removeRecurrence,
     reorderTask,
@@ -25,6 +26,9 @@
   import AllSubtasksDoneDialog from "$lib/components/AllSubtasksDoneDialog.svelte";
   import ArchiveView from "$lib/components/ArchiveView.svelte";
   import CalendarView from "$lib/components/CalendarView.svelte";
+  import FilterView from "$lib/components/FilterView.svelte";
+  import { filterViewState } from "$lib/filterViewState.svelte";
+  import { applyFilter, applySort } from "$lib/filterLogic";
   import SearchView from "$lib/components/SearchView.svelte";
   import ConfirmDialog from "$lib/components/ConfirmDialog.svelte";
   import DashboardView from "$lib/components/DashboardView.svelte";
@@ -229,6 +233,48 @@
       : []),
   ]);
 
+  // ── Filter view derived values ────────────────────────────────────────────────
+
+  const filterTaskPool = $derived(
+    filterViewState.config.isArchived === "archived_only"
+      ? filterArchivedTasks
+      : filterViewState.config.isArchived === "both"
+        ? [...visibleTasks.filter((t) => !t.hidden), ...filterArchivedTasks]
+        : visibleTasks.filter((t) => !t.hidden),
+  );
+
+  const filteredTasks = $derived(
+    activeView === "filter" ? applyFilter(filterTaskPool, filterViewState.config) : [],
+  );
+
+  const filteredTaskCount = $derived(filteredTasks.length);
+
+  const filteredBoardColumns = $derived(
+    activeView === "filter"
+      ? boardStatusIds.map((id) => ({
+          id,
+          label: statusLabel(statuses, id),
+          color: statusColor(statuses, id),
+          buckets: [
+            {
+              priorityId: undefined as string | undefined,
+              label: "",
+              color: "",
+              tasks:
+                filterViewState.sort.levels.length > 0
+                  ? applySort(
+                      filteredTasks.filter((t) => t.status === id),
+                      filterViewState.sort,
+                      priorities,
+                      statuses,
+                    )
+                  : filteredTasks.filter((t) => t.status === id),
+            },
+          ],
+        }))
+      : boardColumns,
+  );
+
   let isLoading = $state(true);
   let errorMessage = $state("");
   let modalOpen = $state(false);
@@ -241,10 +287,13 @@
   let vimDeletePendingId = $state<string | null>(null);
 
   /** Which view this board shows: the Kanban grid or the calendar week view. */
-  let activeView: "board" | "week" | "calendar" | "dashboard" | "archive" | "search" = $state("board");
+  let activeView: "board" | "week" | "calendar" | "dashboard" | "archive" | "search" | "filter" = $state("board");
 
   /** The view that was active before entering search — restored on Escape/close. */
-  let viewBeforeSearch: "board" | "week" | "calendar" | "dashboard" | "archive" = $state("board");
+  let viewBeforeSearch: "board" | "week" | "calendar" | "dashboard" | "archive" | "filter" = $state("board");
+
+  /** Archived tasks loaded for the filter view when isArchived !== "active_only". */
+  let filterArchivedTasks: Task[] = $state([]);
 
   /** The id of the task whose detail panel is open (via vim `e`/Enter, and —
    *  in 3c — single-click). `undefined` when the panel is closed. Stored as an
@@ -1060,7 +1109,7 @@
     // vim:set-tab is dispatched by vimState when ArrowLeft/ArrowRight are pressed
     function handleVimSetTab(e: Event) {
       const tab = (e as CustomEvent<string>).detail;
-      if (tab === "board" || tab === "week" || tab === "calendar" || tab === "dashboard" || tab === "archive" || tab === "search") {
+      if (tab === "board" || tab === "week" || tab === "calendar" || tab === "dashboard" || tab === "archive" || tab === "search" || tab === "filter") {
         if (tab === "search" && activeView !== "search") {
           viewBeforeSearch = activeView as typeof viewBeforeSearch;
         }
@@ -1094,6 +1143,28 @@
     void boardStatusIds;
     void groupByPriority;
     void refresh();
+  });
+
+  // Watch requestedView signal set by Sidebar when a saved view is clicked
+  $effect(() => {
+    if (filterViewState.requestedView === "filter") {
+      if (activeView !== "filter" && activeView !== "search") {
+        viewBeforeSearch = activeView as typeof viewBeforeSearch;
+      }
+      activeView = "filter";
+      filterViewState.requestedView = null;
+    }
+  });
+
+  // Load archived tasks when the filter view needs them
+  $effect(() => {
+    if (activeView === "filter" && filterViewState.config.isArchived !== "active_only") {
+      void listArchivedTasks().then((tasks) => {
+        filterArchivedTasks = tasks;
+      });
+    } else {
+      filterArchivedTasks = [];
+    }
   });
 
   // Auto-focus: select the first board task when vim is active and either no task is focused
@@ -1204,6 +1275,16 @@
         title="Search (Ctrl+F)"
       >
         Search
+      </button>
+      <button
+        type="button"
+        class="view-tab"
+        class:active={activeView === "filter"}
+        role="tab"
+        aria-selected={activeView === "filter"}
+        onclick={() => (activeView = "filter")}
+      >
+        Filter
       </button>
     </div>
     <div class="header-actions">
@@ -1421,6 +1502,22 @@
       onOpenArchivedDetail={(task: Task) => { archiveDetailTask = task; }}
       onRestore={(task: Task) => { void handleRestoreTask(task.id); }}
     />
+  {:else if activeView === "filter"}
+    <div class="board-view-wrapper">
+      <FilterView taskCount={filteredTaskCount} />
+      <KanbanGrid
+        boardColumns={filteredBoardColumns}
+        groupByPriority={false}
+        onConsider={handleConsider}
+        onFinalize={handleFinalize}
+        onUpdate={handleUpdate}
+        onDelete={handleDelete}
+        onRemoveRecurrence={handleRemoveRecurrence}
+        allTasks={tasksState.items}
+        onCreateSubtask={openCreateSubtask}
+        onOpenDetail={(task) => (detailTaskId = task.id)}
+      />
+    </div>
   {:else}
     <div class="board-view-wrapper">
       <KanbanGrid

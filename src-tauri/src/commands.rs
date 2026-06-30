@@ -9,6 +9,7 @@ use crate::layout::{self, StatLayout};
 use crate::layout_storage;
 use crate::project::{Project, DEFAULT_PROJECT_COLOR};
 use crate::project_storage;
+use crate::views_storage;
 use crate::project_tree::{self, would_create_cycle};
 use crate::recurrence::{anchor_matches_frequency, occurrence_dates_in_range, resolve_due_rule};
 use crate::series::{validate_series, DueRule, RecurrenceFrequency, Series};
@@ -2554,6 +2555,59 @@ pub fn update_archived_task_notes(
     task.notes = notes;
     storage::update_task(&state.archive_dir, &task).map_err(|e| e.to_string())?;
     Ok(task)
+}
+
+// ── Saved views ───────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn list_saved_views(
+    state: State<AppState>,
+) -> Result<Vec<views_storage::SavedView>, String> {
+    let conn = state.time_db.lock().map_err(|e| e.to_string())?;
+    views_storage::list_views(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn create_saved_view(
+    state: State<AppState>,
+    name: String,
+    color: String,
+    icon: String,
+    filter_config: String,
+    sort_config: String,
+) -> Result<views_storage::SavedView, String> {
+    let conn = state.time_db.lock().map_err(|e| e.to_string())?;
+    views_storage::create_view(&conn, &name, &color, &icon, &filter_config, &sort_config)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn update_saved_view(
+    state: State<AppState>,
+    id: String,
+    name: String,
+    color: String,
+    icon: String,
+    filter_config: String,
+    sort_config: String,
+) -> Result<(), String> {
+    let conn = state.time_db.lock().map_err(|e| e.to_string())?;
+    views_storage::update_view(&conn, &id, &name, &color, &icon, &filter_config, &sort_config)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_saved_view(state: State<AppState>, id: String) -> Result<(), String> {
+    let conn = state.time_db.lock().map_err(|e| e.to_string())?;
+    views_storage::delete_view(&conn, &id).map_err(|e| e.to_string())
+}
+
+/// Updates the `display_order` of each saved view to match the given ordering.
+/// `ids` is the ordered list of view ids (first id gets order 0).
+#[tauri::command]
+pub fn reorder_saved_views(state: State<AppState>, ids: Vec<String>) -> Result<(), String> {
+    let conn = state.time_db.lock().map_err(|e| e.to_string())?;
+    views_storage::reorder_views(&conn, &ids).map_err(|e| e.to_string())
 }
 
 /// The pure logic behind [`force_stop_and_recompute`] — split out so it can

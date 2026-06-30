@@ -17,6 +17,7 @@ mod task;
 mod time_storage;
 mod time_tracking;
 pub mod widget_filters;
+mod views_storage;
 
 use tauri::Manager;
 
@@ -39,6 +40,7 @@ pub fn run() {
             let time_db = rusqlite::Connection::open(&time_db_file)?;
             time_storage::init_schema(&time_db)?;
             status_history::init_schema(&time_db)?;
+            views_storage::init_schema(&time_db)?;
 
             let projects = project_storage::list_projects(&projects_file)?;
             let settings = settings_storage::load_settings(&settings_file)?;
@@ -161,7 +163,12 @@ pub fn run() {
             commands::list_archived_tasks,
             commands::restore_task,
             commands::update_archived_task_notes,
-            commands::search_tasks
+            commands::search_tasks,
+            commands::list_saved_views,
+            commands::create_saved_view,
+            commands::update_saved_view,
+            commands::delete_saved_view,
+            commands::reorder_saved_views
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

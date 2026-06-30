@@ -29,6 +29,7 @@ import type {
   ProjectTreeNode,
   ProjectVelocity,
   ProjectWeeklyRhythm,
+  SavedView,
   SearchResult,
   Series,
   Settings,
@@ -466,4 +467,39 @@ export async function searchTasks(
   includeArchived: boolean,
 ): Promise<SearchResult[]> {
   return invoke<SearchResult[]>("search_tasks", { text, notesText, includeArchived });
+}
+
+// ── Saved views ───────────────────────────────────────────────────────────────
+
+export async function listSavedViews(): Promise<SavedView[]> {
+  return invoke<SavedView[]>("list_saved_views");
+}
+
+export async function createSavedView(
+  name: string,
+  color: string,
+  icon: string,
+  filterConfig: string,
+  sortConfig: string,
+): Promise<SavedView> {
+  return invoke<SavedView>("create_saved_view", { name, color, icon, filterConfig, sortConfig });
+}
+
+export async function updateSavedView(
+  id: string,
+  name: string,
+  color: string,
+  icon: string,
+  filterConfig: string,
+  sortConfig: string,
+): Promise<void> {
+  return invoke<void>("update_saved_view", { id, name, color, icon, filterConfig, sortConfig });
+}
+
+export async function deleteSavedView(id: string): Promise<void> {
+  return invoke<void>("delete_saved_view", { id });
+}
+
+export async function reorderSavedViews(ids: string[]): Promise<void> {
+  return invoke<void>("reorder_saved_views", { ids });
 }

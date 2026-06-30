@@ -677,3 +677,76 @@ export interface DashboardProjectHealth {
   tasks_due_tomorrow: number;
   estimated_time_left_minutes: number;
 }
+
+// ── Filter & Custom Views (Phase 6) ──────────────────────────────────────────
+
+export type DueDateFilterType = "any" | "overdue" | "today" | "this_week" | "this_month" | "custom";
+
+export interface DueDateFilter {
+  type: DueDateFilterType;
+  /** Inclusive lower bound, YYYY-MM-DD. Only used when `type === "custom"`. */
+  from?: string;
+  /** Inclusive upper bound, YYYY-MM-DD. Only used when `type === "custom"`. */
+  to?: string;
+}
+
+export type SortKey =
+  | "due"
+  | "scheduled"
+  | "priority"
+  | "created"
+  | "title"
+  | "estimated_time"
+  | "tracked_time"
+  | "status";
+
+export type SortDirection = "asc" | "desc";
+
+export interface SortLevel {
+  key: SortKey;
+  direction: SortDirection;
+}
+
+export interface SortConfig {
+  /** Up to 3 sort levels (primary → secondary → tertiary). Empty = natural order. */
+  levels: SortLevel[];
+}
+
+/** All filter criteria for the Filter tab. Each non-default field is a group; `groupMode` controls AND vs OR between active groups. */
+export interface FilterConfig {
+  text: string;
+  titleOnly: boolean;
+  /** Empty = match any status. */
+  statuses: string[];
+  /** Empty = match any project. */
+  projectIds: string[];
+  /** Empty = ignore tags. */
+  tags: string[];
+  /** `"any"` = OR within tags (default); `"all"` = must have every tag. */
+  tagMode: "any" | "all";
+  dueFilter: DueDateFilter;
+  scheduledFilter: DueDateFilter;
+  /** Empty = match any priority. */
+  priorities: string[];
+  estimateMinHours: number | null;
+  estimateMaxHours: number | null;
+  trackedMinHours: number | null;
+  trackedMaxHours: number | null;
+  hasSubtasks: "any" | "yes" | "no";
+  isRecurring: "any" | "yes" | "no";
+  isArchived: "active_only" | "archived_only" | "both";
+  /** `"all"` (AND, default) or `"any"` (OR) across active field groups. */
+  groupMode: "all" | "any";
+}
+
+/** A user-saved filter view persisted in SQLite. `filter_config` and `sort_config` are JSON strings. */
+export interface SavedView {
+  id: string;
+  name: string;
+  color: string;
+  icon: string;
+  filter_config: string;
+  sort_config: string;
+  display_order: number;
+  created_at: string;
+}
