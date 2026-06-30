@@ -71,6 +71,10 @@
     allTasks?: Task[];
     /** Opens the Add Task modal pre-filled to create a subtask of this task. */
     onCreateSubtask?: (task: Task) => void;
+    /** When true, all metadata fields are read-only; shows Restore instead of Delete. */
+    isArchived?: boolean;
+    /** Called when the user clicks Restore (only relevant when `isArchived`). */
+    onRestore?: (id: string) => void | Promise<void>;
   }
 
   let {
@@ -83,6 +87,8 @@
     onClose,
     allTasks = [],
     onCreateSubtask,
+    isArchived = false,
+    onRestore,
   }: Props = $props();
 
   const priorities = $derived(settingsState.current?.priorities ?? FALLBACK_PRIORITIES);
@@ -542,10 +548,11 @@
         onblur={commit}
         aria-label="Task title"
         placeholder="Untitled task"
+        readonly={isArchived}
       />
 
       <div class="header-meta">
-        <select class="status-pill" bind:value={draftStatus} onchange={commit} aria-label="Status">
+        <select class="status-pill" bind:value={draftStatus} onchange={commit} aria-label="Status" disabled={isArchived}>
           {#each statuses as status (status.id)}
             <option value={status.id}>{status.label}</option>
           {/each}
@@ -567,7 +574,7 @@
       <section class="meta-grid" aria-label="Task metadata">
         <label class="meta-field">
           <span class="meta-label">Priority</span>
-          <select bind:value={draftPriority} onchange={commit}>
+          <select bind:value={draftPriority} onchange={commit} disabled={isArchived}>
             {#each sortedPriorities(priorities) as level (level.id)}
               <option value={level.id}>{level.label}</option>
             {/each}
@@ -585,6 +592,7 @@
               bind:value={draftEstimatedHours}
               onblur={normalizeEstimateDraft}
               aria-label="Estimated hours"
+              disabled={isArchived}
             />h
             <input
               type="number"
@@ -594,13 +602,14 @@
               bind:value={draftEstimatedMinutes}
               onblur={normalizeEstimateDraft}
               aria-label="Estimated minutes"
+              disabled={isArchived}
             />m
           </span>
         </label>
 
         <label class="meta-field">
           <span class="meta-label">Scheduled</span>
-          {#if parentTask}
+          {#if parentTask || isArchived}
             <span class="locked-value">{draftScheduled || "—"}</span>
           {:else}
             <span class="date-row">
@@ -624,7 +633,7 @@
 
         <label class="meta-field">
           <span class="meta-label">Due</span>
-          {#if parentTask}
+          {#if parentTask || isArchived}
             <span class="locked-value">{draftDue || "—"}</span>
           {:else}
             <span class="date-row">
@@ -648,7 +657,7 @@
 
         <label class="meta-field meta-wide">
           <span class="meta-label">Tags</span>
-          {#if parentTask}
+          {#if parentTask || isArchived}
             <span class="locked-value">{draftTags || "—"}</span>
           {:else}
             <div class="field-with-suggestions">
@@ -898,9 +907,19 @@
         <TimeLogSection {task} />
       </section>
 
-      <!-- Danger zone -->
+      <!-- Danger zone / restore -->
       <section class="panel-section danger-zone">
-        <button type="button" class="delete-button" onclick={handleDelete}>Delete task</button>
+        {#if isArchived}
+          <button
+            type="button"
+            class="restore-button"
+            onclick={() => task && onRestore?.(task.id)}
+          >
+            ↩ Restore task
+          </button>
+        {:else}
+          <button type="button" class="delete-button" onclick={handleDelete}>Delete task</button>
+        {/if}
       </section>
     </div>
   {/if}
@@ -1390,6 +1409,20 @@
   }
   .delete-button:hover {
     background: var(--color-danger-soft);
+  }
+
+  .restore-button {
+    border: 1px solid var(--color-accent);
+    background: transparent;
+    color: var(--color-accent);
+    border-radius: var(--radius-md);
+    padding: var(--space-2xs) var(--space-sm);
+    cursor: pointer;
+    font: inherit;
+    font-size: var(--text-sm);
+  }
+  .restore-button:hover {
+    background: color-mix(in srgb, var(--color-accent) 12%, transparent);
   }
 
   @media (prefers-reduced-motion: reduce) {

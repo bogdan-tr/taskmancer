@@ -2376,6 +2376,78 @@ pub fn finish_day(state: State<AppState>) -> Result<FinishDayResult, String> {
     })
 }
 
+/// Returns all tasks from the archive directory, sorted by `archived_at`
+/// descending (most recently archived first). Tasks with no `archived_at`
+/// fall back to `completed_at`, then `cancelled_at`, then `created`.
+#[tauri::command]
+pub fn list_archived_tasks(state: State<AppState>) -> Result<Vec<Task>, String> {
+    let mut tasks =
+        storage::list_tasks(&state.archive_dir).map_err(|e| e.to_string())?;
+    tasks.sort_by(|a, b| {
+        let ts_a = a
+            .archived_at
+            .as_deref()
+            .or(a.completed_at.as_deref())
+            .or(a.cancelled_at.as_deref())
+            .unwrap_or(a.created.as_str());
+        let ts_b = b
+            .archived_at
+            .as_deref()
+            .or(b.completed_at.as_deref())
+            .or(b.cancelled_at.as_deref())
+            .unwrap_or(b.created.as_str());
+        ts_b.cmp(ts_a)
+    });
+    Ok(tasks)
+}
+
+/// Moves a task from the archive directory back to the active tasks directory,
+/// resetting its status to the global default (lowest-ordered status), clearing
+/// `archived_at`/`completed_at`/`cancelled_at`, and appending a history event.
+#[tauri::command]
+pub fn restore_task(state: State<AppState>, task_id: String) -> Result<Task, String> {
+    let settings =
+        settings_storage::load_settings(&state.settings_file).map_err(|e| e.to_string())?;
+    let default_status = settings
+        .statuses
+        .iter()
+        .min_by_key(|s| s.order)
+        .map(|s| s.id.clone())
+        .unwrap_or_else(|| "backlog".to_string());
+
+    let task =
+        storage::restore_task(&state.archive_dir, &state.tasks_dir, &task_id, &default_status)
+            .map_err(|e| e.to_string())?;
+
+    let conn = state.time_db.lock().map_err(|e| e.to_string())?;
+    let now = Utc::now();
+    let _ = status_history::record_transition(
+        &conn,
+        &task_id,
+        None,
+        &default_status,
+        &now.to_rfc3339(),
+        "user",
+    );
+
+    Ok(task)
+}
+
+/// Updates only the `notes` field of an archived task (all other fields are
+/// read-only for archived tasks). Returns the updated task.
+#[tauri::command]
+pub fn update_archived_task_notes(
+    state: State<AppState>,
+    task_id: String,
+    notes: String,
+) -> Result<Task, String> {
+    let mut task =
+        storage::load_task(&state.archive_dir, &task_id).map_err(|e| e.to_string())?;
+    task.notes = notes;
+    storage::update_task(&state.archive_dir, &task).map_err(|e| e.to_string())?;
+    Ok(task)
+}
+
 /// The pure logic behind [`force_stop_and_recompute`] — split out so it can
 /// be exercised in tests against a real (in-memory or tempfile-backed)
 /// `Connection` and `tasks_dir`, without needing a live `State<AppState>`

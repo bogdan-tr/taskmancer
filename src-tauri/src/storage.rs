@@ -1,6 +1,8 @@
 use std::fs;
 use std::path::Path;
 
+use chrono::Utc;
+
 use crate::project::Project;
 use crate::task::{Task, TaskError};
 
@@ -115,6 +117,7 @@ pub fn delete_task(dir: &Path, id: &str) -> Result<(), StorageError> {
 }
 
 /// Moves the task file `<tasks_dir>/<id>.md` to `<archive_dir>/<id>.md`,
+/// stamping `archived_at` with the current UTC time before moving and
 /// creating `archive_dir` if necessary. Returns `NotFound` if no task with
 /// `id` exists in `tasks_dir`.
 pub fn archive_task(tasks_dir: &Path, archive_dir: &Path, id: &str) -> Result<(), StorageError> {
@@ -123,10 +126,42 @@ pub fn archive_task(tasks_dir: &Path, archive_dir: &Path, id: &str) -> Result<()
     if !src.exists() {
         return Err(StorageError::NotFound(id.to_string()));
     }
+    let content = fs::read_to_string(&src)?;
+    let mut task = Task::from_markdown(&content)?;
+    task.archived_at = Some(Utc::now().to_rfc3339());
+    fs::write(&src, task.to_markdown()?)?;
     fs::create_dir_all(archive_dir)?;
     let dest = archive_dir.join(format!("{id}.md"));
     fs::rename(src, dest)?;
     Ok(())
+}
+
+/// Moves the task file `<archive_dir>/<id>.md` back to `<tasks_dir>/<id>.md`,
+/// clearing `archived_at`, `completed_at`, and `cancelled_at`, and setting
+/// `status` to `new_status`. Returns the restored task. Returns `NotFound`
+/// if no task with `id` exists in `archive_dir`.
+pub fn restore_task(
+    archive_dir: &Path,
+    tasks_dir: &Path,
+    id: &str,
+    new_status: &str,
+) -> Result<Task, StorageError> {
+    validate_task_id(id)?;
+    let src = archive_dir.join(format!("{id}.md"));
+    if !src.exists() {
+        return Err(StorageError::NotFound(id.to_string()));
+    }
+    let content = fs::read_to_string(&src)?;
+    let mut task = Task::from_markdown(&content)?;
+    task.status = new_status.to_string();
+    task.completed_at = None;
+    task.cancelled_at = None;
+    task.archived_at = None;
+    fs::write(&src, task.to_markdown()?)?;
+    fs::create_dir_all(tasks_dir)?;
+    let dest = tasks_dir.join(format!("{id}.md"));
+    fs::rename(src, dest)?;
+    Ok(task)
 }
 
 /// One-time migration for `*.md` task files saved before every task was
@@ -534,7 +569,9 @@ mod tests {
             Err(StorageError::NotFound(_))
         ));
         let archived = load_task(&archive_dir, &task.id).unwrap();
-        assert_eq!(archived, task);
+        // archive_task stamps archived_at; verify it is set and all other fields match
+        assert!(archived.archived_at.is_some(), "archived_at should be stamped");
+        assert_eq!(archived, Task { archived_at: archived.archived_at.clone(), ..task });
     }
 
     #[test]

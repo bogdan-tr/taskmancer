@@ -14,6 +14,8 @@
     listTasks,
     removeRecurrence,
     reorderTask,
+    restoreTask,
+    updateArchivedTaskNotes,
     updateSeriesOccurrence,
     updateSeriesRecurrence,
     updateTask,
@@ -21,6 +23,7 @@
   import { isVisibleOnBoard } from "$lib/boardVisibility";
   import AddTaskModal from "$lib/components/AddTaskModal.svelte";
   import AllSubtasksDoneDialog from "$lib/components/AllSubtasksDoneDialog.svelte";
+  import ArchiveView from "$lib/components/ArchiveView.svelte";
   import CalendarView from "$lib/components/CalendarView.svelte";
   import ConfirmDialog from "$lib/components/ConfirmDialog.svelte";
   import DashboardView from "$lib/components/DashboardView.svelte";
@@ -237,7 +240,7 @@
   let vimDeletePendingId = $state<string | null>(null);
 
   /** Which view this board shows: the Kanban grid or the calendar week view. */
-  let activeView: "board" | "week" | "calendar" | "dashboard" = $state("board");
+  let activeView: "board" | "week" | "calendar" | "dashboard" | "archive" = $state("board");
 
   /** The id of the task whose detail panel is open (via vim `e`/Enter, and —
    *  in 3c — single-click). `undefined` when the panel is closed. Stored as an
@@ -246,6 +249,10 @@
   const detailTask = $derived(
     detailTaskId ? tasksState.items.find((t) => t.id === detailTaskId) : undefined,
   );
+
+  /** Full Task object of the archived task whose detail panel is open.
+   *  Held as a snapshot because archived tasks aren't in `tasksState.items`. */
+  let archiveDetailTask: Task | undefined = $state(undefined);
 
   /**
    * Every task visible on this board (project-filtered, but not subject to
@@ -609,6 +616,25 @@
     }
   }
 
+  async function handleArchivedNoteSave(task: Task) {
+    try {
+      const updated = await updateArchivedTaskNotes(task.id, task.notes);
+      archiveDetailTask = updated;
+    } catch (error) {
+      errorMessage = getErrorMessage(error, "Failed to save notes");
+    }
+  }
+
+  async function handleRestoreTask(taskId: string) {
+    try {
+      const restored = await restoreTask(taskId);
+      archiveDetailTask = undefined;
+      upsertCachedTask(restored);
+    } catch (error) {
+      errorMessage = getErrorMessage(error, "Failed to restore task");
+    }
+  }
+
   /** Toggles the timer for a task via vim `s` — mirrors TaskCard's `handleTrackingToggle`. */
   async function handleVimTimerToggle(taskId: string) {
     const task = visibleTasks.find((t) => t.id === taskId);
@@ -898,13 +924,14 @@
     // Escape closes the detail panel. Blur first so any focused field's
     // onblur auto-save flushes before the panel goes away. When a field is
     // focused, the first Escape only blurs (saves); a second closes.
-    if (event.key === "Escape" && detailTaskId !== undefined) {
+    if (event.key === "Escape" && (detailTaskId !== undefined || archiveDetailTask !== undefined)) {
       event.preventDefault();
       event.stopPropagation();
       if (inEditField && target) {
         target.blur();
       } else {
         detailTaskId = undefined;
+        archiveDetailTask = undefined;
       }
       return;
     }
@@ -956,7 +983,7 @@
       ],
       currentPageRoute: page.url.pathname,
       currentProjectId: projectFilter ?? null,
-      editDialogOpen: detailTaskId !== undefined,
+      editDialogOpen: detailTaskId !== undefined || archiveDetailTask !== undefined,
       onEditTask: (id) => {
         detailTaskId = id;
       },
@@ -1010,7 +1037,7 @@
     // vim:set-tab is dispatched by vimState when ArrowLeft/ArrowRight are pressed
     function handleVimSetTab(e: Event) {
       const tab = (e as CustomEvent<string>).detail;
-      if (tab === "board" || tab === "week" || tab === "calendar" || tab === "dashboard") {
+      if (tab === "board" || tab === "week" || tab === "calendar" || tab === "dashboard" || tab === "archive") {
         activeView = tab;
       }
     }
@@ -1127,6 +1154,16 @@
         onclick={() => (activeView = "dashboard")}
       >
         Dashboard
+      </button>
+      <button
+        type="button"
+        class="view-tab"
+        class:active={activeView === "archive"}
+        role="tab"
+        aria-selected={activeView === "archive"}
+        onclick={() => (activeView = "archive")}
+      >
+        Archive
       </button>
     </div>
     <div class="header-actions">
@@ -1333,6 +1370,11 @@
     {:else}
       <DashboardView projectId={null} />
     {/if}
+  {:else if activeView === "archive"}
+    <ArchiveView
+      onOpenDetail={(task: Task) => { archiveDetailTask = task; }}
+      onRestore={(task: Task) => { void handleRestoreTask(task.id); }}
+    />
   {:else}
     <div class="board-view-wrapper">
       <KanbanGrid
@@ -1351,9 +1393,16 @@
   {/if}
 
   <TaskDetailPanel
-    open={detailTask !== undefined}
-    task={detailTask}
-    onSave={(task, scope) => handleUpdate(task, scope)}
+    open={detailTask !== undefined || archiveDetailTask !== undefined}
+    task={archiveDetailTask ?? detailTask}
+    isArchived={archiveDetailTask !== undefined}
+    onSave={(task, scope) => {
+      if (archiveDetailTask !== undefined) {
+        void handleArchivedNoteSave(task);
+      } else {
+        void handleUpdate(task, scope);
+      }
+    }}
     onDelete={(id, scope) => {
       void handleDelete(id, scope);
       detailTaskId = undefined;
@@ -1362,9 +1411,10 @@
       void handleRemoveRecurrence(id);
     }}
     onUpdateRecurrence={handleUpdateRecurrence}
-    onClose={() => (detailTaskId = undefined)}
+    onClose={() => { detailTaskId = undefined; archiveDetailTask = undefined; }}
     allTasks={tasksState.items}
     onCreateSubtask={openCreateSubtask}
+    onRestore={(id) => { void handleRestoreTask(id); }}
   />
 </main>
 

@@ -54,6 +54,13 @@ export interface Task {
    * cancelled.
    */
   cancelled_at?: string;
+  /**
+   * ISO 8601 datetime when this task was moved to the archive directory
+   * (via Finish Day or project deletion). `undefined` for active tasks and
+   * for archived tasks created before this field was added (use
+   * `completed_at` / `cancelled_at` as fallbacks for display).
+   */
+  archived_at?: string;
   notes: string;
 }
 

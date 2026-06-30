@@ -105,6 +105,12 @@ pub struct Task {
     /// that have never been cancelled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cancelled_at: Option<String>,
+    /// ISO 8601 datetime when this task was moved to the archive directory
+    /// (via [`crate::commands::finish_day`] or project deletion). Set by
+    /// [`crate::storage::archive_task`] immediately before the file is
+    /// moved, cleared by [`crate::storage::restore_task`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<String>,
     /// Free-form markdown body of the task file. Stored after the YAML
     /// frontmatter block (never inside it) — `to_markdown` strips this field
     /// from the YAML output and writes it as the file body instead.
@@ -179,6 +185,7 @@ impl Task {
             hidden: false,
             completed_at: None,
             cancelled_at: None,
+            archived_at: None,
             notes: String::new(),
         }
     }

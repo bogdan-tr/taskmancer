@@ -157,7 +157,10 @@ pub fn run() {
             commands::get_project_completion_trend,
             commands::get_project_subproject_tree,
             commands::get_project_subproject_bars,
-            commands::get_project_subproject_sunburst
+            commands::get_project_subproject_sunburst,
+            commands::list_archived_tasks,
+            commands::restore_task,
+            commands::update_archived_task_notes
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -446,3 +446,15 @@ export async function getProjectSubprojectSunburst(
 ): Promise<ProjectSunburstSlice[]> {
   return invoke<ProjectSunburstSlice[]>("get_project_subproject_sunburst", { projectId });
 }
+
+export async function listArchivedTasks(): Promise<Task[]> {
+  return invoke<Task[]>("list_archived_tasks");
+}
+
+export async function restoreTask(taskId: string): Promise<Task> {
+  return invoke<Task>("restore_task", { taskId });
+}
+
+export async function updateArchivedTaskNotes(taskId: string, notes: string): Promise<Task> {
+  return invoke<Task>("update_archived_task_notes", { taskId, notes });
+}
