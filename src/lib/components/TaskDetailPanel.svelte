@@ -145,6 +145,10 @@
    *  only switching to a DIFFERENT task re-initializes them. */
   let loadedTaskId: string | undefined = $state(undefined);
 
+  /** The panel root + title input, for the focus trap and focus-on-open. */
+  let panelEl: HTMLElement | undefined = $state();
+  let titleInputEl: HTMLInputElement | undefined = $state();
+
   const timelineRows = $derived(buildStatusTimeline(history));
 
   $effect(() => {
@@ -172,8 +176,17 @@
       history = [];
       if (task.series_id !== undefined) void loadSeriesInfo(task.series_id);
       void loadHistory(task.id);
+      // Move focus into the panel on open (spec 3.4) so Tab cycles its
+      // fields immediately. Deferred a frame so the just-rendered input is
+      // focusable even as the panel slides in.
+      requestAnimationFrame(() => titleInputEl?.focus());
     } else if (!open) {
       loadedTaskId = undefined;
+      // Don't leave focus stranded on a now-hidden field — return it to the
+      // body so the board's window key handlers (vim) take over again.
+      if (panelEl?.contains(document.activeElement)) {
+        (document.activeElement as HTMLElement | null)?.blur();
+      }
     }
   });
 
@@ -439,6 +452,64 @@
     void goto(`/projects/${id}`);
   }
 
+  const FOCUSABLE_SELECTOR =
+    'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+  /** Currently-visible focusable elements inside the panel, in DOM order. */
+  function focusableEls(): HTMLElement[] {
+    if (!panelEl) return [];
+    return Array.from(panelEl.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
+      (el) => el.offsetParent !== null || el === document.activeElement,
+    );
+  }
+
+  /**
+   * Keeps keyboard focus inside the open panel and adds vim-style dropdown
+   * editing:
+   * - Tab / Shift+Tab cycle the panel's fields and wrap at the ends, so focus
+   *   never leaks out to the sidebar or board (Esc is how you leave).
+   * - j / k move the selected option of a focused `<select>` (Status,
+   *   Priority); the native arrow keys already do this too.
+   */
+  function handlePanelKeydown(event: KeyboardEvent) {
+    if (event.key === "Tab") {
+      const focusable = focusableEls();
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement as HTMLElement | null;
+      // Always keep Tab handling inside the panel.
+      event.stopPropagation();
+      if (event.shiftKey) {
+        if (active === first || !panelEl?.contains(active)) {
+          event.preventDefault();
+          last.focus();
+        }
+      } else if (active === last || !panelEl?.contains(active)) {
+        event.preventDefault();
+        first.focus();
+      }
+      return;
+    }
+
+    if (
+      (event.key === "j" || event.key === "k") &&
+      !event.ctrlKey &&
+      !event.altKey &&
+      !event.metaKey &&
+      document.activeElement instanceof HTMLSelectElement
+    ) {
+      const select = document.activeElement;
+      const next = select.selectedIndex + (event.key === "j" ? 1 : -1);
+      if (next >= 0 && next < select.options.length) {
+        event.preventDefault();
+        event.stopPropagation();
+        select.selectedIndex = next;
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    }
+  }
+
   /** Renders one inline node's text — bold/italic carry a plain string. */
   function inlineText(node: Inline): string {
     return node.value;
@@ -446,10 +517,12 @@
 </script>
 
 <aside
+  bind:this={panelEl}
   class="detail-panel"
   class:open
   aria-label="Task details"
   aria-hidden={!open}
+  onkeydown={handlePanelKeydown}
 >
   {#if task}
     <header class="panel-header">
@@ -463,6 +536,7 @@
       </div>
 
       <input
+        bind:this={titleInputEl}
         class="title-input"
         bind:value={draftTitle}
         onblur={commit}
