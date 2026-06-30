@@ -29,6 +29,7 @@ import type {
   ProjectTreeNode,
   ProjectVelocity,
   ProjectWeeklyRhythm,
+  SearchResult,
   Series,
   Settings,
   StatLayout,
@@ -457,4 +458,12 @@ export async function restoreTask(taskId: string): Promise<Task> {
 
 export async function updateArchivedTaskNotes(taskId: string, notes: string): Promise<Task> {
   return invoke<Task>("update_archived_task_notes", { taskId, notes });
+}
+
+export async function searchTasks(
+  text: string,
+  notesText: string | null,
+  includeArchived: boolean,
+): Promise<SearchResult[]> {
+  return invoke<SearchResult[]>("search_tasks", { text, notesText, includeArchived });
 }

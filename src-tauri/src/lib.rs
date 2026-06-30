@@ -160,7 +160,8 @@ pub fn run() {
             commands::get_project_subproject_sunburst,
             commands::list_archived_tasks,
             commands::restore_task,
-            commands::update_archived_task_notes
+            commands::update_archived_task_notes,
+            commands::search_tasks
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

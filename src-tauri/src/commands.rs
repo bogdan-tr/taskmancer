@@ -24,7 +24,7 @@ use crate::status_history;
 use crate::status_stats;
 use crate::status_tier::{self, StatusTier};
 use crate::storage;
-use crate::task::Task;
+use crate::task::{extract_snippet, SearchResult, Task};
 use crate::time_storage;
 use crate::time_tracking;
 use crate::widget_filters;
@@ -2431,6 +2431,114 @@ pub fn restore_task(state: State<AppState>, task_id: String) -> Result<Task, Str
     );
 
     Ok(task)
+}
+
+/// Builds a `SearchResult` for `task` if it matches the search criteria.
+///
+/// `query_lower` is the pre-lowercased title/notes search text (may be empty).
+/// `notes_query_lower` comes from a `;;` separator in the search input:
+///   - When `Some`, the task's notes **must** contain it, and `query_lower`
+///     is matched against the **title only** (not notes).
+///   - When `None`, `query_lower` is matched against title **and** notes
+///     (the normal search-all-fields behaviour).
+fn build_search_result(
+    task: Task,
+    query_lower: &str,
+    notes_query_lower: Option<&str>,
+    is_archived: bool,
+) -> Option<SearchResult> {
+    let title_lower = task.title.to_lowercase();
+    let notes_lower = task.notes.to_lowercase();
+
+    // When `;;` notes-text was supplied, the notes must contain it.
+    if let Some(nq) = notes_query_lower {
+        if !notes_lower.contains(nq) {
+            return None;
+        }
+    }
+
+    let (relevance, notes_snippet) = if notes_query_lower.is_some() {
+        // `;;` mode: title-only matching for the main query.
+        let relevance = if query_lower.is_empty() {
+            1 // only the notes filter qualified this result
+        } else if title_lower == query_lower {
+            3
+        } else if title_lower.contains(query_lower) {
+            2
+        } else {
+            return None; // title doesn't match and we can't fall back to notes
+        };
+        let snippet = notes_query_lower.map(|nq| extract_snippet(&task.notes, nq));
+        (relevance, snippet)
+    } else {
+        // Normal mode: title and notes both searched.
+        if query_lower.is_empty() {
+            return None; // no text and no notes filter — skip
+        }
+        let title_exact = title_lower == query_lower;
+        let title_partial = !title_exact && title_lower.contains(query_lower);
+        let in_notes = notes_lower.contains(query_lower);
+        if !title_exact && !title_partial && !in_notes {
+            return None;
+        }
+        let relevance = if title_exact { 3 } else if title_partial { 2 } else { 1 };
+        let snippet = if in_notes {
+            Some(extract_snippet(&task.notes, query_lower))
+        } else {
+            None
+        };
+        (relevance, snippet)
+    };
+
+    Some(SearchResult { task, relevance, notes_snippet, is_archived })
+}
+
+/// Searches tasks by text across title and notes. When `include_archived` is
+/// true, the archive directory is also searched. Results are ranked by
+/// relevance (exact title > partial title > notes match) then by recency.
+///
+/// `notes_text` comes from the `;;` separator in the search input — when
+/// present, `text` matches titles only and `notes_text` must appear in notes.
+#[tauri::command]
+pub fn search_tasks(
+    state: State<AppState>,
+    text: String,
+    notes_text: Option<String>,
+    include_archived: bool,
+) -> Result<Vec<SearchResult>, String> {
+    let query = text.trim().to_lowercase();
+    let notes_query = notes_text
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_lowercase);
+    let notes_query_ref = notes_query.as_deref();
+
+    if query.is_empty() && notes_query_ref.is_none() {
+        return Ok(vec![]);
+    }
+
+    let mut results: Vec<SearchResult> = storage::list_tasks(&state.tasks_dir)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter_map(|t| build_search_result(t, &query, notes_query_ref, false))
+        .collect();
+
+    if include_archived {
+        let archived = storage::list_tasks(&state.archive_dir)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .filter_map(|t| build_search_result(t, &query, notes_query_ref, true));
+        results.extend(archived);
+    }
+
+    results.sort_by(|a, b| {
+        b.relevance
+            .cmp(&a.relevance)
+            .then_with(|| b.task.created.cmp(&a.task.created))
+    });
+
+    Ok(results)
 }
 
 /// Updates only the `notes` field of an archived task (all other fields are

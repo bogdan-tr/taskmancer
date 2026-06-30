@@ -212,6 +212,50 @@ impl Task {
     }
 }
 
+/// A task returned by the search command, enriched with relevance metadata.
+#[derive(Debug, Clone, Serialize)]
+pub struct SearchResult {
+    pub task: Task,
+    /// 3 = exact title match, 2 = partial title match, 1 = notes-only match.
+    pub relevance: u8,
+    /// ~120-char excerpt from the notes around the first match, or `None` when
+    /// the match was in the title rather than the notes.
+    pub notes_snippet: Option<String>,
+    pub is_archived: bool,
+}
+
+/// Extracts ~120 chars of context around the first occurrence of `query_lower` in `text`.
+pub
+fn extract_snippet(text: &str, query_lower: &str) -> String {
+    const CONTEXT: usize = 120;
+    let lower = text.to_lowercase();
+    let Some(pos) = lower.find(query_lower) else {
+        return text.chars().take(CONTEXT).collect();
+    };
+    let start = pos.saturating_sub(CONTEXT / 2);
+    let end = (pos + query_lower.len() + CONTEXT / 2).min(text.len());
+    // Snap to char boundaries
+    let start = text
+        .char_indices()
+        .rev()
+        .find(|&(i, _)| i <= start)
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    let end = text
+        .char_indices()
+        .find(|&(i, _)| i >= end)
+        .map(|(i, _)| i)
+        .unwrap_or(text.len());
+    let mut snippet = text[start..end].to_string();
+    if start > 0 {
+        snippet = format!("…{snippet}");
+    }
+    if end < text.len() {
+        snippet = format!("{snippet}…");
+    }
+    snippet
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

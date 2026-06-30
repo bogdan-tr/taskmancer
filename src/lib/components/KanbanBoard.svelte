@@ -25,6 +25,7 @@
   import AllSubtasksDoneDialog from "$lib/components/AllSubtasksDoneDialog.svelte";
   import ArchiveView from "$lib/components/ArchiveView.svelte";
   import CalendarView from "$lib/components/CalendarView.svelte";
+  import SearchView from "$lib/components/SearchView.svelte";
   import ConfirmDialog from "$lib/components/ConfirmDialog.svelte";
   import DashboardView from "$lib/components/DashboardView.svelte";
   import ProjectDashboardView from "$lib/components/ProjectDashboardView.svelte";
@@ -240,7 +241,10 @@
   let vimDeletePendingId = $state<string | null>(null);
 
   /** Which view this board shows: the Kanban grid or the calendar week view. */
-  let activeView: "board" | "week" | "calendar" | "dashboard" | "archive" = $state("board");
+  let activeView: "board" | "week" | "calendar" | "dashboard" | "archive" | "search" = $state("board");
+
+  /** The view that was active before entering search — restored on Escape/close. */
+  let viewBeforeSearch: "board" | "week" | "calendar" | "dashboard" | "archive" = $state("board");
 
   /** The id of the task whose detail panel is open (via vim `e`/Enter, and —
    *  in 3c — single-click). `undefined` when the panel is closed. Stored as an
@@ -921,19 +925,38 @@
     const target = event.target as HTMLElement | null;
     const inEditField = target?.matches("input, textarea, [contenteditable='true']") ?? false;
 
-    // Escape closes the detail panel. Blur first so any focused field's
-    // onblur auto-save flushes before the panel goes away. When a field is
-    // focused, the first Escape only blurs (saves); a second closes.
-    if (event.key === "Escape" && (detailTaskId !== undefined || archiveDetailTask !== undefined)) {
+    // Ctrl+F opens (or toggles) the search view.
+    if (event.ctrlKey && event.key.toLowerCase() === "f") {
       event.preventDefault();
-      event.stopPropagation();
-      if (inEditField && target) {
-        target.blur();
+      if (activeView === "search") {
+        activeView = viewBeforeSearch;
       } else {
-        detailTaskId = undefined;
-        archiveDetailTask = undefined;
+        viewBeforeSearch = activeView as typeof viewBeforeSearch;
+        activeView = "search";
       }
       return;
+    }
+
+    // Escape closes the detail panel first; if no panel is open and we're in
+    // the search view, return to the previous view.
+    if (event.key === "Escape") {
+      if (detailTaskId !== undefined || archiveDetailTask !== undefined) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (inEditField && target) {
+          target.blur();
+        } else {
+          detailTaskId = undefined;
+          archiveDetailTask = undefined;
+        }
+        return;
+      }
+      if (activeView === "search") {
+        event.preventDefault();
+        event.stopPropagation();
+        activeView = viewBeforeSearch;
+        return;
+      }
     }
 
     // While the vim delete confirm dialog is open, intercept keyboard so board vim keys
@@ -1037,7 +1060,10 @@
     // vim:set-tab is dispatched by vimState when ArrowLeft/ArrowRight are pressed
     function handleVimSetTab(e: Event) {
       const tab = (e as CustomEvent<string>).detail;
-      if (tab === "board" || tab === "week" || tab === "calendar" || tab === "dashboard" || tab === "archive") {
+      if (tab === "board" || tab === "week" || tab === "calendar" || tab === "dashboard" || tab === "archive" || tab === "search") {
+        if (tab === "search" && activeView !== "search") {
+          viewBeforeSearch = activeView as typeof viewBeforeSearch;
+        }
         activeView = tab;
       }
     }
@@ -1164,6 +1190,20 @@
         onclick={() => (activeView = "archive")}
       >
         Archive
+      </button>
+      <button
+        type="button"
+        class="view-tab"
+        class:active={activeView === "search"}
+        role="tab"
+        aria-selected={activeView === "search"}
+        onclick={() => {
+          if (activeView !== "search") viewBeforeSearch = activeView as typeof viewBeforeSearch;
+          activeView = "search";
+        }}
+        title="Search (Ctrl+F)"
+      >
+        Search
       </button>
     </div>
     <div class="header-actions">
@@ -1373,6 +1413,12 @@
   {:else if activeView === "archive"}
     <ArchiveView
       onOpenDetail={(task: Task) => { archiveDetailTask = task; }}
+      onRestore={(task: Task) => { void handleRestoreTask(task.id); }}
+    />
+  {:else if activeView === "search"}
+    <SearchView
+      onOpenDetail={(task: Task) => { detailTaskId = task.id; }}
+      onOpenArchivedDetail={(task: Task) => { archiveDetailTask = task; }}
       onRestore={(task: Task) => { void handleRestoreTask(task.id); }}
     />
   {:else}

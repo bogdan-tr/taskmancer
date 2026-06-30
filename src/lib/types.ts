@@ -64,6 +64,17 @@ export interface Task {
   notes: string;
 }
 
+/** A task returned by the `search_tasks` command, enriched with match metadata. */
+export interface SearchResult {
+  task: Task;
+  /** 3 = exact title match, 2 = partial title match, 1 = notes-only match. */
+  relevance: number;
+  /** ~120-char excerpt from notes around the first match, or null when the match
+   *  was in the title rather than the notes. */
+  notes_snippet: string | null;
+  is_archived: boolean;
+}
+
 /**
  * A project's Kanban board configuration: the subset and order of the
  * global status list (see `Settings.statuses`) shown on this project's
