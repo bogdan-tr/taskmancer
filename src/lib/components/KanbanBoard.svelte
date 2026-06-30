@@ -1343,6 +1343,7 @@
         onRemoveRecurrence={handleRemoveRecurrence}
         allTasks={tasksState.items}
         onCreateSubtask={openCreateSubtask}
+        onOpenDetail={(task) => (detailTaskId = task.id)}
       />
     </div>
   {/if}

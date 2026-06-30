@@ -18,6 +18,8 @@
     /** The global task list, threaded down to `TaskCard` for its own subtask lookups — see its prop doc for why it must be global, not board-scoped. */
     allTasks: Task[];
     onCreateSubtask: (task: Task) => void;
+    /** Opens the task detail panel for `task` (single-click on a card). */
+    onOpenDetail: (task: Task) => void;
   }
 
   let {
@@ -30,6 +32,7 @@
     onRemoveRecurrence,
     allTasks,
     onCreateSubtask,
+    onOpenDetail,
   }: Props = $props();
 </script>
 
@@ -57,7 +60,7 @@
             onfinalize={(event) => onFinalize(column.id, bucketIndex, event)}
           >
             {#each bucket.tasks as task (task.id)}
-              <TaskCard {task} {onUpdate} {onDelete} {onRemoveRecurrence} {allTasks} {onCreateSubtask} />
+              <TaskCard {task} {onUpdate} {onDelete} {onRemoveRecurrence} {allTasks} {onCreateSubtask} {onOpenDetail} />
             {/each}
           </ul>
         </div>

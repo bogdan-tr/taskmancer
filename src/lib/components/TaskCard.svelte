@@ -14,7 +14,6 @@
   import { getErrorMessage } from "$lib/errors";
   import {
     formatMinutes,
-    hoursAndMinutesFromMinutes,
     minutesFromHoursAndMinutes,
     normalizeHoursMinutes,
   } from "$lib/estimatedTime";
@@ -40,7 +39,6 @@
   } from "$lib/subtasks";
   import {
     emptyToUndefined,
-    formatTags,
     isValidOptionalDate,
     parseTags,
     seriesSharedFieldsChanged,
@@ -81,9 +79,19 @@
     allTasks?: Task[];
     /** Opens the Add Task modal pre-filled to create a subtask of `task`. */
     onCreateSubtask?: (task: Task) => void;
+    /** Opens the task detail panel for `task` (single-click on the card). */
+    onOpenDetail?: (task: Task) => void;
   }
 
-  let { task, onUpdate, onDelete, onRemoveRecurrence, allTasks = [], onCreateSubtask }: Props = $props();
+  let {
+    task,
+    onUpdate,
+    onDelete,
+    onRemoveRecurrence,
+    allTasks = [],
+    onCreateSubtask,
+    onOpenDetail,
+  }: Props = $props();
 
   const priorities = $derived(settingsState.current?.priorities ?? FALLBACK_PRIORITIES);
   /** The task that owns `task`'s container, if `task` is itself a subtask — `undefined` for a plain task. Used both for the "+ Create Subtask"/recurrence gating and to lock Project/Tags/Due/Scheduled to its values in the edit form (see the design spec's "only Priority and Estimated time stay independently editable" rule). */
@@ -224,24 +232,6 @@
   let projectSuggestionIndex = $state(0);
   let tagSuggestions: string[] = $state([]);
   let tagSuggestionIndex = $state(0);
-
-  function startEdit() {
-    draftTitle = task.title;
-    draftProject = projectsState.items.find((p) => p.id === task.project_id)?.name ?? "";
-    draftTags = formatTags(task.tags);
-    draftPriority = task.priority;
-    draftDue = task.due ?? "";
-    draftScheduled = task.scheduled ?? "";
-    const resolvedEstimate =
-      task.estimated_minutes !== undefined ? hoursAndMinutesFromMinutes(task.estimated_minutes) : undefined;
-    draftEstimatedHours = resolvedEstimate?.hours;
-    draftEstimatedMinutes = resolvedEstimate?.minutes;
-    draftNotes = task.notes;
-    editError = "";
-    projectSuggestions = [];
-    tagSuggestions = [];
-    isEditing = true;
-  }
 
   /** Rolls minutes >= 60 over into hours, e.g. typing 90 into "mins" reads back as 1h 30m. */
   function normalizeEstimateDraft() {
@@ -426,19 +416,17 @@
 
   /**
    * Clicking the title of a task that owns a subtask container navigates to
-   * that container's own board instead of opening inline edit — per the
-   * "subtasks are like tasks in a subproject, where the parent task is the
-   * subproject" framing, the title click is this task's "open the
-   * subproject" affordance. Editing the parent task's own fields (and
-   * reaching the Create Subtask button) moves to the dedicated edit icon
-   * below for exactly this case; a task with no container keeps today's
-   * plain click-to-edit behavior unchanged.
+   * that container's own board — per the "subtasks are like tasks in a
+   * subproject, where the parent task is the subproject" framing, the title
+   * click is this task's "open the subproject" affordance. Editing such a
+   * task's own fields moves to the dedicated edit icon below (which opens the
+   * detail panel). A task with no container opens the detail panel directly.
    */
   function handleTitleClick() {
     if (task.subtask_project_id) {
       void goto(`/projects/${task.subtask_project_id}`);
     } else {
-      startEdit();
+      onOpenDetail?.(task);
     }
   }
 
@@ -729,7 +717,7 @@
         <span class="tracking-error" role="alert">{trackingError}</span>
       {/if}
       {#if task.subtask_project_id}
-        <button type="button" class="edit-icon-button" onclick={startEdit} aria-label="Edit task" title="Edit task">
+        <button type="button" class="edit-icon-button" onclick={() => onOpenDetail?.(task)} aria-label="Edit task" title="Edit task">
           <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M11 2l3 3-7.5 7.5L3 13l.5-3.5L11 2z" />
           </svg>
