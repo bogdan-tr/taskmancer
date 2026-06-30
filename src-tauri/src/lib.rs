@@ -9,6 +9,7 @@ mod series;
 mod series_storage;
 mod settings;
 mod settings_storage;
+mod status_history;
 mod status_stats;
 mod status_tier;
 mod storage;
@@ -37,6 +38,7 @@ pub fn run() {
             std::fs::create_dir_all(&app_data_dir)?;
             let time_db = rusqlite::Connection::open(&time_db_file)?;
             time_storage::init_schema(&time_db)?;
+            status_history::init_schema(&time_db)?;
 
             let projects = project_storage::list_projects(&projects_file)?;
             let settings = settings_storage::load_settings(&settings_file)?;
@@ -68,6 +70,16 @@ pub fn run() {
                 settings_storage::save_settings(&settings_file, &settings)?;
             }
 
+            // Seed status history on first launch after the feature was added.
+            let settings = settings_storage::load_settings(&settings_file)?;
+            let live_tasks = storage::list_tasks(&tasks_dir)?;
+            let archived_tasks = if archive_dir.exists() {
+                storage::list_tasks(&archive_dir).unwrap_or_default()
+            } else {
+                vec![]
+            };
+            status_history::seed_if_empty(&time_db, &live_tasks, &archived_tasks, &settings)?;
+
             app.manage(commands::AppState {
                 tasks_dir,
                 archive_dir,
@@ -83,6 +95,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::list_tasks,
+            commands::get_task_history,
             commands::create_task,
             commands::create_recurring_task,
             commands::ensure_occurrences_until,

@@ -541,6 +541,19 @@ export interface TimeEntry {
   created_at: string;
 }
 
+/** A single recorded status transition for a task. `from_status` is `null`
+ *  for creation / seed events where no prior status is known. `source` is one
+ *  of `"user"` | `"cascade"` | `"seed"` (seed events are shown with a `~`
+ *  prefix to indicate approximate data). */
+export interface StatusHistoryEntry {
+  id: string;
+  task_id: string;
+  from_status: string | null;
+  to_status: string;
+  changed_at: string;
+  source: "user" | "cascade" | "seed";
+}
+
 /** The 4 real status-line health tiers plus the implicit `"great"` fallback — see `docs/features/project-status-line.md`'s "Status algorithm". Most-severe-first. */
 export type StatusTier = "severe" | "critical" | "needs_attention" | "on_track" | "great";
 

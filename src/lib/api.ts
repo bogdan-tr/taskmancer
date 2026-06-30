@@ -32,12 +32,17 @@ import type {
   Series,
   Settings,
   StatLayout,
+  StatusHistoryEntry,
   Task,
   TimeEntry,
 } from "./types";
 
 export async function listTasks(): Promise<Task[]> {
   return invoke<Task[]>("list_tasks");
+}
+
+export async function getTaskHistory(taskId: string): Promise<StatusHistoryEntry[]> {
+  return invoke<StatusHistoryEntry[]>("get_task_history", { taskId });
 }
 
 export async function createTask(input: ParsedTaskInput, projectId?: string): Promise<Task> {

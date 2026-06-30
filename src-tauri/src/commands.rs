@@ -20,6 +20,7 @@ use crate::settings::{
     TaskDefaults,
 };
 use crate::settings_storage;
+use crate::status_history;
 use crate::status_stats;
 use crate::status_tier::{self, StatusTier};
 use crate::storage;
@@ -67,6 +68,15 @@ pub struct AppState {
 #[tauri::command]
 pub fn list_tasks(state: State<AppState>) -> Result<Vec<Task>, String> {
     storage::list_tasks(&state.tasks_dir).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_task_history(
+    state: State<AppState>,
+    task_id: String,
+) -> Result<Vec<status_history::StatusHistoryEntry>, String> {
+    let conn = state.time_db.lock().map_err(|e| e.to_string())?;
+    status_history::list_for_task(&conn, &task_id).map_err(|e| e.to_string())
 }
 
 /// Resolves the priority a new task should get when none was explicitly
@@ -812,16 +822,29 @@ pub fn update_task(state: State<AppState>, task: Task) -> Result<Task, String> {
     apply_task_update(&mut existing, title, resolved_project_id, task);
 
     // Stamp completion / cancellation timestamps on status transitions.
+    let now = Utc::now();
     if existing.status != old_status {
         if widget_filters::is_completed(&existing, &settings) {
-            existing.completed_at = Some(Utc::now().to_rfc3339());
+            existing.completed_at = Some(now.to_rfc3339());
             existing.cancelled_at = None;
         } else if widget_filters::is_cancelled(&existing, &settings) {
-            existing.cancelled_at = Some(Utc::now().to_rfc3339());
+            existing.cancelled_at = Some(now.to_rfc3339());
             existing.completed_at = None;
         } else {
             existing.completed_at = None;
             existing.cancelled_at = None;
+        }
+        // Record the transition in history. Best-effort — a DB error never
+        // blocks the task update itself.
+        if let Ok(conn) = state.time_db.lock() {
+            let _ = status_history::record_transition(
+                &conn,
+                &existing.id,
+                Some(&old_status),
+                &existing.status,
+                &now.to_rfc3339(),
+                "user",
+            );
         }
     }
 
@@ -1194,16 +1217,27 @@ pub fn update_series_occurrence(
     apply_task_update(&mut existing, title, resolved_project_id, task);
 
     // Stamp completion / cancellation timestamps on status transitions.
+    let now = Utc::now();
     if existing.status != old_status {
         if widget_filters::is_completed(&existing, &settings) {
-            existing.completed_at = Some(Utc::now().to_rfc3339());
+            existing.completed_at = Some(now.to_rfc3339());
             existing.cancelled_at = None;
         } else if widget_filters::is_cancelled(&existing, &settings) {
-            existing.cancelled_at = Some(Utc::now().to_rfc3339());
+            existing.cancelled_at = Some(now.to_rfc3339());
             existing.completed_at = None;
         } else {
             existing.completed_at = None;
             existing.cancelled_at = None;
+        }
+        if let Ok(conn) = state.time_db.lock() {
+            let _ = status_history::record_transition(
+                &conn,
+                &existing.id,
+                Some(&old_status),
+                &existing.status,
+                &now.to_rfc3339(),
+                "user",
+            );
         }
     }
 
