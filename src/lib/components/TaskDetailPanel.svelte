@@ -869,7 +869,7 @@
     top: 0;
     right: 0;
     height: 100vh;
-    width: min(26rem, 92vw);
+    width: min(34rem, 94vw);
     background: var(--color-surface-raised);
     color: var(--color-ink);
     border-left: 1px solid var(--color-border);
@@ -987,6 +987,7 @@
   .panel-body {
     flex: 1;
     overflow-y: auto;
+    overflow-x: hidden;
     padding: var(--space-md);
     display: flex;
     flex-direction: column;
@@ -1003,6 +1004,9 @@
     flex-direction: column;
     gap: var(--space-3xs);
     font-size: var(--text-xs);
+    /* Grid items default to min-width:auto and won't shrink below their
+       content, which forced the panel to scroll horizontally. */
+    min-width: 0;
   }
   .meta-wide {
     grid-column: 1 / -1;
@@ -1017,6 +1021,8 @@
   .meta-field select,
   .meta-field input[type="text"],
   .meta-field input[type="number"] {
+    box-sizing: border-box;
+    max-width: 100%;
     border: 1px solid var(--color-border);
     background: var(--color-surface);
     color: var(--color-ink);
@@ -1046,6 +1052,7 @@
   }
   .date-row input {
     flex: 1;
+    min-width: 0;
   }
   .field-with-suggestions {
     position: relative;
