@@ -1,5 +1,12 @@
 import { describe, expect, test } from "vitest";
-import { emptyToUndefined, formatTags, isValidOptionalDate, parseTags, seriesSharedFieldsChanged } from "./taskFields";
+import {
+  emptyToUndefined,
+  formatTags,
+  isValidOptionalDate,
+  parseTags,
+  seriesSharedFieldsChanged,
+  taskEditableFieldsChanged,
+} from "./taskFields";
 import type { Task } from "./types";
 
 function baseTask(overrides: Partial<Task> = {}): Task {
@@ -149,5 +156,43 @@ describe("seriesSharedFieldsChanged", () => {
     const edited = baseTask({ tags: ["urgent", "chore"] });
 
     expect(seriesSharedFieldsChanged(original, edited)).toBe(false);
+  });
+});
+
+describe("taskEditableFieldsChanged", () => {
+  test("returns false when nothing changed", () => {
+    expect(taskEditableFieldsChanged(baseTask(), baseTask())).toBe(false);
+  });
+
+  test.each([
+    ["title", { title: "New title" }],
+    ["project_id", { project_id: "other-id" }],
+    ["priority", { priority: "high" }],
+    ["status", { status: "done" }],
+    ["due", { due: "2026-07-01" }],
+    ["scheduled", { scheduled: "2026-06-25" }],
+    ["estimated_minutes", { estimated_minutes: 99 }],
+    ["notes", { notes: "changed notes" }],
+  ])("returns true when %s changed", (_field, override) => {
+    expect(taskEditableFieldsChanged(baseTask(), baseTask(override))).toBe(true);
+  });
+
+  test("returns true when tags changed", () => {
+    const original = baseTask({ tags: ["a", "b"] });
+    const edited = baseTask({ tags: ["a", "c"] });
+    expect(taskEditableFieldsChanged(original, edited)).toBe(true);
+  });
+
+  test("ignores tag order", () => {
+    const original = baseTask({ tags: ["a", "b"] });
+    const edited = baseTask({ tags: ["b", "a"] });
+    expect(taskEditableFieldsChanged(original, edited)).toBe(false);
+  });
+
+  test("unlike seriesSharedFieldsChanged, it DOES flag per-occurrence fields", () => {
+    const original = baseTask();
+    const edited = baseTask({ status: "done", due: "2026-07-01", scheduled: "2026-06-25" });
+    expect(seriesSharedFieldsChanged(original, edited)).toBe(false);
+    expect(taskEditableFieldsChanged(original, edited)).toBe(true);
   });
 });

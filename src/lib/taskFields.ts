@@ -53,3 +53,24 @@ export function seriesSharedFieldsChanged(original: Task, edited: Task): boolean
     !sameTags(original.tags, edited.tags)
   );
 }
+
+/**
+ * Whether any field the Task Detail Panel can edit (title, project, tags,
+ * priority, status, due, scheduled, estimated time, notes) differs between
+ * `original` and `edited`. Drives the panel's auto-save-on-blur skip: when
+ * nothing changed, no save (and no "Saving…/Saved" flicker) is triggered.
+ * Tags are compared order-insensitively, matching `seriesSharedFieldsChanged`.
+ */
+export function taskEditableFieldsChanged(original: Task, edited: Task): boolean {
+  return (
+    original.title !== edited.title ||
+    original.project_id !== edited.project_id ||
+    original.priority !== edited.priority ||
+    original.status !== edited.status ||
+    original.due !== edited.due ||
+    original.scheduled !== edited.scheduled ||
+    original.estimated_minutes !== edited.estimated_minutes ||
+    original.notes !== edited.notes ||
+    !sameTags(original.tags, edited.tags)
+  );
+}
