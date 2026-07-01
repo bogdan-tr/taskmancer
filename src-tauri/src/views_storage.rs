@@ -1,5 +1,5 @@
 use chrono::Utc;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -117,12 +117,12 @@ pub fn reorder_views(conn: &Connection, ids: &[String]) -> rusqlite::Result<()> 
 }
 
 fn next_display_order(conn: &Connection) -> rusqlite::Result<i64> {
-    let max: Option<i64> = conn
-        .query_row("SELECT MAX(display_order) FROM saved_views", [], |row| {
-            row.get(0)
-        })
-        .optional()?;
-    Ok(max.unwrap_or(-1) + 1)
+    let max: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(display_order), -1) FROM saved_views",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(max + 1)
 }
 
 #[cfg(test)]
@@ -177,6 +177,14 @@ mod tests {
         let views = list_views(&conn).unwrap();
         assert_eq!(views[0].id, v2.id);
         assert_eq!(views[1].id, v1.id);
+    }
+
+    #[test]
+    fn create_first_view_on_empty_table() {
+        // MAX(display_order) returns NULL on an empty table; must not error
+        let conn = open_db();
+        let v = create_view(&conn, "First", "#aaa", "star", "{}", r#"{"levels":[]}"#).unwrap();
+        assert_eq!(v.display_order, 0);
     }
 
     #[test]
