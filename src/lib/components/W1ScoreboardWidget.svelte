@@ -1,12 +1,15 @@
 <script lang="ts">
   import { getProjectScoreboard } from "$lib/api";
+  import type { DashboardDateRange } from "$lib/api";
   import type { ProjectScoreboard } from "$lib/types";
+  import WidgetHeader from "./WidgetHeader.svelte";
 
   interface Props {
     projectId: string;
     projectColor: string;
+    dateRange: DashboardDateRange;
   }
-  let { projectId, projectColor }: Props = $props();
+  let { projectId, projectColor, dateRange }: Props = $props();
 
   let data = $state<ProjectScoreboard | null>(null);
   let loading = $state(true);
@@ -16,7 +19,7 @@
     if (!projectId) return;
     loading = true;
     error = null;
-    getProjectScoreboard(projectId)
+    getProjectScoreboard(projectId, dateRange)
       .then((d) => { data = d; })
       .catch((e) => { error = e instanceof Error ? e.message : String(e); })
       .finally(() => { loading = false; });
@@ -33,6 +36,7 @@
 </script>
 
 <div class="scoreboard" style="--project-accent: {projectColor}">
+  <WidgetHeader widgetType="p_scoreboard" pickerRange={dateRange} />
   {#if loading}
     <div class="skeleton-grid">
       {#each [0,1,2,3] as i (i)}
@@ -78,7 +82,10 @@
     height: 100%;
     display: flex;
     flex-direction: column;
-    justify-content: center;
+    gap: 8px;
+    /* Font sizing below is relative to the CARD, not the viewport, so the
+       numbers scale with the widget when it's resized in the grid. */
+    container-type: inline-size;
   }
 
   .kpi-grid {
@@ -86,7 +93,8 @@
     grid-template-columns: 1fr 1fr;
     grid-template-rows: 1fr 1fr;
     gap: 8px;
-    height: 100%;
+    flex: 1;
+    min-height: 0;
   }
 
   .kpi-cell {
@@ -100,15 +108,19 @@
     background: rgba(255, 255, 255, 0.03);
     border: 1px solid var(--db-border);
     position: relative;
+    min-width: 0;
+    overflow: hidden;
   }
 
   .kpi-num {
-    font-size: clamp(1.4rem, 3.5vw, 2.4rem);
+    font-size: clamp(1.1rem, 9cqi, 2.4rem);
     font-weight: 800;
     color: var(--project-accent);
     line-height: 1;
     font-variant-numeric: tabular-nums;
     letter-spacing: -0.02em;
+    white-space: nowrap;
+    max-width: 100%;
   }
 
   .kpi-label {
@@ -136,7 +148,8 @@
     grid-template-columns: 1fr 1fr;
     grid-template-rows: 1fr 1fr;
     gap: 8px;
-    height: 100%;
+    flex: 1;
+    min-height: 0;
   }
 
   .skeleton-cell {

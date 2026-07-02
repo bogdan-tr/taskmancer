@@ -12,7 +12,7 @@
   let data = $state<ProjectWeeklyRhythm | null>(null);
 
   $effect(() => {
-    getProjectWeeklyRhythm(projectId)
+    getProjectWeeklyRhythm(projectId, "all_time")
       .then((r) => { data = r; })
       .catch(() => {}); // silently — no error state in a mini widget
   });

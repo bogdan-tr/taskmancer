@@ -1,6 +1,7 @@
 <script lang="ts">
   import { getProjectBurndown } from "$lib/api";
-  import type { ProjectBurndown, ProjectBurndownPoint } from "$lib/types";
+  import type { ProjectBurndown } from "$lib/types";
+  import WidgetHeader from "./WidgetHeader.svelte";
 
   interface Props {
     projectId: string;
@@ -22,149 +23,149 @@
       .finally(() => { loading = false; });
   });
 
-  const PAD_L = 38;
-  const PAD_R = 8;
-  const PAD_T = 8;
-  const PAD_B = 28;
+  // ── Responsive chart geometry ─────────────────────────────────────────────
+  let areaW = $state(420);
+  let areaH = $state(200);
+  let SVG_W = $derived(Math.max(280, areaW));
+  let SVG_H = $derived(Math.max(120, areaH));
+  const PAD_L = 34;
+  const PAD_R = 10;
+  const PAD_T = 10;
+  const PAD_B = 20;
+  let CHART_W = $derived(SVG_W - PAD_L - PAD_R);
+  let CHART_H = $derived(SVG_H - PAD_T - PAD_B);
 
-  let chartW = $state(0);
-  let chartH = $state(140);
-  let SVG_W = $derived(Math.max(240, chartW));
-  let SVG_H = $derived(Math.max(100, chartH));
-  let CW = $derived(SVG_W - PAD_L - PAD_R);
-  let CH = $derived(SVG_H - PAD_T - PAD_B);
+  let points = $derived(data?.points ?? []);
+  let maxHours = $derived(
+    Math.max(1, ...points.map((p) => Math.max(p.remaining_hours, p.ideal_hours))),
+  );
 
-  let maxHours = $derived((): number => {
-    if (!data || data.points.length === 0) return 1;
-    return Math.max(...data.points.map((p) => Math.max(p.remaining_hours, p.ideal_hours)), 1);
+  function xPos(i: number): number {
+    if (points.length <= 1) return PAD_L;
+    return PAD_L + (i / (points.length - 1)) * CHART_W;
+  }
+  function yPos(hours: number): number {
+    return PAD_T + CHART_H * (1 - hours / maxHours);
+  }
+
+  let actualPath = $derived.by(() => {
+    if (points.length === 0) return "";
+    return points.map((p, i) => `${i === 0 ? "M" : "L"} ${xPos(i)} ${yPos(p.remaining_hours)}`).join(" ");
   });
 
-  function xPos(i: number, total: number): number {
-    if (total <= 1) return PAD_L;
-    return PAD_L + (i / (total - 1)) * CW;
-  }
-
-  function yPos(h: number): number {
-    return PAD_T + CH - (h / maxHours()) * CH;
-  }
-
-  function polyline(getter: (p: ProjectBurndownPoint) => number): string {
-    if (!data || data.points.length === 0) return "";
-    return data.points
-      .map((p, i) => `${xPos(i, data!.points.length)},${yPos(getter(p))}`)
-      .join(" ");
-  }
-
-  function gridStepHours(): number {
-    const m = maxHours();
-    if (m <= 4) return 1;
-    if (m <= 10) return 2;
-    if (m <= 20) return 5;
-    return Math.ceil(m / 4 / 5) * 5;
-  }
-
-  let gridLines = $derived((): number[] => {
-    const step = gridStepHours();
-    const lines: number[] = [];
-    let v = step;
-    while (v <= maxHours()) {
-      lines.push(v);
-      v += step;
-    }
-    return lines;
+  let actualArea = $derived.by(() => {
+    if (points.length === 0) return "";
+    const base = PAD_T + CHART_H;
+    return `${actualPath} L ${xPos(points.length - 1)} ${base} L ${xPos(0)} ${base} Z`;
   });
 
-  function fmtDate(d: string): string {
-    const [, m, day] = d.split("-");
-    const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-    return `${months[parseInt(m) - 1]} ${parseInt(day)}`;
-  }
+  let idealPath = $derived.by(() => {
+    if (points.length === 0) return "";
+    return points.map((p, i) => `${i === 0 ? "M" : "L"} ${xPos(i)} ${yPos(p.ideal_hours)}`).join(" ");
+  });
 
-  let todayX = $derived((): number => {
-    if (!data || data.points.length === 0) return -1;
+  /** Today marker + ahead/behind assessment at today's (or the latest past) point. */
+  let todayInfo = $derived.by(() => {
+    if (!data || points.length === 0) return null;
     const today = new Date().toISOString().slice(0, 10);
-    const idx = data.points.findIndex((p) => p.date >= today);
-    if (idx < 0) return -1;
-    return xPos(idx, data.points.length);
+    let idx = -1;
+    for (let i = 0; i < points.length; i++) {
+      if (points[i].date <= today) idx = i;
+    }
+    if (idx === -1) return null;
+    const p = points[idx];
+    const diff = p.remaining_hours - p.ideal_hours; // + = behind, − = ahead
+    return { x: xPos(idx), diff, remaining: p.remaining_hours };
   });
+
+  function fmtH(h: number): string {
+    const abs = Math.abs(h);
+    return abs >= 10 ? `${abs.toFixed(0)}h` : `${abs.toFixed(1)}h`;
+  }
+
+  /** Y-axis gridline hour values: 3 evenly spaced ticks + zero. */
+  let yTicks = $derived.by(() => {
+    const step = maxHours / 3;
+    return [0, step, step * 2, maxHours];
+  });
+
+  function fmtAxisDate(iso: string): string {
+    const d = new Date(iso + "T00:00:00");
+    return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  }
 </script>
 
 <div class="w13" style="--project-accent: {projectColor}">
-  <span class="widget-label">BURNDOWN</span>
+  <WidgetHeader widgetType="p_burndown" />
   {#if loading}
     <div class="state-msg">Loading…</div>
   {:else if error}
     <div class="state-msg state-err">{error}</div>
-  {:else if data && data.points.length > 0}
-    {@const pts = data.points}
-    {@const n = pts.length}
-    <div class="chart-area" bind:clientWidth={chartW} bind:clientHeight={chartH}>
-      <svg width={SVG_W} height={SVG_H} viewBox="0 0 {SVG_W} {SVG_H}">
-        <!-- grid -->
-        {#each gridLines() as gv}
-          <line
-            x1={PAD_L} x2={SVG_W - PAD_R}
-            y1={yPos(gv)} y2={yPos(gv)}
-            stroke="var(--db-grid-line, #ffffff14)"
-            stroke-width="1"
-          />
-          <text x={PAD_L - 4} y={yPos(gv) + 4} text-anchor="end" font-size="9" fill="var(--db-ink-muted)">{gv}h</text>
+  {:else if data && points.length > 1}
+    <div class="chart-meta">
+      {#if todayInfo}
+        <span class="pace-badge" class:behind={todayInfo.diff > 0.05} class:ahead={todayInfo.diff < -0.05}>
+          {#if todayInfo.diff > 0.05}
+            ▲ {fmtH(todayInfo.diff)} behind pace
+          {:else if todayInfo.diff < -0.05}
+            ▼ {fmtH(todayInfo.diff)} ahead of pace
+          {:else}
+            ● on pace
+          {/if}
+        </span>
+      {/if}
+      <span class="legend-item"><span class="lg-line lg-actual"></span>remaining</span>
+      <span class="legend-item"><span class="lg-line lg-ideal"></span>ideal to {data.has_deadline ? "deadline" : "last due"}</span>
+    </div>
+    <div class="chart-area" bind:clientWidth={areaW} bind:clientHeight={areaH}>
+      <svg width={SVG_W} height={SVG_H} viewBox="0 0 {SVG_W} {SVG_H}" role="img"
+        aria-label="Burndown: estimated hours remaining over time">
+        <defs>
+          <linearGradient id="w13-area-{projectId}" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color={projectColor} stop-opacity="0.35" />
+            <stop offset="100%" stop-color={projectColor} stop-opacity="0.02" />
+          </linearGradient>
+        </defs>
+
+        <!-- Y gridlines + hour labels -->
+        {#each yTicks as t}
+          <line x1={PAD_L} y1={yPos(t)} x2={SVG_W - PAD_R} y2={yPos(t)}
+            stroke="var(--db-grid-line, rgba(255,255,255,0.05))" stroke-width="1" />
+          <text x={PAD_L - 6} y={yPos(t) + 3} text-anchor="end" class="axis-label">{fmtH(t)}</text>
         {/each}
 
-        <!-- today marker -->
-        {#if todayX() >= 0}
-          <line
-            x1={todayX()} x2={todayX()}
-            y1={PAD_T} y2={SVG_H - PAD_B}
-            stroke="var(--db-ink-muted)"
-            stroke-width="1"
-            stroke-dasharray="3 3"
-            opacity="0.5"
-          />
+        <!-- Today marker -->
+        {#if todayInfo}
+          <line x1={todayInfo.x} y1={PAD_T} x2={todayInfo.x} y2={PAD_T + CHART_H}
+            stroke="var(--db-ink-muted, #8b949e)" stroke-opacity="0.45"
+            stroke-width="1" stroke-dasharray="2 3" />
+          <text x={todayInfo.x} y={PAD_T + 8} text-anchor="middle" class="today-label">TODAY</text>
         {/if}
 
-        <!-- ideal line (dashed) -->
-        <polyline
-          points={polyline((p) => p.ideal_hours)}
-          fill="none"
-          stroke="var(--db-ink-muted)"
-          stroke-width="1.5"
-          stroke-dasharray="5 3"
-          opacity="0.5"
-        />
+        <!-- Actual burndown -->
+        <path d={actualArea} fill="url(#w13-area-{projectId})" />
+        <path d={actualPath} fill="none" stroke={projectColor} stroke-width="2.25"
+          stroke-linejoin="round" stroke-linecap="round" />
 
-        <!-- remaining area fill -->
-        <polygon
-          points="{polyline((p) => p.remaining_hours)} {xPos(n - 1, n)},{SVG_H - PAD_B} {PAD_L},{SVG_H - PAD_B}"
-          fill="color-mix(in srgb, var(--project-accent) 18%, transparent)"
-        />
+        <!-- Ideal pace -->
+        <path d={idealPath} fill="none" stroke="var(--db-ink, #e6edf3)" stroke-opacity="0.55"
+          stroke-width="1.5" stroke-dasharray="5 4" />
 
-        <!-- remaining line -->
-        <polyline
-          points={polyline((p) => p.remaining_hours)}
-          fill="none"
-          stroke="var(--project-accent)"
-          stroke-width="2"
-          stroke-linejoin="round"
-        />
-
-        <!-- Y axis -->
-        <line x1={PAD_L} x2={PAD_L} y1={PAD_T} y2={SVG_H - PAD_B} stroke="var(--db-border)" stroke-width="1" />
-
-        <!-- X labels: start + end -->
-        <text x={PAD_L} y={SVG_H - PAD_B + 12} text-anchor="middle" font-size="9" fill="var(--db-ink-muted)">{fmtDate(data.start_date)}</text>
-        <text x={SVG_W - PAD_R} y={SVG_H - PAD_B + 12} text-anchor="middle" font-size="9" fill={data.has_deadline ? "#f59e0b" : "var(--db-ink-muted)"}>{fmtDate(data.end_date)}</text>
+        <!-- X-axis start / end labels -->
+        <text x={PAD_L} y={SVG_H - 5} class="axis-label">{fmtAxisDate(data.start_date)}</text>
+        <text x={SVG_W - PAD_R} y={SVG_H - 5} text-anchor="end" class="axis-label">
+          {fmtAxisDate(data.end_date)}{data.has_deadline ? " ⚑" : ""}
+        </text>
       </svg>
     </div>
-    <div class="legend">
-      <span class="leg"><span class="leg-line accent"></span>remaining</span>
-      <span class="leg"><span class="leg-line dashed"></span>ideal</span>
-      {#if data.has_deadline}<span class="leg deadline-tag">deadline</span>{/if}
-    </div>
-  {:else if data}
-    <div class="state-msg">No estimate data</div>
   {:else}
-    <div class="state-msg">No data</div>
+    <div class="state-msg">
+      <p class="empty-title">No burndown yet</p>
+      <p class="empty-hint">
+        Add time estimates to one-off tasks, plus due dates or a project deadline,
+        and the remaining-work line appears here.
+      </p>
+    </div>
   {/if}
 </div>
 
@@ -175,59 +176,106 @@
     flex-direction: column;
     gap: 4px;
   }
-  .widget-label {
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    color: var(--db-ink-muted);
+
+  .chart-meta {
+    display: flex;
+    align-items: center;
+    gap: 10px;
     flex-shrink: 0;
+    flex-wrap: wrap;
   }
+
+  .pace-badge {
+    font-size: 9.5px;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    padding: 2px 8px;
+    border-radius: 999px;
+    color: var(--db-ink-muted, #8b949e);
+    border: 1px solid var(--db-border, rgba(255, 255, 255, 0.1));
+    white-space: nowrap;
+  }
+
+  .pace-badge.behind {
+    color: #ef4444;
+    border-color: rgba(239, 68, 68, 0.4);
+    background: rgba(239, 68, 68, 0.08);
+  }
+
+  .pace-badge.ahead {
+    color: #22c55e;
+    border-color: rgba(34, 197, 94, 0.35);
+    background: rgba(34, 197, 94, 0.08);
+  }
+
+  .legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 9px;
+    color: var(--db-ink-muted, #8b949e);
+    white-space: nowrap;
+  }
+
+  .lg-line {
+    width: 14px;
+    height: 0;
+    border-top: 2px solid;
+  }
+
+  .lg-actual { border-color: var(--project-accent); }
+  .lg-ideal {
+    border-top-style: dashed;
+    border-color: color-mix(in srgb, var(--db-ink, #e6edf3) 55%, transparent);
+  }
+
   .chart-area {
     flex: 1;
     min-height: 0;
     overflow: hidden;
   }
-  .chart-area svg { display: block; }
-  .legend {
-    display: flex;
-    gap: 14px;
-    justify-content: center;
-    flex-shrink: 0;
+
+  .chart-area svg {
+    display: block;
   }
-  .leg {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    font-size: 10px;
-    color: var(--db-ink-muted);
+
+  .axis-label {
+    font-size: 9px;
+    fill: var(--db-ink-muted, #8b949e);
+    font-variant-numeric: tabular-nums;
   }
-  .leg-line {
-    display: inline-block;
-    width: 18px;
-    height: 2px;
-    border-radius: 1px;
+
+  .today-label {
+    font-size: 7.5px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    fill: var(--db-ink-muted, #8b949e);
   }
-  .leg-line.accent { background: var(--project-accent); }
-  .leg-line.dashed {
-    background: repeating-linear-gradient(
-      90deg,
-      var(--db-ink-muted) 0 5px,
-      transparent 5px 8px
-    );
-    opacity: 0.6;
-  }
-  .deadline-tag {
-    font-size: 10px;
-    color: #f59e0b;
-    font-weight: 600;
-  }
+
   .state-msg {
     flex: 1;
     display: flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
-    font-size: 13px;
-    color: var(--db-ink-muted);
+    gap: 4px;
+    color: var(--db-ink-muted, #8b949e);
+    text-align: center;
+    padding: 0 16px;
   }
+
+  .empty-title {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--db-ink, #e6edf3);
+  }
+
+  .empty-hint {
+    margin: 0;
+    font-size: 11.5px;
+    line-height: 1.5;
+  }
+
   .state-err { color: #ef4444; }
 </style>

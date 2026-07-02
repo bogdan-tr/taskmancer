@@ -1,12 +1,15 @@
 <script lang="ts">
   import { getProjectTimeBreakdown } from "$lib/api";
+  import type { DashboardDateRange } from "$lib/api";
   import type { ProjectTimeBreakdown, ProjectTimeBreakdownSlice } from "$lib/types";
+  import WidgetHeader from "./WidgetHeader.svelte";
 
   interface Props {
     projectId: string;
     projectColor: string;
+    dateRange: DashboardDateRange;
   }
-  let { projectId, projectColor }: Props = $props();
+  let { projectId, projectColor, dateRange }: Props = $props();
 
   let data = $state<ProjectTimeBreakdown | null>(null);
   let loading = $state(true);
@@ -16,7 +19,7 @@
     if (!projectId) return;
     loading = true;
     error = null;
-    getProjectTimeBreakdown(projectId)
+    getProjectTimeBreakdown(projectId, dateRange)
       .then((d) => { data = d; })
       .catch((e) => { error = e instanceof Error ? e.message : String(e); })
       .finally(() => { loading = false; });
@@ -80,7 +83,7 @@
 </script>
 
 <div class="w9" style="--project-accent: {projectColor}" bind:clientWidth={clientW}>
-  <span class="widget-label">TIME BREAKDOWN</span>
+  <WidgetHeader widgetType="p_time_donut" pickerRange={dateRange} />
   {#if loading}
     <div class="state-msg">Loading…</div>
   {:else if error}
@@ -125,13 +128,6 @@
     display: flex;
     flex-direction: column;
     gap: 6px;
-  }
-  .widget-label {
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    color: var(--db-ink-muted);
-    flex-shrink: 0;
   }
   .content {
     flex: 1;

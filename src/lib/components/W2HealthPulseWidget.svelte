@@ -1,6 +1,7 @@
 <script lang="ts">
   import { getProjectHealthPulse } from "$lib/api";
   import type { ProjectHealthPulse } from "$lib/types";
+  import WidgetHeader from "./WidgetHeader.svelte";
 
   interface Props {
     projectId: string;
@@ -54,6 +55,8 @@
 </script>
 
 <div class="health-pulse" style="--project-accent: {projectColor}; --tier-color: {tierColor}; --period: {period}s">
+  <WidgetHeader widgetType="p_health_pulse" />
+  <div class="body-wrap">
   {#if loading}
     <div class="skeleton">
       <div class="skeleton-heart"></div>
@@ -145,12 +148,23 @@
   {:else}
     <p class="empty">No health data.</p>
   {/if}
+  </div>
 </div>
 
 <style>
   .health-pulse {
     width: 100%;
     height: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .body-wrap {
+    flex: 1;
+    min-height: 0;
     display: flex;
     align-items: center;
     justify-content: center;

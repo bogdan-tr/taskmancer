@@ -1,6 +1,7 @@
 <script lang="ts">
   import { getProjectDueTimeline } from "$lib/api";
-  import type { ProjectDueDateTimeline, ProjectDueDatePoint } from "$lib/types";
+  import type { ProjectDueDateTimeline } from "$lib/types";
+  import WidgetHeader from "./WidgetHeader.svelte";
 
   interface Props {
     projectId: string;
@@ -16,161 +17,95 @@
     if (!projectId) return;
     loading = true;
     error = null;
-    getProjectDueTimeline(projectId)
+    // Current-state widget: the horizon is always "from today", so it
+    // deliberately ignores the dashboard picker (range = all_time).
+    getProjectDueTimeline(projectId, "all_time")
       .then((d) => { data = d; })
       .catch((e) => { error = e instanceof Error ? e.message : String(e); })
       .finally(() => { loading = false; });
   });
 
-  const PAD_L = 4;
-  const PAD_R = 4;
-  const PAD_T = 6;
-  const PAD_B = 32;
+  interface Bucket {
+    key: string;
+    label: string;
+    count: number;
+    kind: "overdue" | "today" | "soon" | "later";
+  }
 
-  let chartW = $state(0);
-  let chartH = $state(120);
-  let SVG_W = $derived(Math.max(200, chartW));
-  let SVG_H = $derived(Math.max(100, chartH));
-  let CHART_W = $derived(SVG_W - PAD_L - PAD_R);
-  let CHART_H = $derived(SVG_H - PAD_T - PAD_B);
-
-  let visiblePoints = $derived((): ProjectDueDatePoint[] => {
-    if (!data || data.points.length === 0) return [];
-    // Show up to 30 points centred around today
+  /** Sums open tasks into: Overdue / Today / Tomorrow / Next 7 days / Later. */
+  let buckets: Bucket[] = $derived.by(() => {
+    if (!data) return [];
     const today = data.today;
-    const pts = data.points;
-    if (pts.length <= 30) return pts;
-    const todayIdx = pts.findIndex((p) => p.date >= today);
-    const anchor = todayIdx < 0 ? pts.length - 1 : todayIdx;
-    const start = Math.max(0, anchor - 14);
-    return pts.slice(start, start + 30);
+    const d = new Date(today + "T00:00:00");
+    const iso = (offset: number) => {
+      const x = new Date(d);
+      x.setDate(x.getDate() + offset);
+      return x.toISOString().slice(0, 10);
+    };
+    const tomorrow = iso(1);
+    const week = iso(7);
+
+    let overdue = 0, todayN = 0, tomorrowN = 0, soon = 0, later = 0;
+    for (const p of data.points) {
+      if (p.date < today) overdue += p.overdue_count;
+      else if (p.date === today) todayN += p.open_count;
+      else if (p.date === tomorrow) tomorrowN += p.open_count;
+      else if (p.date <= week) soon += p.open_count;
+      else later += p.open_count;
+    }
+    return [
+      { key: "overdue", label: "Overdue", count: overdue, kind: "overdue" as const },
+      { key: "today", label: "Today", count: todayN, kind: "today" as const },
+      { key: "tomorrow", label: "Tomorrow", count: tomorrowN, kind: "soon" as const },
+      { key: "week", label: "Next 7 days", count: soon, kind: "soon" as const },
+      { key: "later", label: "Later", count: later, kind: "later" as const },
+    ];
   });
 
-  let maxCount = $derived(
-    visiblePoints().reduce((m, p) => Math.max(m, p.count), 1),
-  );
+  let totalOpen = $derived(buckets.reduce((s, b) => s + b.count, 0));
+  let maxCount = $derived(Math.max(1, ...buckets.map((b) => b.count)));
 
-  function xPos(i: number, total: number): number {
-    if (total <= 1) return PAD_L + CHART_W / 2;
-    return PAD_L + (i / (total - 1)) * CHART_W;
-  }
-
-  function barW(total: number): number {
-    if (total <= 1) return Math.min(CHART_W, 20);
-    return Math.max(4, (CHART_W / total) * 0.7);
-  }
-
-  function yPos(count: number): number {
-    return PAD_T + CHART_H - (count / maxCount) * CHART_H;
-  }
-
-  function todayX(): number {
-    const pts = visiblePoints();
-    if (!data || pts.length === 0) return -1;
-    const idx = pts.findIndex((p) => p.date === data!.today);
-    if (idx < 0) return -1;
-    return xPos(idx, pts.length);
-  }
-
-  function fmtDate(d: string): string {
-    const [, m, day] = d.split("-");
-    const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-    return `${months[parseInt(m) - 1]} ${parseInt(day)}`;
-  }
+  /** "in 12d" / "today" / "overdue" chip for the project deadline. */
+  let deadlineChip = $derived.by(() => {
+    if (!data?.deadline) return null;
+    const days = Math.round(
+      (new Date(data.deadline + "T00:00:00").getTime() -
+        new Date(data.today + "T00:00:00").getTime()) /
+        86400000,
+    );
+    if (days < 0) return { text: `deadline ${-days}d ago`, urgent: true };
+    if (days === 0) return { text: "deadline today", urgent: true };
+    return { text: `deadline in ${days}d`, urgent: days <= 7 };
+  });
 </script>
 
 <div class="w12" style="--project-accent: {projectColor}">
-  <span class="widget-label">DUE-DATE TIMELINE</span>
+  <WidgetHeader widgetType="p_due_timeline" />
   {#if loading}
     <div class="state-msg">Loading…</div>
   {:else if error}
     <div class="state-msg state-err">{error}</div>
-  {:else if data && data.points.length > 0}
-    {@const pts = visiblePoints()}
-    {@const n = pts.length}
-    <div class="chart-area" bind:clientWidth={chartW} bind:clientHeight={chartH}>
-      <svg width={SVG_W} height={SVG_H} viewBox="0 0 {SVG_W} {SVG_H}">
-        <!-- today line -->
-        {#if todayX() >= 0}
-          <line
-            x1={todayX()} x2={todayX()}
-            y1={PAD_T} y2={SVG_H - PAD_B}
-            stroke="var(--project-accent)"
-            stroke-width="1.5"
-            stroke-dasharray="3 3"
-            opacity="0.7"
-          />
-        {/if}
-
-        <!-- Bars: done (green), overdue (red), pending (accent) -->
-        {#each pts as pt, i}
-          {@const x = xPos(i, n)}
-          {@const bw = barW(n)}
-          {@const totalH = (pt.count / maxCount) * CHART_H}
-          {@const doneH = (pt.done_count / maxCount) * CHART_H}
-          {@const overdueH = (pt.overdue_count / maxCount) * CHART_H}
-          {@const pendingH = totalH - doneH - overdueH}
-
-          <!-- pending portion -->
-          {#if pendingH > 0}
-            <rect
-              x={x - bw / 2} y={yPos(pt.count)}
-              width={bw} height={pendingH}
-              rx="2"
-              fill="color-mix(in srgb, var(--project-accent) 60%, transparent)"
-            />
-          {/if}
-          <!-- overdue portion -->
-          {#if overdueH > 0}
-            <rect
-              x={x - bw / 2} y={yPos(pt.count) + pendingH}
-              width={bw} height={overdueH}
-              rx="2"
-              fill="#ef444488"
-            />
-          {/if}
-          <!-- done portion -->
-          {#if doneH > 0}
-            <rect
-              x={x - bw / 2} y={SVG_H - PAD_B - doneH}
-              width={bw} height={doneH}
-              rx="2"
-              fill="#22c55e88"
-            />
-          {/if}
-        {/each}
-
-        <!-- X-axis labels: first, today, last -->
-        {#if n > 0}
-          <text x={xPos(0, n)} y={SVG_H - PAD_B + 12} text-anchor="middle" font-size="9" fill="var(--db-ink-muted)">{fmtDate(pts[0].date)}</text>
-          <text x={xPos(n - 1, n)} y={SVG_H - PAD_B + 12} text-anchor="middle" font-size="9" fill="var(--db-ink-muted)">{fmtDate(pts[n - 1].date)}</text>
-        {/if}
-        {#if todayX() >= 0}
-          <text x={todayX()} y={SVG_H - PAD_B + 22} text-anchor="middle" font-size="9" font-weight="600" fill="var(--project-accent)">today</text>
-        {/if}
-
-        <!-- Deadline marker -->
-        {#if data.deadline}
-          {@const dlIdx = pts.findIndex((p) => p.date === data!.deadline)}
-          {#if dlIdx >= 0}
-            {@const dlX = xPos(dlIdx, n)}
-            <line x1={dlX} x2={dlX} y1={PAD_T} y2={SVG_H - PAD_B} stroke="#f59e0b" stroke-width="2" stroke-dasharray="4 2" />
-            <text x={dlX} y={PAD_T - 1} text-anchor="middle" font-size="8" fill="#f59e0b">deadline</text>
-          {/if}
-        {/if}
-      </svg>
+  {:else if data && totalOpen > 0}
+    <div class="strip">
+      {#each buckets as b (b.key)}
+        <div class="bucket bucket-{b.kind}" class:empty={b.count === 0}>
+          <span class="bucket-count">{b.count}</span>
+          <div class="bucket-meter">
+            <div class="meter-fill" style="transform: scaleY({b.count / maxCount})"></div>
+          </div>
+          <span class="bucket-label">{b.label}</span>
+        </div>
+      {/each}
     </div>
-
-    <!-- Legend -->
-    <div class="legend">
-      <span class="leg-item"><span class="leg-dot" style="background:color-mix(in srgb, var(--project-accent) 60%, transparent)"></span>pending</span>
-      <span class="leg-item"><span class="leg-dot" style="background:#ef4444aa"></span>overdue</span>
-      <span class="leg-item"><span class="leg-dot" style="background:#22c55eaa"></span>done</span>
-    </div>
-  {:else if data}
-    <div class="state-msg">No due dates set</div>
+    {#if deadlineChip}
+      <div class="deadline-row">
+        <span class="deadline-chip" class:urgent={deadlineChip.urgent}>
+          ⚑ {deadlineChip.text}
+        </span>
+      </div>
+    {/if}
   {:else}
-    <div class="state-msg">No data</div>
+    <div class="state-msg">Nothing due — no open tasks with due dates</div>
   {/if}
 </div>
 
@@ -179,47 +114,125 @@
     height: 100%;
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 6px;
   }
-  .widget-label {
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    color: var(--db-ink-muted);
-    flex-shrink: 0;
-  }
-  .chart-area {
+
+  .strip {
     flex: 1;
     min-height: 0;
-    overflow: hidden;
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 6px;
   }
-  .chart-area svg { display: block; }
-  .legend {
+
+  .bucket {
     display: flex;
-    gap: 12px;
-    flex-shrink: 0;
-    justify-content: center;
-  }
-  .leg-item {
-    display: flex;
+    flex-direction: column;
     align-items: center;
+    justify-content: flex-end;
     gap: 4px;
-    font-size: 10px;
-    color: var(--db-ink-muted);
+    padding: 8px 4px 7px;
+    border-radius: 9px;
+    border: 1px solid var(--db-border, rgba(255, 255, 255, 0.07));
+    background: rgba(255, 255, 255, 0.02);
+    min-width: 0;
+    --bucket-color: var(--db-ink-muted, #8b949e);
+    transition: border-color 150ms, background 150ms;
   }
-  .leg-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 2px;
+
+  .bucket-overdue { --bucket-color: #ef4444; }
+  .bucket-today { --bucket-color: var(--project-accent); }
+  .bucket-soon { --bucket-color: color-mix(in srgb, var(--project-accent) 65%, var(--db-ink-muted, #8b949e)); }
+  .bucket-later { --bucket-color: var(--db-ink-muted, #8b949e); }
+
+  .bucket-overdue:not(.empty) {
+    border-color: rgba(239, 68, 68, 0.4);
+    background: rgba(239, 68, 68, 0.07);
+  }
+
+  .bucket-today:not(.empty) {
+    border-color: color-mix(in srgb, var(--project-accent) 45%, transparent);
+    background: color-mix(in srgb, var(--project-accent) 8%, transparent);
+  }
+
+  .bucket.empty {
+    opacity: 0.45;
+  }
+
+  .bucket-count {
+    font-size: clamp(16px, 4cqi, 26px);
+    font-weight: 800;
+    color: var(--bucket-color);
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+  }
+
+  .bucket-meter {
+    width: 60%;
+    max-width: 44px;
+    height: 22px;
+    flex-shrink: 1;
+    min-height: 8px;
+    border-radius: 3px;
+    background: var(--db-grid-line, rgba(255, 255, 255, 0.05));
+    overflow: hidden;
+    display: flex;
+    align-items: flex-end;
+  }
+
+  .meter-fill {
+    width: 100%;
+    height: 100%;
+    background: color-mix(in srgb, var(--bucket-color) 75%, transparent);
+    transform-origin: bottom;
+    transition: transform 500ms cubic-bezier(0.16, 1, 0.3, 1);
+    border-radius: 3px 3px 0 0;
+  }
+
+  .bucket-label {
+    font-size: 8.5px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--db-ink-muted, #8b949e);
+    text-align: center;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
+  }
+
+  .deadline-row {
+    display: flex;
+    justify-content: center;
     flex-shrink: 0;
   }
+
+  .deadline-chip {
+    font-size: 9.5px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    padding: 2px 9px;
+    border-radius: 999px;
+    color: var(--db-ink-muted, #8b949e);
+    border: 1px solid var(--db-border, rgba(255, 255, 255, 0.1));
+  }
+
+  .deadline-chip.urgent {
+    color: #ef4444;
+    border-color: rgba(239, 68, 68, 0.4);
+    background: rgba(239, 68, 68, 0.08);
+  }
+
   .state-msg {
     flex: 1;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 13px;
-    color: var(--db-ink-muted);
+    font-size: 12.5px;
+    color: var(--db-ink-muted, #8b949e);
+    text-align: center;
+    padding: 0 8px;
   }
   .state-err { color: #ef4444; }
 </style>

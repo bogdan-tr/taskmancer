@@ -16,8 +16,8 @@ mod storage;
 mod task;
 mod time_storage;
 mod time_tracking;
-pub mod widget_filters;
 mod views_storage;
+pub mod widget_filters;
 
 use tauri::Manager;
 
@@ -54,6 +54,15 @@ pub fn run() {
                     None => (projects, settings),
                 };
             storage::migrate_task_project_names_to_ids(&tasks_dir, &projects)?;
+            // Best-effort: an archived task with a mis-backfilled timestamp
+            // is far less harmful than the whole app failing to start, so
+            // this migration logs and continues on error rather than using
+            // `?` like the migrations above.
+            if let Err(err) =
+                storage::backfill_archive_completion_timestamps(&archive_dir, &settings)
+            {
+                eprintln!("failed to backfill archive completion timestamps: {err}");
+            }
 
             let layouts = layout_storage::list_layouts(&layouts_file)?;
             if let Some((layouts, settings)) =

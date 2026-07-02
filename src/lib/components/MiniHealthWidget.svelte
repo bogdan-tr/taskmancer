@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { TIER_COLORS } from "$lib/tierColors";
   import { tierLabel } from "$lib/statusLineDisplay";
   import type { ProjectStatusStats, StatusTier } from "$lib/types";
 
@@ -9,13 +10,6 @@
 
   let { stats }: Props = $props();
 
-  const TIER_COLORS: Record<StatusTier, string> = {
-    great: "#22c55e",
-    on_track: "#3b82f6",
-    needs_attention: "#f59e0b",
-    critical: "#ef4444",
-    severe: "#9333ea",
-  };
 
   let tierColor = $derived(TIER_COLORS[stats.status_tier]);
   let label = $derived(tierLabel(stats.status_tier).toUpperCase());

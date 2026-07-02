@@ -1,6 +1,7 @@
 <script lang="ts">
   import { getProjectCompletionDial } from "$lib/api";
   import type { ProjectCompletionDial } from "$lib/types";
+  import WidgetHeader from "./WidgetHeader.svelte";
 
   interface Props {
     projectId: string;
@@ -11,7 +12,6 @@
   let data = $state<ProjectCompletionDial | null>(null);
   let loading = $state(true);
   let error = $state<string | null>(null);
-  let clientW = $state(0);
 
   $effect(() => {
     if (!projectId) return;
@@ -23,213 +23,189 @@
       .finally(() => { loading = false; });
   });
 
-  // SVG layout constants.
-  // viewBox starts at y=10 so we clip the bottom half of the full circle and
-  // show only the top semicircle. CY=100 means the arc apex is at y=20 and
-  // the diameter endpoints are at y=100 — all within the 110px visible height.
-  const VB_W = 200;
-  const VB_H = 110;
-  const VB_OFFSET_Y = 10;
+  // ── Ring geometry (fixed viewBox; the SVG scales to fill the card) ────────
+  const VB = 200;
   const CX = 100;
   const CY = 100;
-  const R_OUTER = 80;
-  const R_INNER = 60;
-  const SW_OUTER = 14;
-  const SW_INNER = 10;
+  const OUTER_R = 84;
+  const OUTER_W = 12;
+  const INNER_R = 66;
+  const INNER_W = 5;
 
-  // Converts polar coords to cartesian SVG coords.
-  function polar(cx: number, cy: number, r: number, deg: number): [number, number] {
-    const rad = (deg * Math.PI) / 180;
-    return [cx + r * Math.cos(rad), cy + r * Math.sin(rad)];
-  }
+  const outerCirc = 2 * Math.PI * OUTER_R;
+  const innerCirc = 2 * Math.PI * INNER_R;
 
-  // Builds an SVG arc path from startDeg to endDeg going CLOCKWISE (sweep-flag=1),
-  // which in SVG y-down coordinates means the arc curves through the TOP of the
-  // circle (270° = y=CY-R) rather than the bottom.
-  //
-  // The 179.999° clamp prevents the degenerate case where start==end when the
-  // arc spans exactly 180°, which would make SVG collapse it to a line.
-  function arcPath(r: number, startDeg: number, endDeg: number): string {
-    const span = Math.min(endDeg - startDeg, 179.999);
-    const actualEnd = startDeg + span;
-    const [x1, y1] = polar(CX, CY, r, startDeg);
-    const [x2, y2] = polar(CX, CY, r, actualEnd);
-    const large = span > 180 ? 1 : 0;
-    // sweep-flag=1: clockwise in SVG (visually goes OVER the top of the circle).
-    return `M ${x1.toFixed(3)} ${y1.toFixed(3)} A ${r} ${r} 0 ${large} 1 ${x2.toFixed(3)} ${y2.toFixed(3)}`;
-  }
+  let countPct = $derived(Math.max(0, Math.min(100, data?.completion_pct ?? 0)));
+  let timePct = $derived(Math.max(0, Math.min(100, data?.weighted_pct ?? 0)));
+  let isComplete = $derived(countPct >= 100);
 
-  // Background track: full semicircle from 180° (left) to 360° (right).
-  const TRACK_OUTER = arcPath(R_OUTER, 180, 360);
-  const TRACK_INNER = arcPath(R_INNER, 180, 360);
-
-  let outerArcPath = $derived(
-    data && data.completion_pct > 0
-      ? arcPath(R_OUTER, 180, 180 + (Math.min(data.completion_pct, 100) / 100) * 180)
-      : null,
-  );
-
-  let innerArcPath = $derived(
-    data && data.weighted_pct > 0
-      ? arcPath(R_INNER, 180, 180 + (Math.min(data.weighted_pct, 100) / 100) * 180)
-      : null,
-  );
-
-  let isComplete = $derived(data ? data.completion_pct >= 99.9 : false);
-
-  let SVG_W = $derived(Math.max(120, clientW));
-  let SVG_H = $derived((SVG_W / VB_W) * VB_H);
+  let outerOffset = $derived(outerCirc * (1 - countPct / 100));
+  let innerOffset = $derived(innerCirc * (1 - timePct / 100));
 </script>
 
-<div
-  class="dial-wrap"
-  bind:clientWidth={clientW}
-  style="--project-accent: {projectColor}"
->
+<div class="w4" style="--project-accent: {projectColor}">
+  <WidgetHeader widgetType="p_completion_dial" />
   {#if loading}
-    <div class="skeleton">
-      <div class="sk-arc"></div>
-      <div class="sk-pct"></div>
-    </div>
+    <div class="state-msg">Loading…</div>
   {:else if error}
-    <p class="err">{error}</p>
-  {:else if data}
-    <svg
-      width={SVG_W}
-      height={SVG_H}
-      viewBox="0 {VB_OFFSET_Y} {VB_W} {VB_H}"
-      xmlns="http://www.w3.org/2000/svg"
-      aria-label="Completion dial: {data.completion_pct.toFixed(0)}%"
-    >
-      <!-- Background track arcs -->
-      <path
-        d={TRACK_OUTER}
-        fill="none"
-        stroke="var(--db-border)"
-        stroke-width={SW_OUTER}
-        stroke-linecap="round"
-      />
-      <path
-        d={TRACK_INNER}
-        fill="none"
-        stroke="var(--db-border)"
-        stroke-width={SW_INNER}
-        stroke-linecap="round"
-        opacity="0.5"
-      />
+    <div class="state-msg state-err">{error}</div>
+  {:else if data && data.total_count > 0}
+    <div class="ring-area">
+      <svg viewBox="0 0 {VB} {VB}" class="ring-svg" class:complete={isComplete} role="img"
+        aria-label="Project progress: {countPct.toFixed(0)} percent of tasks done">
+        <defs>
+          <linearGradient id="w4-grad-{projectId}" x1="0" y1="1" x2="1" y2="0">
+            <stop offset="0%" stop-color={projectColor} stop-opacity="0.55" />
+            <stop offset="100%" stop-color={projectColor} stop-opacity="1" />
+          </linearGradient>
+        </defs>
 
-      <!-- Weighted-by-time arc (inner ring, 45% opacity) -->
-      {#if innerArcPath}
-        <path
-          d={innerArcPath}
-          fill="none"
-          stroke={projectColor}
-          stroke-width={SW_INNER}
+        <!-- Tracks -->
+        <circle cx={CX} cy={CY} r={OUTER_R} fill="none"
+          stroke="var(--db-grid-line, rgba(255,255,255,0.06))" stroke-width={OUTER_W} />
+        <circle cx={CX} cy={CY} r={INNER_R} fill="none"
+          stroke="var(--db-grid-line, rgba(255,255,255,0.06))" stroke-width={INNER_W} />
+
+        <!-- Count progress (outer, bold) -->
+        <circle
+          cx={CX} cy={CY} r={OUTER_R} fill="none"
+          stroke="url(#w4-grad-{projectId})"
+          stroke-width={OUTER_W}
           stroke-linecap="round"
-          opacity="0.45"
+          stroke-dasharray={outerCirc}
+          stroke-dashoffset={outerOffset}
+          transform="rotate(-90 {CX} {CY})"
+          class="arc arc-outer"
         />
-      {/if}
-
-      <!-- Task-count completion arc (outer ring) -->
-      {#if outerArcPath}
-        <path
-          d={outerArcPath}
-          fill="none"
+        <!-- Time-weighted progress (inner, thin) -->
+        <circle
+          cx={CX} cy={CY} r={INNER_R} fill="none"
           stroke={projectColor}
-          stroke-width={SW_OUTER}
+          stroke-opacity="0.55"
+          stroke-width={INNER_W}
           stroke-linecap="round"
-          filter={isComplete ? `drop-shadow(0 0 6px ${projectColor})` : "none"}
+          stroke-dasharray={innerCirc}
+          stroke-dashoffset={innerOffset}
+          transform="rotate(-90 {CX} {CY})"
+          class="arc"
         />
-      {/if}
 
-      <!-- Center text — positioned at the base of the semicircle -->
-      <text
-        x={CX}
-        y={CY - 5}
-        text-anchor="middle"
-        dominant-baseline="auto"
-        font-size="28"
-        font-weight="800"
-        fill="var(--db-ink)"
-        font-family="inherit"
-        letter-spacing="-1"
-      >
-        {data.completion_pct.toFixed(0)}%
-      </text>
-      <text
-        x={CX}
-        y={CY + 14}
-        text-anchor="middle"
-        dominant-baseline="auto"
-        font-size="9"
-        font-weight="600"
-        fill="var(--db-ink-muted)"
-        font-family="inherit"
-        letter-spacing="0.5"
-      >
-        WTD: {data.weighted_pct.toFixed(0)}%
-      </text>
-    </svg>
+        <!-- Center -->
+        <text x={CX} y={CY - 4} text-anchor="middle" class="pct-num">
+          {countPct.toFixed(0)}<tspan class="pct-sign">%</tspan>
+        </text>
+        <text x={CX} y={CY + 20} text-anchor="middle" class="pct-sub">
+          {data.done_count} of {data.total_count} tasks
+        </text>
+      </svg>
+    </div>
+    <div class="legend">
+      <span class="legend-item">
+        <span class="legend-swatch swatch-count"></span>
+        BY COUNT · {countPct.toFixed(0)}%
+      </span>
+      <span class="legend-item">
+        <span class="legend-swatch swatch-time"></span>
+        BY TIME · {timePct.toFixed(0)}%
+      </span>
+    </div>
   {:else}
-    <p class="empty">No data.</p>
+    <div class="state-msg">No tasks yet</div>
   {/if}
 </div>
 
 <style>
-  .dial-wrap {
-    width: 100%;
+  .w4 {
     height: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .ring-area {
+    flex: 1;
+    min-height: 0;
     display: flex;
     align-items: center;
     justify-content: center;
   }
 
-  svg {
-    overflow: visible;
-    display: block;
-    flex-shrink: 0;
+  .ring-svg {
+    height: 100%;
+    max-width: 100%;
+    aspect-ratio: 1;
   }
 
-  .skeleton {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 12px;
-    padding: 16px;
+  .arc {
+    transition: stroke-dashoffset 600ms cubic-bezier(0.16, 1, 0.3, 1);
   }
 
-  .sk-arc {
-    width: 100px;
-    height: 52px;
-    border-radius: 100px 100px 0 0;
-    border: 12px solid var(--db-border);
-    border-bottom: none;
-    animation: pulse 1.4s ease-in-out infinite;
+  /* Spec: the ring glows at 100%. */
+  .ring-svg.complete .arc-outer {
+    filter: drop-shadow(0 0 6px var(--project-accent));
   }
 
-  .sk-pct {
-    width: 52px;
-    height: 20px;
-    border-radius: 4px;
-    background: var(--db-border);
-    animation: pulse 1.4s ease-in-out infinite 0.2s;
+  .pct-num {
+    font-size: 40px;
+    font-weight: 800;
+    fill: var(--db-ink, #e6edf3);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
   }
 
-  @keyframes pulse {
-    0%, 100% { opacity: 0.4; }
-    50% { opacity: 0.8; }
+  .pct-sign {
+    font-size: 22px;
+    font-weight: 700;
+    fill: var(--db-ink-muted, #8b949e);
   }
 
-  .err,
-  .empty {
-    margin: 0;
+  .pct-sub {
     font-size: 12px;
-    color: var(--db-ink-muted);
-    text-align: center;
-    padding: 16px;
+    fill: var(--db-ink-muted, #8b949e);
   }
 
-  .err {
-    color: #ef4444;
+  .legend {
+    display: flex;
+    justify-content: center;
+    gap: 14px;
+    flex-shrink: 0;
+    padding-bottom: 2px;
   }
+
+  .legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: var(--db-ink-muted, #8b949e);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  .legend-swatch {
+    width: 14px;
+    height: 4px;
+    border-radius: 999px;
+  }
+
+  .swatch-count {
+    background: var(--project-accent);
+  }
+
+  .swatch-time {
+    background: color-mix(in srgb, var(--project-accent) 55%, transparent);
+    height: 3px;
+  }
+
+  .state-msg {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    color: var(--db-ink-muted, #8b949e);
+  }
+  .state-err { color: #ef4444; }
 </style>

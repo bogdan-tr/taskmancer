@@ -1,6 +1,7 @@
 <script lang="ts">
   import { getProjectVelocity } from "$lib/api";
   import type { ProjectVelocity } from "$lib/types";
+  import WidgetHeader from "./WidgetHeader.svelte";
 
   interface Props {
     projectId: string;
@@ -50,6 +51,8 @@
 </script>
 
 <div class="velocity" style="--project-accent: {projectColor}">
+  <WidgetHeader widgetType="p_velocity" />
+  <div class="body-wrap">
   {#if loading}
     <div class="skeleton">
       <div class="sk-big"></div>
@@ -84,12 +87,22 @@
   {:else}
     <p class="empty">No velocity data.</p>
   {/if}
+  </div>
 </div>
 
 <style>
   .velocity {
+    container-type: inline-size;
     width: 100%;
     height: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .body-wrap {
+    flex: 1;
+    min-height: 0;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -114,7 +127,7 @@
   }
 
   .big-num {
-    font-size: clamp(1.8rem, 4.5vw, 3rem);
+    font-size: clamp(1.4rem, 14cqi, 3rem);
     font-weight: 800;
     color: var(--project-accent);
     line-height: 1;
@@ -123,7 +136,7 @@
   }
 
   .big-num.sm {
-    font-size: clamp(1.4rem, 3.5vw, 2.4rem);
+    font-size: clamp(1.1rem, 11cqi, 2.4rem);
   }
 
   .sub-label {

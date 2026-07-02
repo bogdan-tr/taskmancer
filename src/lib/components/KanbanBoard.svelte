@@ -233,48 +233,6 @@
       : []),
   ]);
 
-  // ── Filter view derived values ────────────────────────────────────────────────
-
-  const filterTaskPool = $derived(
-    filterViewState.config.isArchived === "archived_only"
-      ? filterArchivedTasks
-      : filterViewState.config.isArchived === "both"
-        ? [...visibleTasks.filter((t) => !t.hidden), ...filterArchivedTasks]
-        : visibleTasks.filter((t) => !t.hidden),
-  );
-
-  const filteredTasks = $derived(
-    activeView === "filter" ? applyFilter(filterTaskPool, filterViewState.config) : [],
-  );
-
-  const filteredTaskCount = $derived(filteredTasks.length);
-
-  const filteredBoardColumns = $derived(
-    activeView === "filter"
-      ? boardStatusIds.map((id) => ({
-          id,
-          label: statusLabel(statuses, id),
-          color: statusColor(statuses, id),
-          buckets: [
-            {
-              priorityId: undefined as string | undefined,
-              label: "",
-              color: "",
-              tasks:
-                filterViewState.sort.levels.length > 0
-                  ? applySort(
-                      filteredTasks.filter((t) => t.status === id),
-                      filterViewState.sort,
-                      priorities,
-                      statuses,
-                    )
-                  : filteredTasks.filter((t) => t.status === id),
-            },
-          ],
-        }))
-      : boardColumns,
-  );
-
   let isLoading = $state(true);
   let errorMessage = $state("");
   let modalOpen = $state(false);
@@ -314,6 +272,50 @@
    * hidden from the Kanban grid.
    */
   let visibleTasks: Task[] = $state([]);
+
+  // ── Filter view derived values ────────────────────────────────────────────────
+  // (Placed after the `activeView` / `visibleTasks` / `filterArchivedTasks`
+  // declarations they read — `$derived` is lazy, but TS block-scoping isn't.)
+
+  const filterTaskPool = $derived(
+    filterViewState.config.isArchived === "archived_only"
+      ? filterArchivedTasks
+      : filterViewState.config.isArchived === "both"
+        ? [...visibleTasks.filter((t) => !t.hidden), ...filterArchivedTasks]
+        : visibleTasks.filter((t) => !t.hidden),
+  );
+
+  const filteredTasks = $derived.by(() =>
+    activeView === "filter" ? applyFilter(filterTaskPool, filterViewState.config) : [],
+  );
+
+  const filteredTaskCount = $derived(filteredTasks.length);
+
+  const filteredBoardColumns = $derived.by(() =>
+    activeView === "filter"
+      ? boardStatusIds.map((id) => ({
+          id,
+          label: statusLabel(statuses, id),
+          color: statusColor(statuses, id),
+          buckets: [
+            {
+              priorityId: undefined as string | undefined,
+              label: "",
+              color: "",
+              tasks:
+                filterViewState.sort.levels.length > 0
+                  ? applySort(
+                      filteredTasks.filter((t) => t.status === id),
+                      filterViewState.sort,
+                      priorities,
+                      statuses,
+                    )
+                  : filteredTasks.filter((t) => t.status === id),
+            },
+          ],
+        }))
+      : boardColumns,
+  );
 
   /**
    * `visibleTasks` minus any subtask that shouldn't render as a standalone
@@ -1036,6 +1038,19 @@
         openAddTaskModal();
       }
       return;
+    }
+
+    // Self-heal a stale suspension: browsers do NOT fire `focusout` when a
+    // focused element is removed from the DOM (e.g. the dashboard tab's
+    // date-range <select> being destroyed by a view switch), so the
+    // focusout-based resume in `handleFocusOut` can be skipped and vim
+    // would stay suspended forever. If nothing suspendable actually has
+    // focus anymore, resume before dispatching.
+    if (vimState.suspended) {
+      const active = document.activeElement as HTMLElement | null;
+      if (!active?.matches("input, textarea, select, [contenteditable='true']")) {
+        vimState.resume();
+      }
     }
 
     // Vim handler: called for all non-Ctrl+T keys. The handler internally

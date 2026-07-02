@@ -205,10 +205,12 @@ export interface ProjectVelocity {
 
 /** Completion dial data for a project's dashboard (W4). */
 export interface ProjectCompletionDial {
-  /** 0.0–100.0 completion percentage by task count. */
   completion_pct: number;
-  /** 0.0–100.0 completion percentage weighted by estimated time. */
   weighted_pct: number;
+  /** Completed tasks (entity-counted: a series counts once). */
+  done_count: number;
+  /** All tasks in the pool, entity-counted. */
+  total_count: number;
 }
 
 /** Fuel gauge data for a project's dashboard (W5). */
@@ -260,6 +262,8 @@ export interface ProjectDueDatePoint {
   count: number;
   overdue_count: number;
   done_count: number;
+  /** Still-open (non-terminal) tasks with this due date, past or future. */
+  open_count: number;
 }
 
 /** Due-date timeline data for W12. */

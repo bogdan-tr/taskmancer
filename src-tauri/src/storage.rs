@@ -4,6 +4,7 @@ use std::path::Path;
 use chrono::Utc;
 
 use crate::project::Project;
+use crate::settings::Settings;
 use crate::task::{Task, TaskError};
 
 #[derive(Debug, thiserror::Error)]
@@ -61,6 +62,20 @@ pub fn list_tasks(dir: &Path) -> Result<Vec<Task>, StorageError> {
             .cmp(&b.order)
             .then_with(|| a.created.cmp(&b.created))
     });
+    Ok(tasks)
+}
+
+/// Returns every task from `tasks_dir` plus every archived task from
+/// `archive_dir`, as one merged list. This is the task source for widget
+/// commands — dashboards must keep counting tasks after they are archived
+/// (see `docs/features/widget-fixes-2026-07.md`). Either directory may be
+/// missing (treated as empty).
+pub fn list_tasks_with_archive(
+    tasks_dir: &Path,
+    archive_dir: &Path,
+) -> Result<Vec<Task>, StorageError> {
+    let mut tasks = list_tasks(tasks_dir)?;
+    tasks.extend(list_tasks(archive_dir)?);
     Ok(tasks)
 }
 
@@ -328,6 +343,109 @@ pub fn migrate_task_project_names_to_ids(
     Ok(())
 }
 
+/// One-time, idempotent migration for archived task files saved before the
+/// drag-and-drop finish flow stamped `completed_at`/`cancelled_at`. Before
+/// that fix, nearly every archived task has those fields unset, even though
+/// it was genuinely completed or cancelled. The app's "finish day" flow
+/// archives a task the same day it was finished, so `archived_at` is a
+/// close approximation of the real completion time — good enough to
+/// backfill rather than leaving these tasks with no timestamp at all.
+///
+/// For each archived task: if its `status` matches `settings.done_status`
+/// and `completed_at` is unset, `completed_at` is backfilled from
+/// `archived_at`. Analogously, if `settings.cancelled_status` is set and
+/// matches the task's `status` and `cancelled_at` is unset, `cancelled_at`
+/// is backfilled from `archived_at`. A task with no `archived_at`, or whose
+/// status matches neither, or whose relevant timestamp is already set, is
+/// left completely untouched — its file is never rewritten — so re-running
+/// this migration is a no-op. Returns the number of files modified. Returns
+/// `Ok(0)` without doing anything if `archive_dir` does not exist. Files
+/// that fail to parse are skipped with a warning printed to stderr.
+pub fn backfill_archive_completion_timestamps(
+    archive_dir: &Path,
+    settings: &Settings,
+) -> Result<usize, StorageError> {
+    if !archive_dir.exists() {
+        return Ok(0);
+    }
+
+    let mut modified_count = 0;
+
+    for entry in fs::read_dir(archive_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+            continue;
+        }
+
+        let content = match fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(err) => {
+                eprintln!(
+                    "skipping unreadable archived task file {} during completion-timestamp backfill: {err}",
+                    path.display()
+                );
+                continue;
+            }
+        };
+        let mut task = match Task::from_markdown(&content) {
+            Ok(task) => task,
+            Err(err) => {
+                eprintln!(
+                    "skipping unreadable archived task file {} during completion-timestamp backfill: {err}",
+                    path.display()
+                );
+                continue;
+            }
+        };
+
+        let Some(archived_at) = task.archived_at.clone() else {
+            continue;
+        };
+
+        let needs_completed_at = task.status == settings.done_status && task.completed_at.is_none();
+        let needs_cancelled_at = settings
+            .cancelled_status
+            .as_deref()
+            .is_some_and(|cancelled_status| cancelled_status == task.status)
+            && task.cancelled_at.is_none();
+
+        if !needs_completed_at && !needs_cancelled_at {
+            continue;
+        }
+
+        if needs_completed_at {
+            task.completed_at = Some(archived_at.clone());
+        }
+        if needs_cancelled_at {
+            task.cancelled_at = Some(archived_at);
+        }
+
+        let markdown = match task.to_markdown() {
+            Ok(markdown) => markdown,
+            Err(err) => {
+                eprintln!(
+                    "skipping archived task {} due to a serialization error during completion-timestamp backfill: {err}",
+                    task.id
+                );
+                continue;
+            }
+        };
+
+        if let Err(err) = fs::write(&path, markdown) {
+            eprintln!(
+                "failed to write backfilled completion timestamp for archived task file {} during completion-timestamp backfill: {err}",
+                path.display()
+            );
+            continue;
+        }
+
+        modified_count += 1;
+    }
+
+    Ok(modified_count)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -555,6 +673,46 @@ mod tests {
     }
 
     #[test]
+    fn list_tasks_with_archive_merges_both_directories() {
+        let tasks_dir = tempdir().unwrap();
+        let archive_dir = tempdir().unwrap();
+        let live = Task::new("Live".to_string());
+        let mut archived = Task::new("Archived".to_string());
+        archived.archived_at = Some("2026-06-20T10:00:00Z".to_string());
+        save_task(tasks_dir.path(), &live).unwrap();
+        save_task(archive_dir.path(), &archived).unwrap();
+
+        let merged = list_tasks_with_archive(tasks_dir.path(), archive_dir.path()).unwrap();
+
+        assert_eq!(merged.len(), 2);
+        assert!(merged.iter().any(|t| t.id == live.id));
+        assert!(merged.iter().any(|t| t.id == archived.id));
+    }
+
+    #[test]
+    fn list_tasks_with_archive_missing_archive_dir_returns_live_only() {
+        let tasks_dir = tempdir().unwrap();
+        let live = Task::new("Live".to_string());
+        save_task(tasks_dir.path(), &live).unwrap();
+
+        let missing = tasks_dir.path().join("no-such-archive");
+        let merged = list_tasks_with_archive(tasks_dir.path(), &missing).unwrap();
+
+        assert_eq!(merged.len(), 1);
+    }
+
+    #[test]
+    fn list_tasks_with_archive_both_missing_returns_empty() {
+        let root = tempdir().unwrap();
+        let merged = list_tasks_with_archive(
+            &root.path().join("no-tasks"),
+            &root.path().join("no-archive"),
+        )
+        .unwrap();
+        assert!(merged.is_empty());
+    }
+
+    #[test]
     fn archive_task_moves_file_from_tasks_dir_to_archive_dir() {
         let tasks_dir = tempdir().unwrap();
         let archive_parent = tempdir().unwrap();
@@ -570,8 +728,17 @@ mod tests {
         ));
         let archived = load_task(&archive_dir, &task.id).unwrap();
         // archive_task stamps archived_at; verify it is set and all other fields match
-        assert!(archived.archived_at.is_some(), "archived_at should be stamped");
-        assert_eq!(archived, Task { archived_at: archived.archived_at.clone(), ..task });
+        assert!(
+            archived.archived_at.is_some(),
+            "archived_at should be stamped"
+        );
+        assert_eq!(
+            archived,
+            Task {
+                archived_at: archived.archived_at.clone(),
+                ..task
+            }
+        );
     }
 
     #[test]
@@ -804,5 +971,158 @@ mod tests {
         let result = migrate_task_project_names_to_ids(&missing, &[]);
 
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn backfill_archive_completion_timestamps_stamps_completed_at_from_archived_at_for_done_tasks()
+    {
+        let archive_dir = tempdir().unwrap();
+        let settings = Settings::default();
+        let mut task = Task::new("Finished thing".to_string());
+        task.status = settings.done_status.clone();
+        task.completed_at = None;
+        task.archived_at = Some("2026-06-20T18:00:00+00:00".to_string());
+        save_task(archive_dir.path(), &task).unwrap();
+
+        let modified =
+            backfill_archive_completion_timestamps(archive_dir.path(), &settings).unwrap();
+
+        assert_eq!(modified, 1);
+        let loaded = load_task(archive_dir.path(), &task.id).unwrap();
+        assert_eq!(
+            loaded.completed_at,
+            Some("2026-06-20T18:00:00+00:00".to_string())
+        );
+    }
+
+    #[test]
+    fn backfill_archive_completion_timestamps_stamps_cancelled_at_from_archived_at_for_cancelled_tasks(
+    ) {
+        let archive_dir = tempdir().unwrap();
+        let mut settings = Settings::default();
+        settings.cancelled_status = Some("cancelled".to_string());
+        let mut task = Task::new("Abandoned thing".to_string());
+        task.status = "cancelled".to_string();
+        task.cancelled_at = None;
+        task.archived_at = Some("2026-06-21T09:30:00+00:00".to_string());
+        save_task(archive_dir.path(), &task).unwrap();
+
+        let modified =
+            backfill_archive_completion_timestamps(archive_dir.path(), &settings).unwrap();
+
+        assert_eq!(modified, 1);
+        let loaded = load_task(archive_dir.path(), &task.id).unwrap();
+        assert_eq!(
+            loaded.cancelled_at,
+            Some("2026-06-21T09:30:00+00:00".to_string())
+        );
+    }
+
+    #[test]
+    fn backfill_archive_completion_timestamps_leaves_an_already_stamped_task_untouched() {
+        let archive_dir = tempdir().unwrap();
+        let settings = Settings::default();
+        let mut task = Task::new("Already stamped".to_string());
+        task.status = settings.done_status.clone();
+        task.completed_at = Some("2026-01-01T00:00:00+00:00".to_string());
+        task.archived_at = Some("2026-06-20T18:00:00+00:00".to_string());
+        save_task(archive_dir.path(), &task).unwrap();
+
+        let modified =
+            backfill_archive_completion_timestamps(archive_dir.path(), &settings).unwrap();
+
+        assert_eq!(modified, 0);
+        let loaded = load_task(archive_dir.path(), &task.id).unwrap();
+        assert_eq!(
+            loaded.completed_at,
+            Some("2026-01-01T00:00:00+00:00".to_string())
+        );
+    }
+
+    #[test]
+    fn backfill_archive_completion_timestamps_leaves_a_task_without_archived_at_untouched() {
+        let archive_dir = tempdir().unwrap();
+        let settings = Settings::default();
+        let mut task = Task::new("No archived_at".to_string());
+        task.status = settings.done_status.clone();
+        task.completed_at = None;
+        task.archived_at = None;
+        save_task(archive_dir.path(), &task).unwrap();
+
+        let modified =
+            backfill_archive_completion_timestamps(archive_dir.path(), &settings).unwrap();
+
+        assert_eq!(modified, 0);
+        let loaded = load_task(archive_dir.path(), &task.id).unwrap();
+        assert_eq!(loaded.completed_at, None);
+    }
+
+    #[test]
+    fn backfill_archive_completion_timestamps_leaves_an_active_status_task_untouched() {
+        let archive_dir = tempdir().unwrap();
+        let settings = Settings::default();
+        let mut task = Task::new("Still active".to_string());
+        task.status = "backlog".to_string();
+        task.completed_at = None;
+        task.archived_at = Some("2026-06-20T18:00:00+00:00".to_string());
+        save_task(archive_dir.path(), &task).unwrap();
+
+        let modified =
+            backfill_archive_completion_timestamps(archive_dir.path(), &settings).unwrap();
+
+        assert_eq!(modified, 0);
+        let loaded = load_task(archive_dir.path(), &task.id).unwrap();
+        assert_eq!(loaded.completed_at, None);
+        assert_eq!(loaded.cancelled_at, None);
+    }
+
+    #[test]
+    fn backfill_archive_completion_timestamps_returns_ok_zero_for_missing_directory() {
+        let dir = tempdir().unwrap();
+        let missing = dir.path().join("does-not-exist");
+        let settings = Settings::default();
+
+        let result = backfill_archive_completion_timestamps(&missing, &settings);
+
+        assert_eq!(result.unwrap(), 0);
+    }
+
+    #[test]
+    fn backfill_archive_completion_timestamps_is_idempotent() {
+        let archive_dir = tempdir().unwrap();
+        let settings = Settings::default();
+        let mut task = Task::new("Finished thing".to_string());
+        task.status = settings.done_status.clone();
+        task.completed_at = None;
+        task.archived_at = Some("2026-06-20T18:00:00+00:00".to_string());
+        save_task(archive_dir.path(), &task).unwrap();
+
+        let first_run =
+            backfill_archive_completion_timestamps(archive_dir.path(), &settings).unwrap();
+        let second_run =
+            backfill_archive_completion_timestamps(archive_dir.path(), &settings).unwrap();
+
+        assert_eq!(first_run, 1);
+        assert_eq!(second_run, 0);
+    }
+
+    #[test]
+    fn backfill_archive_completion_timestamps_with_no_cancelled_status_leaves_cancelled_looking_tasks_untouched(
+    ) {
+        let archive_dir = tempdir().unwrap();
+        let mut settings = Settings::default();
+        settings.cancelled_status = None;
+        let mut task = Task::new("Looks cancelled".to_string());
+        task.status = "cancelled".to_string();
+        task.cancelled_at = None;
+        task.archived_at = Some("2026-06-21T09:30:00+00:00".to_string());
+        save_task(archive_dir.path(), &task).unwrap();
+
+        let result = backfill_archive_completion_timestamps(archive_dir.path(), &settings);
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 0);
+        let loaded = load_task(archive_dir.path(), &task.id).unwrap();
+        assert_eq!(loaded.cancelled_at, None);
     }
 }

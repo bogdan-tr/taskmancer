@@ -1,12 +1,15 @@
 <script lang="ts">
   import { getProjectCompletionTrend } from "$lib/api";
+  import type { DashboardDateRange } from "$lib/api";
   import type { ProjectCompletionWeek } from "$lib/types";
+  import WidgetHeader from "./WidgetHeader.svelte";
 
   interface Props {
     projectId: string;
     projectColor: string;
+    dateRange: DashboardDateRange;
   }
-  let { projectId, projectColor }: Props = $props();
+  let { projectId, projectColor, dateRange }: Props = $props();
 
   let data = $state<ProjectCompletionWeek[]>([]);
   let loading = $state(true);
@@ -16,7 +19,7 @@
     if (!projectId) return;
     loading = true;
     error = null;
-    getProjectCompletionTrend(projectId)
+    getProjectCompletionTrend(projectId, dateRange)
       .then((d) => { data = d; })
       .catch((e) => { error = e instanceof Error ? e.message : String(e); })
       .finally(() => { loading = false; });
@@ -72,7 +75,7 @@
 </script>
 
 <div class="w14" style="--project-accent: {projectColor}">
-  <span class="widget-label">COMPLETION TREND</span>
+  <WidgetHeader widgetType="p_completion_trend" pickerRange={dateRange} />
   {#if loading}
     <div class="state-msg">Loading…</div>
   {:else if error}
@@ -141,13 +144,6 @@
     display: flex;
     flex-direction: column;
     gap: 4px;
-  }
-  .widget-label {
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    color: var(--db-ink-muted);
-    flex-shrink: 0;
   }
   .chart-area {
     flex: 1;

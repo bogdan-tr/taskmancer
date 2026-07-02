@@ -202,24 +202,26 @@
     border-width: 0;
   }
 
+  /* Canonical tier palette (see src/lib/tierColors.ts), darkened ~20% so the
+     white tile text keeps contrast on the filled background. */
   .badge-tile.severe {
-    background: oklch(58% 0.19 25);
+    background: color-mix(in srgb, #ef4444 82%, #000);
   }
 
   .badge-tile.critical {
-    background: oklch(62% 0.17 45);
+    background: color-mix(in srgb, #f97316 78%, #000);
   }
 
   .badge-tile.needs-attention {
-    background: oklch(52% 0.15 70);
+    background: color-mix(in srgb, #f59e0b 72%, #000);
   }
 
   .badge-tile.on-track {
-    background: oklch(50% 0.14 145);
+    background: color-mix(in srgb, #3b82f6 82%, #000);
   }
 
   .badge-tile.great {
-    background: oklch(50% 0.16 145);
+    background: color-mix(in srgb, #22c55e 74%, #000);
   }
 
   .badge-tile .stat-tile-label,

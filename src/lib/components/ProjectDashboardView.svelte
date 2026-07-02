@@ -1,6 +1,8 @@
 <script lang="ts">
   import { getProjectDashboardLayout, saveProjectDashboardLayout } from "$lib/api";
+  import type { DashboardDateRange } from "$lib/api";
   import type { DashboardWidget, StatLayout } from "$lib/types";
+  import { DATE_RANGE_LABELS } from "$lib/widgetCatalog";
   import { GridStack, type GridStackNode } from "gridstack";
   import "gridstack/dist/gridstack.min.css";
   import W1ScoreboardWidget from "./W1ScoreboardWidget.svelte";
@@ -25,6 +27,12 @@
     projectName: string;
   }
   let { projectId, projectColor, projectName }: Props = $props();
+
+  // ── Date range ───────────────────────────────────────────────────────────
+  // Time-based widgets (W1 done/tracked cells, W7, W9, W12, W14) respect
+  // this; current-state and own-timeline widgets ignore it by design — see
+  // docs/features/widget-fixes-2026-07.md §B.
+  let dateRange = $state<DashboardDateRange>("last_30_days");
 
   // ── Layout load ─────────────────────────────────────────────────────────
   let layout = $state<StatLayout | null>(null);
@@ -271,6 +279,19 @@
   <div class="top-bar">
     <h1 class="dash-title">Dashboard</h1>
     <div class="controls">
+      {#if !editMode}
+        <label class="range-label" for="pdb-date-range">Date range</label>
+        <select
+          id="pdb-date-range"
+          class="range-select"
+          bind:value={dateRange}
+          onchange={(e) => e.currentTarget.blur()}
+        >
+          {#each Object.entries(DATE_RANGE_LABELS) as [value, label] (value)}
+            <option {value}>{label}</option>
+          {/each}
+        </select>
+      {/if}
       {#if editMode}
         <button class="edit-btn cancel-btn" type="button" onclick={cancelEdit}>
           Cancel
@@ -292,7 +313,7 @@
         {#each widgets as w (w.widget_type)}
           <div class="widget-card" style={gridStyle(w)}>
             {#if w.widget_type === "p_scoreboard"}
-              <W1ScoreboardWidget {projectId} {projectColor} />
+              <W1ScoreboardWidget {projectId} {projectColor} {dateRange} />
             {:else if w.widget_type === "p_health_pulse"}
               <W2HealthPulseWidget
                 {projectId}
@@ -308,9 +329,9 @@
             {:else if w.widget_type === "p_effort_balance"}
               <W6EffortBalanceWidget {projectId} {projectColor} />
             {:else if w.widget_type === "p_weekly_rhythm"}
-              <W7WeeklyRhythmWidget {projectId} {projectColor} />
+              <W7WeeklyRhythmWidget {projectId} {projectColor} {dateRange} />
             {:else if w.widget_type === "p_time_donut"}
-              <W9TimeBreakdownWidget {projectId} {projectColor} />
+              <W9TimeBreakdownWidget {projectId} {projectColor} {dateRange} />
             {:else if w.widget_type === "p_status_radial"}
               <W10StatusRadialWidget {projectId} {projectColor} />
             {:else if w.widget_type === "p_due_timeline"}
@@ -318,7 +339,7 @@
             {:else if w.widget_type === "p_burndown"}
               <W13BurndownWidget {projectId} {projectColor} />
             {:else if w.widget_type === "p_completion_trend"}
-              <W14CompletionTrendWidget {projectId} {projectColor} />
+              <W14CompletionTrendWidget {projectId} {projectColor} {dateRange} />
             {:else if w.widget_type === "p_subproject_tree"}
               <W16SubprojectTreeWidget {projectId} {projectColor} />
             {:else if w.widget_type === "p_subproject_bars"}
@@ -362,7 +383,7 @@
                 </div>
                 <div class="edit-preview">
                   {#if wt === "p_scoreboard"}
-                    <W1ScoreboardWidget {projectId} {projectColor} />
+                    <W1ScoreboardWidget {projectId} {projectColor} {dateRange} />
                   {:else if wt === "p_health_pulse"}
                     <W2HealthPulseWidget
                       {projectId}
@@ -380,9 +401,9 @@
                   {:else if wt === "p_effort_balance"}
                     <W6EffortBalanceWidget {projectId} {projectColor} />
                   {:else if wt === "p_weekly_rhythm"}
-                    <W7WeeklyRhythmWidget {projectId} {projectColor} />
+                    <W7WeeklyRhythmWidget {projectId} {projectColor} {dateRange} />
                   {:else if wt === "p_time_donut"}
-                    <W9TimeBreakdownWidget {projectId} {projectColor} />
+                    <W9TimeBreakdownWidget {projectId} {projectColor} {dateRange} />
                   {:else if wt === "p_status_radial"}
                     <W10StatusRadialWidget {projectId} {projectColor} />
                   {:else if wt === "p_due_timeline"}
@@ -390,7 +411,7 @@
                   {:else if wt === "p_burndown"}
                     <W13BurndownWidget {projectId} {projectColor} />
                   {:else if wt === "p_completion_trend"}
-                    <W14CompletionTrendWidget {projectId} {projectColor} />
+                    <W14CompletionTrendWidget {projectId} {projectColor} {dateRange} />
                   {:else if wt === "p_subproject_tree"}
                     <W16SubprojectTreeWidget {projectId} {projectColor} />
                   {:else if wt === "p_subproject_bars"}
@@ -624,6 +645,27 @@
     display: flex;
     align-items: center;
     gap: 8px;
+  }
+
+  .range-label {
+    font-size: 12px;
+    color: var(--db-ink-muted);
+  }
+
+  .range-select {
+    padding: 4px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--db-border);
+    background: var(--db-card);
+    color: var(--db-ink);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+  }
+
+  .range-select:focus-visible {
+    outline: 2px solid var(--project-accent);
+    outline-offset: 1px;
   }
 
   .edit-btn {

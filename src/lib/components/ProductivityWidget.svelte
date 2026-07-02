@@ -2,6 +2,7 @@
   import type { DashboardDateRange } from "$lib/api";
   import { getDashboardProductivity } from "$lib/api";
   import type { DashboardProductivityDay, DashboardProductivityProjectEntry } from "$lib/types";
+  import WidgetHeader from "./WidgetHeader.svelte";
 
   interface Props {
     dateRange: DashboardDateRange;
@@ -129,7 +130,7 @@
 </script>
 
 <div class="widget">
-  <span class="widget-label">Productivity</span>
+  <WidgetHeader widgetType="productivity" pickerRange={dateRange} />
 
   {#if loading}
     <div class="state-msg">Loading…</div>
@@ -245,15 +246,6 @@
     display: flex;
     flex-direction: column;
     gap: 6px;
-  }
-
-  .widget-label {
-    font-size: 13px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--db-ink-muted, #8b949e);
-    flex-shrink: 0;
   }
 
   .chart-area {

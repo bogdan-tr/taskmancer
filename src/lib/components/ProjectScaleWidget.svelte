@@ -2,6 +2,7 @@
   import type { DashboardDateRange } from "$lib/api";
   import { getDashboardProjectSummary } from "$lib/api";
   import type { DashboardProjectSummary } from "$lib/types";
+  import WidgetHeader from "./WidgetHeader.svelte";
 
   interface Props {
     dateRange: DashboardDateRange;
@@ -113,7 +114,7 @@
 </script>
 
 <div class="widget">
-  <span class="widget-label">Project Time &amp; Scale</span>
+  <WidgetHeader widgetType="project_scale" pickerRange={dateRange} />
 
   {#if loading}
     <div class="state-msg">Loading…</div>
@@ -193,14 +194,6 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
-  }
-
-  .widget-label {
-    font-size: 13px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--db-ink-muted, #8b949e);
   }
 
   .donuts-row {

@@ -1,6 +1,13 @@
 <script lang="ts">
   import { getDashboardCompletionsByProject } from "$lib/api";
+  import type { DashboardDateRange } from "$lib/api";
   import type { DashboardProjectCompletions } from "$lib/types";
+  import WidgetHeader from "./WidgetHeader.svelte";
+
+  interface Props {
+    dateRange: DashboardDateRange;
+  }
+  let { dateRange }: Props = $props();
 
   let data = $state<DashboardProjectCompletions[]>([]);
   let loading = $state(true);
@@ -9,7 +16,7 @@
   $effect(() => {
     loading = true;
     error = false;
-    getDashboardCompletionsByProject()
+    getDashboardCompletionsByProject(dateRange)
       .then((result) => {
         data = result;
         loading = false;
@@ -59,7 +66,7 @@
 </script>
 
 <div class="widget">
-  <span class="widget-label">Completion Overview</span>
+  <WidgetHeader widgetType="completion_overview" pickerRange={dateRange} />
 
   {#if loading}
     <div class="state-msg">Loading…</div>
@@ -181,15 +188,6 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
-  }
-
-  .widget-label {
-    font-size: 13px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--db-ink-muted, #8b949e);
-    flex-shrink: 0;
   }
 
   .chart-area {

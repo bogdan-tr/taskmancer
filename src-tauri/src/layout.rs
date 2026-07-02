@@ -169,10 +169,42 @@ impl StatLayout {
             stat_ids: Vec::new(),
             widget_widths: HashMap::new(),
             dashboard_widgets: vec![
-                DashboardWidget { widget_type: "p_completion_dial".to_string(), x: 0, y: 0, w: 4, h: 4, include_subprojects: None, config: None },
-                DashboardWidget { widget_type: "p_health_pulse".to_string(),    x: 4, y: 0, w: 4, h: 4, include_subprojects: None, config: None },
-                DashboardWidget { widget_type: "p_scoreboard".to_string(),      x: 8, y: 0, w: 4, h: 4, include_subprojects: None, config: None },
-                DashboardWidget { widget_type: "p_weekly_rhythm".to_string(),   x: 0, y: 4, w: 6, h: 4, include_subprojects: None, config: None },
+                DashboardWidget {
+                    widget_type: "p_completion_dial".to_string(),
+                    x: 0,
+                    y: 0,
+                    w: 4,
+                    h: 4,
+                    include_subprojects: None,
+                    config: None,
+                },
+                DashboardWidget {
+                    widget_type: "p_health_pulse".to_string(),
+                    x: 4,
+                    y: 0,
+                    w: 4,
+                    h: 4,
+                    include_subprojects: None,
+                    config: None,
+                },
+                DashboardWidget {
+                    widget_type: "p_scoreboard".to_string(),
+                    x: 8,
+                    y: 0,
+                    w: 4,
+                    h: 4,
+                    include_subprojects: None,
+                    config: None,
+                },
+                DashboardWidget {
+                    widget_type: "p_weekly_rhythm".to_string(),
+                    x: 0,
+                    y: 4,
+                    w: 6,
+                    h: 4,
+                    include_subprojects: None,
+                    config: None,
+                },
             ],
             dashboard_theme: None,
             project_id: Some(project_id.to_string()),
@@ -273,11 +305,51 @@ fn default_dashboard_layout() -> StatLayout {
     StatLayout::new_dashboard(
         "Default".to_string(),
         vec![
-            DashboardWidget { widget_type: "completion_overview".to_string(), x: 0, y: 0, w: 6, h: 4, include_subprojects: None, config: None },
-            DashboardWidget { widget_type: "project_scale".to_string(), x: 6, y: 0, w: 6, h: 4, include_subprojects: None, config: None },
-            DashboardWidget { widget_type: "status_by_project".to_string(), x: 0, y: 4, w: 4, h: 4, include_subprojects: None, config: None },
-            DashboardWidget { widget_type: "project_health".to_string(), x: 4, y: 4, w: 3, h: 4, include_subprojects: Some(false), config: None },
-            DashboardWidget { widget_type: "productivity".to_string(), x: 7, y: 4, w: 5, h: 4, include_subprojects: None, config: None },
+            DashboardWidget {
+                widget_type: "completion_overview".to_string(),
+                x: 0,
+                y: 0,
+                w: 6,
+                h: 4,
+                include_subprojects: None,
+                config: None,
+            },
+            DashboardWidget {
+                widget_type: "project_scale".to_string(),
+                x: 6,
+                y: 0,
+                w: 6,
+                h: 4,
+                include_subprojects: None,
+                config: None,
+            },
+            DashboardWidget {
+                widget_type: "status_by_project".to_string(),
+                x: 0,
+                y: 4,
+                w: 4,
+                h: 4,
+                include_subprojects: None,
+                config: None,
+            },
+            DashboardWidget {
+                widget_type: "project_health".to_string(),
+                x: 4,
+                y: 4,
+                w: 3,
+                h: 4,
+                include_subprojects: Some(false),
+                config: None,
+            },
+            DashboardWidget {
+                widget_type: "productivity".to_string(),
+                x: 7,
+                y: 4,
+                w: 5,
+                h: 4,
+                include_subprojects: None,
+                config: None,
+            },
         ],
     )
 }
@@ -344,8 +416,7 @@ pub fn ensure_default_project_dashboard_layout(
     layouts: &mut Vec<StatLayout>,
 ) -> String {
     if let Some(existing) = layouts.iter().find(|l| {
-        l.kind == PROJECT_DASHBOARD_LAYOUT_KIND
-            && l.project_id.as_deref() == Some(project_id)
+        l.kind == PROJECT_DASHBOARD_LAYOUT_KIND && l.project_id.as_deref() == Some(project_id)
     }) {
         return existing.id.clone();
     }
@@ -680,7 +751,10 @@ mod tests {
         let mut layout = StatLayout::new_project_dashboard("proj-1");
         layout.dashboard_widgets.push(DashboardWidget {
             widget_type: "unknown_widget".to_string(),
-            x: 0, y: 0, w: 4, h: 4,
+            x: 0,
+            y: 0,
+            w: 4,
+            h: 4,
             include_subprojects: None,
             config: None,
         });
@@ -721,7 +795,11 @@ mod tests {
         ensure_default_project_dashboard_layout("proj-b", &mut layouts);
 
         assert_eq!(layouts.len(), 2);
-        assert!(layouts.iter().any(|l| l.project_id.as_deref() == Some("proj-a")));
-        assert!(layouts.iter().any(|l| l.project_id.as_deref() == Some("proj-b")));
+        assert!(layouts
+            .iter()
+            .any(|l| l.project_id.as_deref() == Some("proj-a")));
+        assert!(layouts
+            .iter()
+            .any(|l| l.project_id.as_deref() == Some("proj-b")));
     }
 }

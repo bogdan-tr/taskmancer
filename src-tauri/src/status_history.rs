@@ -244,8 +244,15 @@ mod tests {
     fn record_transition_from_status_can_be_null() {
         let conn = in_memory_conn();
 
-        let entry = record_transition(&conn, "task-1", None, "backlog", "2026-01-01T00:00:00Z", "seed")
-            .unwrap();
+        let entry = record_transition(
+            &conn,
+            "task-1",
+            None,
+            "backlog",
+            "2026-01-01T00:00:00Z",
+            "seed",
+        )
+        .unwrap();
 
         assert_eq!(entry.from_status, None);
         assert_eq!(entry.to_status, "backlog");
@@ -256,11 +263,15 @@ mod tests {
         let conn = in_memory_conn();
 
         record_transition(
-            &conn, "t1", Some("backlog"), "in-progress", "2026-01-02T00:00:00Z", "user",
+            &conn,
+            "t1",
+            Some("backlog"),
+            "in-progress",
+            "2026-01-02T00:00:00Z",
+            "user",
         )
         .unwrap();
-        record_transition(&conn, "t1", None, "backlog", "2026-01-01T00:00:00Z", "seed")
-            .unwrap();
+        record_transition(&conn, "t1", None, "backlog", "2026-01-01T00:00:00Z", "seed").unwrap();
 
         let entries = list_for_task(&conn, "t1").unwrap();
         assert_eq!(entries.len(), 2);
@@ -361,7 +372,11 @@ mod tests {
         let conn = in_memory_conn();
         let settings = default_settings();
         let live = vec![make_task("live-1", "backlog", "2026-01-01T00:00:00Z")];
-        let archived = vec![make_task("archived-1", &settings.done_status, "2026-01-02T00:00:00Z")];
+        let archived = vec![make_task(
+            "archived-1",
+            &settings.done_status,
+            "2026-01-02T00:00:00Z",
+        )];
 
         seed_if_empty(&conn, &live, &archived, &settings).unwrap();
 

@@ -68,7 +68,16 @@ pub fn create_view(
         "INSERT INTO saved_views
              (id, name, color, icon, filter_config, sort_config, display_order, created_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        params![id, name, color, icon, filter_config, sort_config, display_order, now],
+        params![
+            id,
+            name,
+            color,
+            icon,
+            filter_config,
+            sort_config,
+            display_order,
+            now
+        ],
     )?;
     Ok(SavedView {
         id,
@@ -139,7 +148,15 @@ mod tests {
     #[test]
     fn create_and_list_view() {
         let conn = open_db();
-        let v = create_view(&conn, "My View", "#ff0000", "star", "{}", r#"{"levels":[]}"#).unwrap();
+        let v = create_view(
+            &conn,
+            "My View",
+            "#ff0000",
+            "star",
+            "{}",
+            r#"{"levels":[]}"#,
+        )
+        .unwrap();
         assert_eq!(v.name, "My View");
         assert_eq!(v.color, "#ff0000");
 
@@ -152,8 +169,16 @@ mod tests {
     fn update_view_fields() {
         let conn = open_db();
         let v = create_view(&conn, "Old", "#aaa", "star", "{}", r#"{"levels":[]}"#).unwrap();
-        update_view(&conn, &v.id, "New", "#bbb", "filter", r#"{"text":"x"}"#, r#"{"levels":[]}"#)
-            .unwrap();
+        update_view(
+            &conn,
+            &v.id,
+            "New",
+            "#bbb",
+            "filter",
+            r#"{"text":"x"}"#,
+            r#"{"levels":[]}"#,
+        )
+        .unwrap();
         let views = list_views(&conn).unwrap();
         assert_eq!(views[0].name, "New");
         assert_eq!(views[0].filter_config, r#"{"text":"x"}"#);

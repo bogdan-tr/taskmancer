@@ -1,6 +1,7 @@
 <script lang="ts">
   import { getProjectEffortBalance } from "$lib/api";
   import type { ProjectEffortBalance } from "$lib/types";
+  import WidgetHeader from "./WidgetHeader.svelte";
 
   interface Props {
     projectId: string;
@@ -11,8 +12,6 @@
   let data = $state<ProjectEffortBalance | null>(null);
   let loading = $state(true);
   let error = $state<string | null>(null);
-  let clientW = $state(0);
-  let clientH = $state(0);
 
   $effect(() => {
     if (!projectId) return;
@@ -24,345 +23,255 @@
       .finally(() => { loading = false; });
   });
 
-  // Responsive layout — all constants derived from measured container size.
-  const VB_W = 200;
-
-  // VB_H scales with the container aspect ratio, clamped between 120 and 200.
-  let VB_H = $derived(
-    Math.min(200, Math.max(120, clientH > 0 ? Math.round((clientH / Math.max(clientW, 1)) * VB_W) : 140)),
-  );
-
-  // Bar geometry derived from viewbox height.
-  let BAR_AREA_TOP = $derived(Math.round(VB_H * 0.14));
-  let BAR_AREA_BOTTOM = $derived(Math.round(VB_H * 0.74));
-  let BAR_AREA_H = $derived(BAR_AREA_BOTTOM - BAR_AREA_TOP);
-  let LABEL_Y = $derived(BAR_AREA_BOTTOM + 6);
-  let VALUE_OFFSET = $derived(Math.round(VB_H * 0.04));
-
-  // Two bars centred in VB_W with even gaps.
-  const BAR_W = 64;
-  const GAP = (VB_W - 2 * BAR_W) / 3; // ~24
-
-  // Font sizes scale slightly with VB_H.
-  let FS_VALUE = $derived(Math.max(7, Math.round(VB_H * 0.065)));
-  let FS_LABEL = $derived(Math.max(6.5, Math.round(VB_H * 0.058)));
-  let FS_HEADER = $derived(Math.max(8, Math.round(VB_H * 0.068)));
-
-  function barX(i: number): number {
-    return GAP + i * (BAR_W + GAP);
+  function fmtMins(mins: number): string {
+    const abs = Math.abs(mins);
+    const h = Math.floor(abs / 60);
+    const m = abs % 60;
+    if (abs === 0) return "0m";
+    if (h === 0) return `${m}m`;
+    if (m === 0) return `${h}h`;
+    return `${h}h ${m}m`;
   }
 
-  function fmtMins(m: number): string {
-    if (m <= 0) return "0m";
-    const h = Math.floor(m / 60);
-    const min = m % 60;
-    if (h === 0) return `${min}m`;
-    if (min === 0) return `${h}h`;
-    return `${h}h ${min}m`;
-  }
-
-  let maxVal = $derived(
-    data ? Math.max(1, data.tracked_total_mins, data.estimated_total_mins) : 1,
-  );
-
-  function barH(mins: number): number {
-    return Math.max(2, (mins / maxVal) * BAR_AREA_H);
-  }
-
-  function barY(mins: number): number {
-    return BAR_AREA_BOTTOM - barH(mins);
-  }
-
-  // Whether tracked minutes exceed the estimate (over-budget indicator).
-  let isOver = $derived(
-    data ? data.estimated_total_mins > 0 && data.tracked_total_mins > data.estimated_total_mins : false,
-  );
-
-  let trackedPct = $derived(
-    data && data.estimated_total_mins > 0
-      ? Math.round((data.tracked_total_mins / data.estimated_total_mins) * 100)
-      : null,
-  );
-
-  // EST bar geometry (right, index 1).
-  let estX = $derived(barX(1));
-  let estMins = $derived(data ? data.estimated_total_mins : 0);
-  let estH = $derived(barH(estMins));
-  let estY = $derived(barY(estMins));
-
-  // TRACKED bar geometry (left, index 0).
-  let trkX = $derived(barX(0));
-  let trkMins = $derived(data ? data.tracked_total_mins : 0);
-
-  // Overflow bar: the excess tracked portion above the estimate bar ceiling.
-  let overflowBarH = $derived(
-    isOver && data
-      ? Math.max(
-          2,
-          ((data.tracked_total_mins - data.estimated_total_mins) / maxVal) * BAR_AREA_H,
-        )
-      : 0,
-  );
-  // Tracked bar height is clamped to full area height when over-budget.
-  let trackedBarH = $derived(data ? Math.min(barH(data.tracked_total_mins), BAR_AREA_H) : 0);
-  let trackedBarY = $derived(BAR_AREA_BOTTOM - trackedBarH);
-
-  let SVG_W = $derived(Math.max(160, clientW));
-  let SVG_H = $derived((SVG_W / VB_W) * VB_H);
+  let est = $derived(data?.estimated_total_mins ?? 0);
+  let tracked = $derived(data?.tracked_total_mins ?? 0);
+  /** The scale runs to whichever is larger, so both always fit. */
+  let scaleMax = $derived(Math.max(est, tracked, 1));
+  let estPct = $derived((est / scaleMax) * 100);
+  let trackedWithinPct = $derived((Math.min(tracked, est) / scaleMax) * 100);
+  let overflowPct = $derived((Math.max(0, tracked - est) / scaleMax) * 100);
+  let isOver = $derived(tracked > est && est > 0);
+  let delta = $derived(tracked - est);
 </script>
 
-<div
-  class="effort-balance"
-  bind:clientWidth={clientW}
-  bind:clientHeight={clientH}
-  style="--project-accent: {projectColor}"
->
+<div class="w6" style="--project-accent: {projectColor}">
+  <WidgetHeader widgetType="p_effort_balance" />
   {#if loading}
-    <div class="skeleton">
-      <div class="sk-bars">
-        <div class="sk-bar" style="height:55px"></div>
-        <div class="sk-bar" style="height:70px; animation-delay:0.15s"></div>
+    <div class="state-msg">Loading…</div>
+  {:else if error}
+    <div class="state-msg state-err">{error}</div>
+  {:else if data && (est > 0 || tracked > 0)}
+    <div class="bullet-area">
+      <!-- Numbers row -->
+      <div class="numbers-row">
+        <div class="num-block">
+          <span class="num-label">
+            <span class="swatch swatch-tracked"></span>TRACKED
+          </span>
+          <span class="num-value">{fmtMins(tracked)}</span>
+        </div>
+        <div class="delta-badge" class:over={isOver} class:under={!isOver && est > 0}>
+          {#if est === 0}
+            no estimate
+          {:else if delta > 0}
+            +{fmtMins(delta)} over
+          {:else if delta < 0}
+            {fmtMins(delta)} to go
+          {:else}
+            spot on
+          {/if}
+        </div>
+        <div class="num-block right">
+          <span class="num-label">
+            ESTIMATED<span class="swatch swatch-est"></span>
+          </span>
+          <span class="num-value muted">{fmtMins(est)}</span>
+        </div>
       </div>
-      <div class="sk-labels">
-        <div class="sk-label"></div>
-        <div class="sk-label"></div>
+
+      <!-- Bullet chart -->
+      <div class="bullet" role="img"
+        aria-label="Tracked {fmtMins(tracked)} against an estimate of {fmtMins(est)}">
+        <!-- Estimate track -->
+        <div class="est-track" style="width: {estPct}%"></div>
+        <!-- Tracked bar (within estimate) -->
+        <div class="tracked-bar" style="width: {trackedWithinPct}%"></div>
+        <!-- Overflow past the estimate -->
+        {#if overflowPct > 0}
+          <div class="over-bar" style="left: {estPct}%; width: {overflowPct}%"></div>
+        {/if}
+        <!-- Estimate marker line -->
+        {#if est > 0}
+          <div class="est-marker" style="left: {estPct}%"></div>
+        {/if}
+      </div>
+
+      <!-- Scale caption -->
+      <div class="scale-row">
+        <span>0</span>
+        <span>{fmtMins(scaleMax)}</span>
       </div>
     </div>
-  {:else if error}
-    <p class="err">{error}</p>
-  {:else if data}
-    <svg
-      width={SVG_W}
-      height={SVG_H}
-      viewBox="0 0 {VB_W} {VB_H}"
-      xmlns="http://www.w3.org/2000/svg"
-      role="img"
-      aria-label="Effort balance: {fmtMins(data.tracked_total_mins)} tracked of {fmtMins(data.estimated_total_mins)} estimated"
-    >
-      <!-- Header: tracked percentage -->
-      {#if trackedPct !== null}
-        <text
-          x={VB_W / 2}
-          y={Math.round(BAR_AREA_TOP * 0.55)}
-          text-anchor="middle"
-          dominant-baseline="middle"
-          font-size={FS_HEADER}
-          font-weight="700"
-          fill={isOver ? "#ef4444" : "var(--db-ink-muted)"}
-          font-family="inherit"
-          letter-spacing="0.05em"
-        >
-          {trackedPct}% TRACKED{isOver ? " — OVER" : ""}
-        </text>
-      {/if}
-
-      <!-- Background tracks -->
-      {#each [0, 1] as i (i)}
-        <rect
-          x={barX(i)}
-          y={BAR_AREA_TOP}
-          width={BAR_W}
-          height={BAR_AREA_H}
-          rx="5"
-          fill="var(--db-border)"
-          opacity="0.4"
-        />
-      {/each}
-
-      <!-- EST filled bar -->
-      {#if estMins > 0}
-        <rect
-          x={estX}
-          y={estY}
-          width={BAR_W}
-          height={estH}
-          rx="5"
-          fill={projectColor}
-          opacity="0.85"
-        />
-      {/if}
-
-      <!-- TRACKED filled bar (capped at BAR_AREA_H) -->
-      {#if trkMins > 0}
-        <rect
-          x={trkX}
-          y={trackedBarY}
-          width={BAR_W}
-          height={trackedBarH}
-          rx="5"
-          fill="#3b82f6"
-          opacity="0.85"
-        />
-      {/if}
-
-      <!-- Overflow indicator: extra red section above the tracked bar when over-budget -->
-      {#if isOver && overflowBarH > 0}
-        <rect
-          x={trkX}
-          y={BAR_AREA_TOP - overflowBarH}
-          width={BAR_W}
-          height={overflowBarH}
-          rx="5"
-          fill="#ef4444"
-          opacity="0.9"
-        />
-        <!-- Overflow arrow indicator at top of bar -->
-        <text
-          x={trkX + BAR_W / 2}
-          y={BAR_AREA_TOP - overflowBarH - 3}
-          text-anchor="middle"
-          dominant-baseline="auto"
-          font-size={FS_VALUE}
-          font-weight="800"
-          fill="#ef4444"
-          font-family="inherit"
-        >
-          ↑
-        </text>
-      {/if}
-
-      <!-- Value labels above bars -->
-      {#if trkMins > 0}
-        <text
-          x={trkX + BAR_W / 2}
-          y={trackedBarY - VALUE_OFFSET}
-          text-anchor="middle"
-          dominant-baseline="auto"
-          font-size={FS_VALUE}
-          font-weight="700"
-          fill={isOver ? "#ef4444" : "#3b82f6"}
-          font-family="inherit"
-        >
-          {fmtMins(trkMins)}
-        </text>
-      {/if}
-
-      {#if estMins > 0}
-        <text
-          x={estX + BAR_W / 2}
-          y={estY - VALUE_OFFSET}
-          text-anchor="middle"
-          dominant-baseline="auto"
-          font-size={FS_VALUE}
-          font-weight="700"
-          fill={projectColor}
-          font-family="inherit"
-        >
-          {fmtMins(estMins)}
-        </text>
-      {/if}
-
-      <!-- Category labels below bars -->
-      <text
-        x={trkX + BAR_W / 2}
-        y={LABEL_Y}
-        text-anchor="middle"
-        dominant-baseline="hanging"
-        font-size={FS_LABEL}
-        font-weight="700"
-        fill="var(--db-ink-muted)"
-        font-family="inherit"
-        letter-spacing="0.04em"
-      >
-        TRACKED
-      </text>
-      <text
-        x={estX + BAR_W / 2}
-        y={LABEL_Y}
-        text-anchor="middle"
-        dominant-baseline="hanging"
-        font-size={FS_LABEL}
-        font-weight="700"
-        fill="var(--db-ink-muted)"
-        font-family="inherit"
-        letter-spacing="0.04em"
-      >
-        EST
-      </text>
-
-      <!-- Baseline rule -->
-      <line
-        x1={GAP}
-        y1={BAR_AREA_BOTTOM}
-        x2={VB_W - GAP}
-        y2={BAR_AREA_BOTTOM}
-        stroke="var(--db-border)"
-        stroke-width="1"
-        opacity="0.6"
-      />
-    </svg>
   {:else}
-    <p class="empty">No effort data.</p>
+    <div class="state-msg">Nothing estimated or tracked yet</div>
   {/if}
 </div>
 
 <style>
-  .effort-balance {
-    width: 100%;
+  .w6 {
     height: 100%;
     display: flex;
-    align-items: center;
-    justify-content: center;
+    flex-direction: column;
+    gap: 6px;
   }
 
-  svg {
-    display: block;
+  .bullet-area {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 10px;
+  }
+
+  .numbers-row {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .num-block {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .num-block.right {
+    align-items: flex-end;
+    text-align: right;
+  }
+
+  .num-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    color: var(--db-ink-muted, #8b949e);
+  }
+
+  .swatch {
+    width: 10px;
+    height: 4px;
+    border-radius: 999px;
+  }
+
+  .swatch-tracked {
+    background: var(--project-accent);
+  }
+
+  .swatch-est {
+    background: color-mix(in srgb, var(--db-ink-muted, #8b949e) 45%, transparent);
+  }
+
+  .num-value {
+    font-size: 20px;
+    font-weight: 800;
+    color: var(--db-ink, #e6edf3);
+    font-variant-numeric: tabular-nums;
+    line-height: 1.1;
+    white-space: nowrap;
+  }
+
+  .num-value.muted {
+    color: var(--db-ink-muted, #8b949e);
+  }
+
+  .delta-badge {
+    align-self: center;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    padding: 3px 9px;
+    border-radius: 999px;
+    border: 1px solid var(--db-border, rgba(255, 255, 255, 0.1));
+    color: var(--db-ink-muted, #8b949e);
+    white-space: nowrap;
     flex-shrink: 0;
   }
 
-  .skeleton {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 6px;
-    padding: 12px;
-    width: 100%;
-  }
-
-  .sk-bars {
-    display: flex;
-    align-items: flex-end;
-    gap: 18px;
-    height: 80px;
-    justify-content: center;
-  }
-
-  .sk-bar {
-    width: 52px;
-    border-radius: 5px;
-    background: var(--db-border);
-    animation: pulse 1.4s ease-in-out infinite;
-  }
-
-  .sk-labels {
-    display: flex;
-    gap: 18px;
-    justify-content: center;
-  }
-
-  .sk-label {
-    width: 52px;
-    height: 8px;
-    border-radius: 3px;
-    background: var(--db-border);
-    animation: pulse 1.4s ease-in-out infinite 0.4s;
-  }
-
-  @keyframes pulse {
-    0%, 100% { opacity: 0.4; }
-    50% { opacity: 0.8; }
-  }
-
-  .err,
-  .empty {
-    margin: 0;
-    font-size: 12px;
-    color: var(--db-ink-muted);
-    text-align: center;
-    padding: 16px;
-  }
-
-  .err {
+  .delta-badge.over {
     color: #ef4444;
+    border-color: rgba(239, 68, 68, 0.4);
+    background: rgba(239, 68, 68, 0.1);
   }
+
+  .delta-badge.under {
+    color: #22c55e;
+    border-color: rgba(34, 197, 94, 0.35);
+    background: rgba(34, 197, 94, 0.08);
+  }
+
+  /* ── The bullet itself ── */
+  .bullet {
+    position: relative;
+    height: 26px;
+    border-radius: 7px;
+    background: var(--db-grid-line, rgba(255, 255, 255, 0.04));
+    overflow: hidden;
+  }
+
+  .est-track {
+    position: absolute;
+    inset: 0 auto 0 0;
+    background: color-mix(in srgb, var(--db-ink-muted, #8b949e) 16%, transparent);
+    border-radius: 7px 0 0 7px;
+  }
+
+  .tracked-bar {
+    position: absolute;
+    top: 5px;
+    bottom: 5px;
+    left: 0;
+    background: linear-gradient(90deg,
+      color-mix(in srgb, var(--project-accent) 65%, transparent),
+      var(--project-accent));
+    border-radius: 0 4px 4px 0;
+    transition: width 500ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .over-bar {
+    position: absolute;
+    top: 5px;
+    bottom: 5px;
+    background: repeating-linear-gradient(
+      -45deg,
+      #ef4444 0 5px,
+      color-mix(in srgb, #ef4444 55%, transparent) 5px 10px
+    );
+    border-radius: 0 4px 4px 0;
+    transition: width 500ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .est-marker {
+    position: absolute;
+    top: -2px;
+    bottom: -2px;
+    width: 2px;
+    background: var(--db-ink, #e6edf3);
+    opacity: 0.85;
+    border-radius: 1px;
+  }
+
+  .scale-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 9px;
+    color: var(--db-ink-muted, #8b949e);
+    font-variant-numeric: tabular-nums;
+    opacity: 0.7;
+  }
+
+  .state-msg {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    color: var(--db-ink-muted, #8b949e);
+  }
+  .state-err { color: #ef4444; }
 </style>

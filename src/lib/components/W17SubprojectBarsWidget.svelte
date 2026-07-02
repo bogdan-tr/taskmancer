@@ -1,6 +1,8 @@
 <script lang="ts">
+  import { tierColor } from "$lib/tierColors";
   import { getProjectSubprojectBars } from "$lib/api";
   import type { ProjectSubprojectBar } from "$lib/types";
+  import WidgetHeader from "./WidgetHeader.svelte";
 
   interface Props {
     projectId: string;
@@ -22,15 +24,6 @@
       .finally(() => { loading = false; });
   });
 
-  function tierColor(tier: string): string {
-    switch (tier) {
-      case "Severe":          return "#ef4444";
-      case "Critical":        return "#f97316";
-      case "Needs Attention": return "#eab308";
-      case "On Track":        return "#22c55e";
-      default:                return "#6b7280";
-    }
-  }
 
   function tierDot(tier: string): string {
     switch (tier) {
@@ -44,7 +37,7 @@
 
 <div class="w17" style="--project-accent: {projectColor}">
   <div class="header-row">
-    <span class="widget-label">SUBPROJECT PROGRESS</span>
+    <WidgetHeader widgetType="p_subproject_bars" />
     <span class="count-badge">{data.length}</span>
   </div>
   {#if loading}
@@ -54,7 +47,12 @@
   {:else if data.length > 0}
     <div class="list">
       {#each data as bar}
-        <div class="bar-item" style="--depth-indent: {(bar.depth - 1) * 10}px">
+        <div
+          class="bar-item"
+          class:is-grandchild={bar.depth > 1}
+          class:is-complete={bar.total > 0 && bar.done === bar.total}
+          style="--depth-indent: {(bar.depth - 1) * 10}px"
+        >
           <!-- Name row -->
           <div class="name-row">
             <span class="indent-spacer" style="width: {(bar.depth - 1) * 10}px"></span>
@@ -95,11 +93,9 @@
     gap: 8px;
     flex-shrink: 0;
   }
-  .widget-label {
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    color: var(--db-ink-muted);
+  .header-row :global(.widget-header) {
+    flex: 1;
+    min-width: 0;
   }
   .count-badge {
     font-size: 10px;
@@ -108,6 +104,7 @@
     background: var(--db-border);
     border-radius: 10px;
     padding: 1px 6px;
+    flex-shrink: 0;
   }
   .list {
     flex: 1;
@@ -125,6 +122,16 @@
     display: flex;
     flex-direction: column;
     gap: 3px;
+    transition: opacity 150ms ease;
+  }
+
+  /* Spec: grandchildren render at slightly reduced opacity;
+     fully-done subprojects are dimmed. */
+  .bar-item.is-grandchild {
+    opacity: 0.8;
+  }
+  .bar-item.is-complete {
+    opacity: 0.45;
   }
 
   .name-row {

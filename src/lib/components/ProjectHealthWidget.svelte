@@ -1,6 +1,8 @@
 <script lang="ts">
+  import { tierColor as canonicalTierColor } from "$lib/tierColors";
   import { getDashboardProjectHealth } from "$lib/api";
   import type { DashboardProjectHealth } from "$lib/types";
+  import WidgetHeader from "./WidgetHeader.svelte";
 
   interface Props {
     includeSubprojects: boolean;
@@ -19,17 +21,7 @@
       .catch(() => { error = true; loading = false; });
   });
 
-  const TIER_COLORS: Record<string, string> = {
-    great:            "#10b981",
-    on_track:         "#06b6d4",
-    needs_attention:  "#f59e0b",
-    critical:         "#f97316",
-    severe:           "#ef4444",
-  };
-
-  function tierColor(tier: string): string {
-    return TIER_COLORS[tier] ?? "#8b949e";
-  }
+  const tierColor = canonicalTierColor;
 
   function fmtTime(mins: number): string {
     if (mins <= 0) return "—";
@@ -40,17 +32,10 @@
     return `${m}m`;
   }
 
-  function isDimmed(row: DashboardProjectHealth): boolean {
-    return (
-      row.tasks_due_today === 0 &&
-      row.tasks_due_tomorrow === 0 &&
-      (row.tier === "great" || row.tier === "on_track")
-    );
-  }
 </script>
 
 <div class="widget">
-  <span class="widget-label">Project Health</span>
+  <WidgetHeader widgetType="project_health" />
 
   {#if loading}
     <div class="state-msg">Loading…</div>
@@ -62,11 +47,7 @@
     <div class="rows">
       {#each data as row (row.project_id)}
         {@const tc = tierColor(row.tier)}
-        <div
-          class="health-row"
-          class:dimmed={isDimmed(row)}
-          style="--tier-color:{tc}"
-        >
+        <div class="health-row" style="--tier-color:{tc}">
           <!-- Project identity -->
           <div class="project-cell">
             <span class="project-dot" style="background:{row.project_color}"></span>
@@ -110,15 +91,6 @@
     gap: 8px;
   }
 
-  .widget-label {
-    font-size: 13px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--db-ink-muted, #8b949e);
-    flex-shrink: 0;
-  }
-
   .rows {
     flex: 1;
     display: flex;
@@ -135,14 +107,14 @@
     gap: 4px;
     padding: 4px 6px;
     border-radius: 6px;
-    background: color-mix(in srgb, var(--tier-color) 10%, transparent);
+    /* Left-to-right fade of the tier color — healthy rows stay just as
+       vivid as troubled ones (no dimming, per user request). */
+    background: linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--tier-color) 22%, transparent),
+      color-mix(in srgb, var(--tier-color) 10%, transparent)
+    );
     min-height: 36px;
-    transition: opacity 200ms ease;
-  }
-
-  .health-row.dimmed {
-    opacity: 0.38;
-    background: transparent;
   }
 
   /* Project identity */

@@ -1,12 +1,15 @@
 <script lang="ts">
   import { getProjectWeeklyRhythm } from "$lib/api";
+  import type { DashboardDateRange } from "$lib/api";
   import type { ProjectWeeklyRhythm } from "$lib/types";
+  import WidgetHeader from "./WidgetHeader.svelte";
 
   interface Props {
     projectId: string;
     projectColor: string;
+    dateRange: DashboardDateRange;
   }
-  let { projectId, projectColor }: Props = $props();
+  let { projectId, projectColor, dateRange }: Props = $props();
 
   let data = $state<ProjectWeeklyRhythm | null>(null);
   let loading = $state(true);
@@ -16,7 +19,7 @@
     if (!projectId) return;
     loading = true;
     error = null;
-    getProjectWeeklyRhythm(projectId)
+    getProjectWeeklyRhythm(projectId, dateRange)
       .then((d) => { data = d; })
       .catch((e) => { error = e instanceof Error ? e.message : String(e); })
       .finally(() => { loading = false; });
@@ -29,8 +32,11 @@
   const PAD_B = 28;
 
   let chartW = $state(0);
+  let chartH = $state(0);
   let SVG_W = $derived(Math.max(200, chartW));
-  const SVG_H = 140;
+  // Height tracks the card so the bars fill it — a fixed height left a dead
+  // band under the chart at taller card sizes.
+  let SVG_H = $derived(Math.max(110, chartH));
 
   let maxHours = $derived(
     data ? Math.max(...data.weekday_hours, 0.5) : 1,
@@ -73,7 +79,7 @@
 </script>
 
 <div class="w7" style="--project-accent: {projectColor}">
-  <span class="widget-label">WEEKLY RHYTHM</span>
+  <WidgetHeader widgetType="p_weekly_rhythm" pickerRange={dateRange} />
   {#if loading}
     <div class="state-msg">Loading…</div>
   {:else if error}
@@ -81,7 +87,7 @@
   {:else if data}
     {@const hours = data.weekday_hours}
     {@const todayWd = data.today_weekday}
-    <div class="chart-area" bind:clientWidth={chartW}>
+    <div class="chart-area" bind:clientWidth={chartW} bind:clientHeight={chartH}>
       <svg width={SVG_W} height={SVG_H} viewBox="0 0 {SVG_W} {SVG_H}">
         <!-- Y-axis grid lines -->
         {#each gridLines() as gv}
@@ -157,13 +163,6 @@
     display: flex;
     flex-direction: column;
     gap: 4px;
-  }
-  .widget-label {
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    color: var(--db-ink-muted);
-    flex-shrink: 0;
   }
   .chart-area {
     flex: 1;

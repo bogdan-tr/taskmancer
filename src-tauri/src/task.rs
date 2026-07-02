@@ -225,8 +225,7 @@ pub struct SearchResult {
 }
 
 /// Extracts ~120 chars of context around the first occurrence of `query_lower` in `text`.
-pub
-fn extract_snippet(text: &str, query_lower: &str) -> String {
+pub fn extract_snippet(text: &str, query_lower: &str) -> String {
     const CONTEXT: usize = 120;
     let lower = text.to_lowercase();
     let Some(pos) = lower.find(query_lower) else {
@@ -473,7 +472,10 @@ mod tests {
         let markdown = task.to_markdown().expect("serialization should succeed");
         let parsed = Task::from_markdown(&markdown).expect("parsing should succeed");
 
-        assert_eq!(parsed.completed_at, Some("2026-06-25T12:34:56+00:00".to_string()));
+        assert_eq!(
+            parsed.completed_at,
+            Some("2026-06-25T12:34:56+00:00".to_string())
+        );
         assert_eq!(parsed.cancelled_at, None);
     }
 
@@ -485,7 +487,10 @@ mod tests {
         let markdown = task.to_markdown().expect("serialization should succeed");
         let parsed = Task::from_markdown(&markdown).expect("parsing should succeed");
 
-        assert_eq!(parsed.cancelled_at, Some("2026-06-25T09:00:00+00:00".to_string()));
+        assert_eq!(
+            parsed.cancelled_at,
+            Some("2026-06-25T09:00:00+00:00".to_string())
+        );
         assert_eq!(parsed.completed_at, None);
     }
 

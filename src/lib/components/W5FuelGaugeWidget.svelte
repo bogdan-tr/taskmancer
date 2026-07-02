@@ -1,6 +1,7 @@
 <script lang="ts">
   import { getProjectFuelGauge } from "$lib/api";
   import type { ProjectFuelGauge } from "$lib/types";
+  import WidgetHeader from "./WidgetHeader.svelte";
 
   interface Props {
     projectId: string;
@@ -11,7 +12,6 @@
   let data = $state<ProjectFuelGauge | null>(null);
   let loading = $state(true);
   let error = $state<string | null>(null);
-  let clientW = $state(0);
 
   $effect(() => {
     if (!projectId) return;
@@ -23,215 +23,200 @@
       .finally(() => { loading = false; });
   });
 
-  // SVG donut ring constants.
-  const VB = 200;
-  const CX = 100;
-  const CY = 100;
-  const R_OUTER = 80;
-  const R_INNER = 56; // ring thickness = 24px
-  const STROKE_W = R_OUTER - R_INNER;
-  const R_MID = (R_OUTER + R_INNER) / 2; // 68 — stroke centre
+  function fmtMins(mins: number): string {
+    if (mins <= 0) return "0m";
+    const h = Math.floor(mins / 60);
+    const m = mins % 60;
+    if (h === 0) return `${m}m`;
+    if (m === 0) return `${h}h`;
+    return `${h}h ${m}m`;
+  }
 
-  // fill_pct = budget consumed = (total - remaining) / max(total, 1)
-  // Values >1.0 mean over-budget — we let it exceed 1 for the "OVER" badge.
-  let rawFillPct = $derived(
-    data
-      ? (data.estimated_total_mins - data.estimated_remaining_mins) /
-          Math.max(data.estimated_total_mins, 1)
-      : 0,
-  );
+  /** Fraction of estimated work still remaining: 1 = full tank, 0 = empty. */
+  let frac = $derived.by(() => {
+    if (!data || data.estimated_total_mins <= 0) return 0;
+    return Math.max(0, Math.min(1, data.estimated_remaining_mins / data.estimated_total_mins));
+  });
+  let isLow = $derived(frac <= 0.1);
 
-  let hasEstimate = $derived(data ? data.estimated_total_mins > 0 : false);
-  let isOver = $derived(rawFillPct > 1.0);
-  let fillPct = $derived(Math.min(rawFillPct, 1.0)); // clamp to ring max
+  /** More remaining work = hotter: a full tank of TO-DO is red, and the
+   * gauge cools to green as the work burns down (finishing is good). */
+  let fuelColor = $derived.by(() => {
+    if (frac > 0.66) return "#ef4444";
+    if (frac > 0.33) return "#f59e0b";
+    return "#22c55e";
+  });
 
-  // Color tiers: ≤50% → project accent, 50-80% → amber, >80% → red.
-  let ringColor = $derived(
-    fillPct <= 0.5 ? projectColor : fillPct <= 0.8 ? "#f59e0b" : "#ef4444",
-  );
+  // ── Semicircular gauge geometry ───────────────────────────────────────────
+  // Arc spans 180° from (20,105) to (180,105) over the top, radius 80.
+  const ARC_R = 80;
+  const ARC_CX = 100;
+  const ARC_CY = 105;
+  const ARC_LEN = Math.PI * ARC_R;
 
-  // Full circle via SVG stroke-dasharray / stroke-dashoffset on a circle element.
-  // circumference = 2π*R_MID; dashoffset shifts the filled portion.
-  const CIRC = 2 * Math.PI * R_MID;
-  let dashFilled = $derived(fillPct * CIRC);
-  let dashEmpty = $derived(CIRC - dashFilled);
+  /** Needle angle: 180° (left, EMPTY) … 0° (right, FULL). */
+  let needleAngle = $derived(180 - frac * 180);
+  let needleRad = $derived((needleAngle * Math.PI) / 180);
+  let needleX = $derived(ARC_CX + Math.cos(needleRad) * (ARC_R - 14));
+  let needleY = $derived(ARC_CY - Math.sin(needleRad) * (ARC_R - 14));
 
-  // Responsive: square SVG scales to container width, max 200px.
-  let SVG_SIZE = $derived(Math.min(Math.max(100, clientW), VB));
+  /** Tick marks every 25%. */
+  const ticks = [0, 0.25, 0.5, 0.75, 1].map((f) => {
+    const a = ((180 - f * 180) * Math.PI) / 180;
+    return {
+      x1: ARC_CX + Math.cos(a) * (ARC_R + 6),
+      y1: ARC_CY - Math.sin(a) * (ARC_R + 6),
+      x2: ARC_CX + Math.cos(a) * (ARC_R + 12),
+      y2: ARC_CY - Math.sin(a) * (ARC_R + 12),
+    };
+  });
 </script>
 
-<div
-  class="ring-wrap"
-  bind:clientWidth={clientW}
-  style="--project-accent: {projectColor}"
->
+<div class="w5" style="--project-accent: {projectColor}; --fuel-color: {fuelColor}">
+  <WidgetHeader widgetType="p_fuel_gauge" />
   {#if loading}
-    <div class="skeleton">
-      <div class="sk-ring"></div>
-    </div>
+    <div class="state-msg">Loading…</div>
   {:else if error}
-    <p class="err">{error}</p>
-  {:else if data && !hasEstimate}
-    <div class="no-estimate">
-      <span class="no-est-icon">—</span>
-      <p class="no-est-label">No estimate</p>
-    </div>
-  {:else if data}
-    <svg
-      width={SVG_SIZE}
-      height={SVG_SIZE}
-      viewBox="0 0 {VB} {VB}"
-      xmlns="http://www.w3.org/2000/svg"
-      aria-label="Effort consumed: {Math.round(rawFillPct * 100)}%"
-    >
-      <!-- Background track ring -->
-      <circle
-        cx={CX}
-        cy={CY}
-        r={R_MID}
-        fill="none"
-        stroke="var(--db-border)"
-        stroke-width={STROKE_W}
-      />
-
-      <!-- Consumed arc — starts at the top (−90° offset via transform) -->
-      {#if fillPct > 0}
-        <circle
-          cx={CX}
-          cy={CY}
-          r={R_MID}
+    <div class="state-msg state-err">{error}</div>
+  {:else if data && data.estimated_total_mins > 0}
+    <div class="gauge-area">
+      <svg viewBox="0 0 200 128" class="gauge-svg" role="img"
+        aria-label="Work remaining: {fmtMins(data.estimated_remaining_mins)} of {fmtMins(data.estimated_total_mins)} estimated">
+        <!-- Track -->
+        <path
+          d="M 20 105 A {ARC_R} {ARC_R} 0 0 1 180 105"
           fill="none"
-          stroke={ringColor}
-          stroke-width={STROKE_W}
-          stroke-linecap="butt"
-          stroke-dasharray="{dashFilled} {dashEmpty}"
-          transform="rotate(-90 {CX} {CY})"
-          style="transition: stroke-dasharray 0.4s ease, stroke 0.3s ease;"
+          stroke="var(--db-grid-line, rgba(255,255,255,0.07))"
+          stroke-width="13"
+          stroke-linecap="round"
         />
+        <!-- Fuel arc: fills from the left (empty side) up to the needle -->
+        <path
+          d="M 20 105 A {ARC_R} {ARC_R} 0 0 1 180 105"
+          fill="none"
+          stroke="var(--fuel-color)"
+          stroke-width="13"
+          stroke-linecap="round"
+          stroke-dasharray={ARC_LEN}
+          stroke-dashoffset={ARC_LEN * (1 - frac)}
+          class="fuel-arc"
+          class:low={isLow}
+        />
+        <!-- Ticks -->
+        {#each ticks as t}
+          <line x1={t.x1} y1={t.y1} x2={t.x2} y2={t.y2}
+            stroke="var(--db-ink-muted, #8b949e)" stroke-opacity="0.45" stroke-width="1.5" />
+        {/each}
+        <!-- End labels: left = done side, right = full workload -->
+        <text x="14" y="122" class="ef-label">✓</text>
+        <text x="181" y="122" text-anchor="middle" class="ef-label">MAX</text>
+
+        <!-- Needle -->
+        <line x1={ARC_CX} y1={ARC_CY} x2={needleX} y2={needleY}
+          stroke="var(--db-ink, #e6edf3)" stroke-width="2.5" stroke-linecap="round" class="needle" />
+        <circle cx={ARC_CX} cy={ARC_CY} r="5" fill="var(--db-ink, #e6edf3)" />
+        <circle cx={ARC_CX} cy={ARC_CY} r="2.2" fill="var(--db-card, #161b22)" />
+      </svg>
+    </div>
+    <div class="readout">
+      <span class="big-num" class:low={isLow}>{fmtMins(data.estimated_remaining_mins)}</span>
+      <span class="sub">left of {fmtMins(data.estimated_total_mins)} estimated</span>
+      {#if isLow}
+        <span class="empty-flag">{data.estimated_remaining_mins <= 0 ? "ALL DONE" : "ALMOST THERE"}</span>
       {/if}
-
-      <!-- Center: percentage -->
-      <text
-        x={CX}
-        y={CY - 10}
-        text-anchor="middle"
-        dominant-baseline="auto"
-        font-size="30"
-        font-weight="800"
-        fill={isOver ? "#ef4444" : "var(--db-ink)"}
-        font-family="inherit"
-        letter-spacing="-1"
-      >
-        {Math.round(rawFillPct * 100)}%
-      </text>
-
-      <!-- Center: label -->
-      <text
-        x={CX}
-        y={CY + 10}
-        text-anchor="middle"
-        dominant-baseline="auto"
-        font-size="10"
-        font-weight="600"
-        fill="var(--db-ink-muted)"
-        font-family="inherit"
-        letter-spacing="1"
-      >
-        CONSUMED
-      </text>
-
-      <!-- OVER badge shown when budget is exceeded -->
-      {#if isOver}
-        <rect x="70" y="125" width="60" height="20" rx="10" fill="#ef4444" />
-        <text
-          x={CX}
-          y="138"
-          text-anchor="middle"
-          dominant-baseline="middle"
-          font-size="10"
-          font-weight="700"
-          fill="white"
-          font-family="inherit"
-          letter-spacing="1"
-        >
-          OVER
-        </text>
-      {/if}
-    </svg>
+    </div>
   {:else}
-    <p class="empty">No data.</p>
+    <div class="state-msg">No estimated tasks yet — add time estimates to fuel the gauge</div>
   {/if}
 </div>
 
 <style>
-  .ring-wrap {
+  .w5 {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .gauge-area {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+  }
+
+  .gauge-svg {
     width: 100%;
     height: 100%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    max-height: 150px;
   }
 
-  svg {
-    display: block;
-    flex-shrink: 0;
-    overflow: visible;
+  .fuel-arc {
+    transition: stroke-dashoffset 600ms cubic-bezier(0.16, 1, 0.3, 1), stroke 300ms;
   }
 
-  .skeleton {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    height: 100%;
-    padding: 16px;
+  .fuel-arc.low {
+    filter: drop-shadow(0 0 5px var(--fuel-color));
   }
 
-  .sk-ring {
-    width: 100px;
-    height: 100px;
-    border-radius: 50%;
-    border: 20px solid var(--db-border);
-    animation: pulse 1.4s ease-in-out infinite;
+  .needle {
+    transition: x2 600ms, y2 600ms;
   }
 
-  @keyframes pulse {
-    0%, 100% { opacity: 0.4; }
-    50% { opacity: 0.8; }
+  .ef-label {
+    font-size: 10px;
+    font-weight: 700;
+    fill: var(--db-ink-muted, #8b949e);
   }
 
-  .no-estimate {
+  .readout {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 6px;
-    padding: 16px;
+    gap: 1px;
+    flex-shrink: 0;
+    padding-bottom: 2px;
   }
 
-  .no-est-icon {
-    font-size: 28px;
+  .big-num {
+    font-size: 22px;
     font-weight: 800;
-    color: var(--db-ink-muted);
-    line-height: 1;
+    color: var(--db-ink, #e6edf3);
+    font-variant-numeric: tabular-nums;
+    line-height: 1.1;
   }
 
-  .no-est-label {
-    margin: 0;
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--db-ink-muted);
-    letter-spacing: 0.5px;
+  .big-num.low {
+    color: var(--fuel-color);
   }
 
-  .err,
-  .empty {
-    margin: 0;
-    font-size: 12px;
-    color: var(--db-ink-muted);
+  .sub {
+    font-size: 10.5px;
+    color: var(--db-ink-muted, #8b949e);
+  }
+
+  .empty-flag {
+    margin-top: 3px;
+    font-size: 8.5px;
+    font-weight: 800;
+    letter-spacing: 0.14em;
+    color: var(--fuel-color);
+    border: 1px solid color-mix(in srgb, var(--fuel-color) 45%, transparent);
+    background: color-mix(in srgb, var(--fuel-color) 12%, transparent);
+    padding: 2px 7px;
+    border-radius: 999px;
+  }
+
+  .state-msg {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     text-align: center;
-    padding: 16px;
+    font-size: 12px;
+    padding: 0 10px;
+    color: var(--db-ink-muted, #8b949e);
   }
-
-  .err {
-    color: #ef4444;
-  }
+  .state-err { color: #ef4444; }
 </style>

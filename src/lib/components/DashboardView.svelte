@@ -4,6 +4,7 @@
   import { projectsState } from "$lib/projects.svelte";
   import { settingsState } from "$lib/settings.svelte";
   import type { DashboardWidget, StatLayout } from "$lib/types";
+  import { DATE_RANGE_LABELS } from "$lib/widgetCatalog";
   import { GridStack, type GridStackNode } from "gridstack";
   import "gridstack/dist/gridstack.min.css";
   import CompletionOverviewWidget from "./CompletionOverviewWidget.svelte";
@@ -19,14 +20,6 @@
 
   // ── Date range ───────────────────────────────────────────────────────────
   let dateRange = $state<DashboardDateRange>("last_30_days");
-
-  const DATE_RANGE_LABELS: Record<DashboardDateRange, string> = {
-    last_7_days:   "Last 7 days",
-    last_30_days:  "Last 30 days",
-    this_month:    "This month",
-    last_3_months: "Last 3 months",
-    all_time:      "All time",
-  };
 
   // ── Layout resolution ────────────────────────────────────────────────────
   let project = $derived(
@@ -260,7 +253,12 @@
     <div class="controls">
       {#if !editMode}
         <label class="range-label" for="db-date-range">Date range</label>
-        <select id="db-date-range" class="range-select" bind:value={dateRange}>
+        <select
+          id="db-date-range"
+          class="range-select"
+          bind:value={dateRange}
+          onchange={(e) => e.currentTarget.blur()}
+        >
           {#each Object.entries(DATE_RANGE_LABELS) as [value, label] (value)}
             <option {value}>{label}</option>
           {/each}
@@ -287,11 +285,11 @@
         {#each widgets as w (w.widget_type)}
           <div class="widget-card" style={gridStyle(w)}>
             {#if w.widget_type === "completion_overview"}
-              <CompletionOverviewWidget />
+              <CompletionOverviewWidget {dateRange} />
             {:else if w.widget_type === "project_scale"}
               <ProjectScaleWidget {dateRange} />
             {:else if w.widget_type === "status_by_project"}
-              <StatusByProjectWidget />
+              <StatusByProjectWidget {dateRange} />
             {:else if w.widget_type === "project_health"}
               <ProjectHealthWidget includeSubprojects={w.include_subprojects ?? false} />
             {:else if w.widget_type === "productivity"}
@@ -339,11 +337,11 @@
                 </div>
                 <div class="edit-preview">
                   {#if wt === "completion_overview"}
-                    <CompletionOverviewWidget />
+                    <CompletionOverviewWidget {dateRange} />
                   {:else if wt === "project_scale"}
                     <ProjectScaleWidget {dateRange} />
                   {:else if wt === "status_by_project"}
-                    <StatusByProjectWidget />
+                    <StatusByProjectWidget {dateRange} />
                   {:else if wt === "project_health"}
                     <ProjectHealthWidget includeSubprojects={healthSubprojectsDraft} />
                   {:else if wt === "productivity"}

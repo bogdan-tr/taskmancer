@@ -323,13 +323,21 @@ export async function getDashboardProjectSummary(
 }
 
 /** Returns per-project completed and cancelled task counts for the "Completion Overview" widget. */
-export async function getDashboardCompletionsByProject(): Promise<DashboardProjectCompletions[]> {
-  return invoke<DashboardProjectCompletions[]>("get_dashboard_completions_by_project");
+export async function getDashboardCompletionsByProject(
+  dateRange: DashboardDateRange,
+): Promise<DashboardProjectCompletions[]> {
+  return invoke<DashboardProjectCompletions[]>("get_dashboard_completions_by_project", {
+    dateRange,
+  });
 }
 
 /** Returns per-project status distribution for the "Status by Project" widget. */
-export async function getDashboardStatusDistributionByProject(): Promise<DashboardProjectStatusDist[]> {
-  return invoke<DashboardProjectStatusDist[]>("get_dashboard_status_distribution_by_project");
+export async function getDashboardStatusDistributionByProject(
+  dateRange: DashboardDateRange,
+): Promise<DashboardProjectStatusDist[]> {
+  return invoke<DashboardProjectStatusDist[]>("get_dashboard_status_distribution_by_project", {
+    dateRange,
+  });
 }
 
 /** Returns total tracked minutes per calendar day for the "Productivity" widget. */
@@ -359,8 +367,11 @@ export async function saveProjectDashboardLayout(layout: StatLayout): Promise<vo
 }
 
 /** Returns KPI scoreboard data for the project dashboard W1 widget. */
-export async function getProjectScoreboard(projectId: string): Promise<ProjectScoreboard> {
-  return invoke<ProjectScoreboard>("get_project_scoreboard", { projectId });
+export async function getProjectScoreboard(
+  projectId: string,
+  dateRange: DashboardDateRange,
+): Promise<ProjectScoreboard> {
+  return invoke<ProjectScoreboard>("get_project_scoreboard", { projectId, dateRange });
 }
 
 /** Returns health-pulse data for the project dashboard W2 widget. */
@@ -391,15 +402,17 @@ export async function getProjectEffortBalance(projectId: string): Promise<Projec
 /** Returns weekly-rhythm data for the project dashboard W7 widget. */
 export async function getProjectWeeklyRhythm(
   projectId: string,
+  dateRange: DashboardDateRange,
 ): Promise<ProjectWeeklyRhythm> {
-  return invoke<ProjectWeeklyRhythm>("get_project_weekly_rhythm", { projectId });
+  return invoke<ProjectWeeklyRhythm>("get_project_weekly_rhythm", { projectId, dateRange });
 }
 
 /** Returns time-breakdown donut data for the project dashboard W9 widget. */
 export async function getProjectTimeBreakdown(
   projectId: string,
+  dateRange: DashboardDateRange,
 ): Promise<ProjectTimeBreakdown> {
-  return invoke<ProjectTimeBreakdown>("get_project_time_breakdown", { projectId });
+  return invoke<ProjectTimeBreakdown>("get_project_time_breakdown", { projectId, dateRange });
 }
 
 /** Returns status-radial data for the project dashboard W10 widget. */
@@ -412,8 +425,9 @@ export async function getProjectStatusRadial(
 /** Returns due-date timeline data for the project dashboard W12 widget. */
 export async function getProjectDueTimeline(
   projectId: string,
+  dateRange: DashboardDateRange,
 ): Promise<ProjectDueDateTimeline> {
-  return invoke<ProjectDueDateTimeline>("get_project_due_timeline", { projectId });
+  return invoke<ProjectDueDateTimeline>("get_project_due_timeline", { projectId, dateRange });
 }
 
 /** Returns burndown chart data for the project dashboard W13 widget. */
@@ -424,8 +438,9 @@ export async function getProjectBurndown(projectId: string): Promise<ProjectBurn
 /** Returns completion-trend data for the project dashboard W14 widget. */
 export async function getProjectCompletionTrend(
   projectId: string,
+  dateRange: DashboardDateRange,
 ): Promise<ProjectCompletionWeek[]> {
-  return invoke<ProjectCompletionWeek[]>("get_project_completion_trend", { projectId });
+  return invoke<ProjectCompletionWeek[]>("get_project_completion_trend", { projectId, dateRange });
 }
 
 /** Returns subproject-tree data for the project dashboard W16 widget. */

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { getProjectStatusRadial } from "$lib/api";
   import type { ProjectStatusSlice } from "$lib/types";
+  import WidgetHeader from "./WidgetHeader.svelte";
 
   interface Props {
     projectId: string;
@@ -64,7 +65,7 @@
 </script>
 
 <div class="w10" style="--project-accent: {projectColor}">
-  <span class="widget-label">STATUS BREAKDOWN</span>
+  <WidgetHeader widgetType="p_status_radial" />
   {#if loading}
     <div class="state-msg">Loading…</div>
   {:else if error}
@@ -101,13 +102,6 @@
     display: flex;
     flex-direction: column;
     gap: 6px;
-  }
-  .widget-label {
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    color: var(--db-ink-muted);
-    flex-shrink: 0;
   }
   .content {
     flex: 1;

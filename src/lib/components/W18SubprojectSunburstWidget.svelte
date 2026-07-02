@@ -1,6 +1,7 @@
 <script lang="ts">
   import { getProjectSubprojectSunburst } from "$lib/api";
   import type { ProjectSunburstSlice } from "$lib/types";
+  import WidgetHeader from "./WidgetHeader.svelte";
 
   interface Props {
     projectId: string;
@@ -122,7 +123,7 @@
 </script>
 
 <div class="w18" style="--project-accent: {projectColor}" bind:clientWidth={clientW}>
-  <span class="widget-label">SUBPROJECT SUNBURST</span>
+  <WidgetHeader widgetType="p_subproject_sunburst" />
   {#if loading}
     <div class="state-msg">Loading…</div>
   {:else if error}
@@ -170,13 +171,6 @@
     display: flex;
     flex-direction: column;
     gap: 6px;
-  }
-  .widget-label {
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    color: var(--db-ink-muted);
-    flex-shrink: 0;
   }
   .content {
     flex: 1;
